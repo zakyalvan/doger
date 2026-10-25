@@ -729,3 +729,54 @@ func countOf(events []string, event string) int {
 	}
 	return n
 }
+
+func TestContainerHooks_NilContext(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		register  func(root *RootScope, record func(context.Context))
+		operation func(root *RootScope)
+	}{
+		{
+			name: "StartWithContext",
+			register: func(root *RootScope, record func(context.Context)) {
+				root.AddContainerStartingHook(func(ctx context.Context, _ *RootScope) error { record(ctx); return nil })
+				root.AddContainerStartedHook(func(ctx context.Context, _ *RootScope) { record(ctx) })
+				root.AddContainerReadyHook(func(ctx context.Context, _ *RootScope) { record(ctx) })
+			},
+			operation: func(root *RootScope) {
+				_ = root.StartWithContext(nil) //nolint:staticcheck // nil context is the case under test
+			},
+		},
+		{
+			name: "ShutdownWithContext",
+			register: func(root *RootScope, record func(context.Context)) {
+				root.AddContainerClosingHook(func(ctx context.Context, _ *RootScope) { record(ctx) })
+				root.AddContainerClosedHook(func(ctx context.Context, _ *RootScope, _ *ShutdownReport) { record(ctx) })
+			},
+			operation: func(root *RootScope) {
+				_ = root.ShutdownWithContext(nil) //nolint:staticcheck // nil context is the case under test
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+			is := assert.New(t)
+
+			root := New()
+			var contexts []context.Context
+			tt.register(root, func(ctx context.Context) { contexts = append(contexts, ctx) })
+
+			is.NotPanics(func() { tt.operation(root) })
+
+			is.NotEmpty(contexts)
+			for _, ctx := range contexts {
+				is.NotNil(ctx)
+			}
+		})
+	}
+}

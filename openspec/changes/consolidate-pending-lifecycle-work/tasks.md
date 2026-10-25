@@ -82,9 +82,9 @@ Rules:
 
 ## 11. Hook contexts (Part H)
 
-- [ ] 11.1 RED: add `TestContainerHooks_NilContext` (scenario "Nil context reaches hooks as non-nil", 2 rows); verify `go test -race -run TestContainerHooks_NilContext .` fails on the `ShutdownWithContext` row (nil context passed to Closing); if the Start row passes on arrival via start-lifecycle's nil normalization, record that and show it can fail by temporarily passing the raw argument (not committed)
-- [ ] 11.2 GREEN: normalize a nil Shutdown context to `context.Background()` before firing Closing/Closed, and pass the caller's context to Started/Ready/Failed (D5); verify the 11.1 command passes and `make test` is green
-- [ ] 11.3 REFACTOR: none needed, a single normalization line; verify `make test` and `make lint` pass
+- [x] 11.1 RED: add `TestContainerHooks_NilContext` (scenario "Nil context reaches hooks as non-nil", 2 rows); verify `go test -race -run TestContainerHooks_NilContext .` fails on the `ShutdownWithContext` row (nil context passed to Closing); if the Start row passes on arrival via start-lifecycle's nil normalization, record that and show it can fail by temporarily passing the raw argument (not committed)
+- [x] 11.2 GREEN: normalize a nil Shutdown context to `context.Background()` before firing Closing/Closed, and pass the caller's context to Started/Ready/Failed (D5); verify the 11.1 command passes and `make test` is green
+- [x] 11.3 REFACTOR: none needed, a single normalization line; verify `make test` and `make lint` pass
 
 ## 12. Registration order, nil hooks and Clone (Part H)
 

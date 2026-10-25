@@ -15,3 +15,12 @@ Records the measurements and findings that tasks ask to keep.
 ## Group 4: healthCheckPool race (F5)
 
 - `go test -race -count=2000 -run TestRootScope_HealthCheckDuringShutdown .` (50 iterations each, 100,000 HealthCheck/Shutdown races): 0 races, 0 panics. Not reproduced; the test stays as a race guard and no fix is made.
+
+## Groups 5–11: container hooks, tests that passed on arrival
+
+Each was shown to fail with a temporary, uncommitted mutation:
+
+- 7.1 `TestContainerFailedHook_GuardErrors`: passes through the start-lifecycle guard; fails when Failed hooks are called before `beginStart`.
+- 9.1 `TestContainerHooks_HookCallsShutdown*`: pass; the Started and Closed rows deadlock (1s test timeout) when Started fires at `pointStartersUp` or Closed fires before `finishClose`.
+- 10.1 `TestContainerHooks_ShutdownDuringStart`: passes through the D7 abort checks; firing Started at `pointAfterStart` regardless of the outcome fails every row.
+- 11.1 `TestContainerHooks_NilContext`: **both rows pass on arrival**, including the `ShutdownWithContext` row the task expected to fail: start-lifecycle already normalizes a nil Shutdown context at the top of `RootScope.ShutdownWithContext` (D6 step 0), so 11.2 needs no production change. Passing the raw argument to the hooks fails both rows.
