@@ -141,9 +141,9 @@ Rules:
 
 ## 20. InvokeAs behavior is unchanged (characterization baseline) (Part K)
 
-- [ ] 20.1 RED: add `TestInvokeAs_HookReceivesTypeName` (scenario "InvokeAs hooks receive the requested type name"); verify `go test -race -run TestInvokeAs_HookReceivesTypeName .` passes on arrival (characterization), record that, and show it can fail by temporarily passing the real service name to the hooks in `invokeByGenericType` (not committed)
-- [ ] 20.2 GREEN: no production change; this test guards the D3 extraction in 21.3; verify `make test` is green
-- [ ] 20.3 REFACTOR: none needed, since no code changed; verify `make test` and `make lint` pass
+- [x] 20.1 RED: add `TestInvokeAs_HookReceivesTypeName` (scenario "InvokeAs hooks receive the requested type name"); verify `go test -race -run TestInvokeAs_HookReceivesTypeName .` passes on arrival (characterization), record that, and show it can fail by temporarily passing the real service name to the hooks in `invokeByGenericType` (not committed)
+- [x] 20.2 GREEN: no production change; this test guards the D3 extraction in 21.3; verify `make test` is green
+- [x] 20.3 REFACTOR: none needed, since no code changed; verify `make test` and `make lint` pass
 
 ## 21. Collect every visible service assignable to a type (Part K)
 
