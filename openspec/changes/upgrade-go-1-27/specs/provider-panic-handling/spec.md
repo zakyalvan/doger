@@ -46,4 +46,4 @@ And the error is nil
 <!-- cases: N/A 7 lifecycle: recovery happens per invocation; the retry behavior of a lazy service after a failed build is unchanged and covered by existing tests -->
 <!-- cases: N/A 8 concurrency: recovery is local to the invoking goroutine; concurrent lazy builds are covered by the existing race suite -->
 <!-- cases: 9 panics: this requirement is the panic-recovery contract -->
-<!-- cases: 10 backward compatibility: error and non-nil panic values are unchanged; the nil rows are deliberately BREAKING (previously the invocation returned 0 and a nil error), with the GODEBUG override as migration -->
+<!-- cases: 10 backward compatibility: error and non-nil panic values are unchanged; the nil rows are deliberately BREAKING (previously the invocation returned 0 and a nil error for consumers whose go line was below 1.21), with the GODEBUG override as migration -->

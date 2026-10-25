@@ -35,7 +35,7 @@ Specs: `specs/toolchain-support/spec.md`, `specs/provider-panic-handling/spec.md
 
 ## 5. Integration checks
 
-- [x] 5.1 Inventory diff against the 1.1 baseline; verify that the only differences are the four tests added in 2.1 and 2.2, with no deletions.
+- [x] 5.1 Inventory diff against the 1.1 baseline; verify that the only differences are the three tests added in 2.1 and 2.2, with no deletions.
 - [x] 5.2 Full green run; verify `make test`, `make lint` (0 issues), per-module `go vet ./... && go test -race ./...`, and a clean `go mod tidy` in every module all pass, with no goleak reports.
 
 ## Workflow follow-up
