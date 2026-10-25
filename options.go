@@ -1,7 +1,6 @@
 package doger
 
 import (
-	"context"
 	"fmt"
 	"reflect"
 	"slices"
@@ -75,10 +74,10 @@ func buildServiceOptions(opts []ProvideOption) *serviceOptions {
 
 // starterTypes are the method sets of the four Starter variants.
 var starterTypes = []reflect.Type{
-	reflect.TypeFor[interface{ Start() }](),
-	reflect.TypeFor[interface{ Start() error }](),
-	reflect.TypeFor[interface{ Start(context.Context) }](),
-	reflect.TypeFor[interface{ Start(context.Context) error }](),
+	reflect.TypeFor[Starter](),
+	reflect.TypeFor[StarterWithError](),
+	reflect.TypeFor[StarterWithContext](),
+	reflect.TypeFor[StarterWithContextAndError](),
 }
 
 // typeIsStarter reports whether t implements one of the Starter variants.

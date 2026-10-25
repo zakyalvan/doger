@@ -6,7 +6,7 @@ sidebar_position: 5
 
 # Declared dependencies
 
-doger records a dependency edge whenever a provider invokes another service. These edges order shutdown (dependents first) and, with `Start`, construction and start.
+doger records a dependency edge whenever a provider invokes another service. These edges order shutdown (dependents first) and, with [`Start`](../service-lifecycle/starter.md), construction and start.
 
 Some dependencies are hidden: a provider keeps the injector and invokes a service later, at runtime, or two services only need to start and stop in a given order. Declare those edges explicitly.
 

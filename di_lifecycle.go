@@ -123,6 +123,48 @@ type ShutdownerWithContextAndError interface {
 	Shutdown(context.Context) error
 }
 
+// Starter is a service started by [RootScope.Start] with Start().
+//
+// The four Starter variants (Starter, StarterWithError, StarterWithContext,
+// StarterWithContextAndError) are detected on the registered type, unlike
+// the Shutdowner variants, which are detected on the built instance. A lazy
+// service is therefore discovered without being built, but a service
+// registered under an interface type that has no Start method is not
+// auto-started even if its instance has one: register it with [AsStarter].
+// Transient services and aliases are never started.
+//
+// There is no Stop counterpart: a started service is stopped by its
+// Shutdowner method during Shutdown. A Starter without a Shutdowner method is
+// allowed; its lifecycle ends with the process.
+//
+// Auto-detection can surprise: any registered type with a matching Start
+// method is started, including standard-library types such as *exec.Cmd
+// (Start() error), and a *RootScope registered as a service of another
+// container (it is started, but never shut down automatically, because its
+// Shutdown returns a *ShutdownReport). Code that already calls Start() by
+// hand, as some of this repository's examples do, would start such services
+// twice once it calls [RootScope.Start]. Set
+// [InjectorOpts.DisableStarterAutoDetection], or register the service under
+// an interface type without Start, to opt out.
+type Starter interface {
+	Start()
+}
+
+// StarterWithError is a service started by [RootScope.Start] with Start() error.
+type StarterWithError interface {
+	Start() error
+}
+
+// StarterWithContext is a service started by [RootScope.Start] with Start(ctx).
+type StarterWithContext interface {
+	Start(context.Context)
+}
+
+// StarterWithContextAndError is a service started by [RootScope.Start] with Start(ctx) error.
+type StarterWithContextAndError interface {
+	Start(context.Context) error
+}
+
 // HealthCheck returns a service status, using type inference to determine the service name.
 // This function performs a health check on a service by inferring its name from the type T.
 // The service must implement either Healthchecker or HealthcheckerWithContext interface.

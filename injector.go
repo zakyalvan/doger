@@ -152,6 +152,11 @@ type InjectorOpts struct {
 	// Default: "do" (see DefaultStructTagKey constant).
 	// This allows customization of the struct tag format for injection.
 	StructTagKey string
+
+	// DisableStarterAutoDetection makes Start start only the services
+	// registered with AsStarter. By default, every non-transient service whose
+	// registered type implements a Starter variant is started too.
+	DisableStarterAutoDetection bool
 }
 
 func (o *InjectorOpts) copy() *InjectorOpts {
@@ -167,6 +172,8 @@ func (o *InjectorOpts) copy() *InjectorOpts {
 		HealthCheckGlobalTimeout: o.HealthCheckGlobalTimeout,
 		HealthCheckTimeout:       o.HealthCheckTimeout,
 		StructTagKey:             o.StructTagKey,
+
+		DisableStarterAutoDetection: o.DisableStarterAutoDetection,
 	}
 }
 

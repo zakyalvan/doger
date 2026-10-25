@@ -14,6 +14,13 @@ var (
 	ErrServiceNotMatch    = errors.New("DI: could not find service satisfying interface")
 	ErrCircularDependency = errors.New("DI: circular dependency detected")
 	ErrHealthCheckTimeout = errors.New("DI: health check timeout")
+
+	// ErrAlreadyStarted is returned by a Start call after the first one, whether
+	// the first one succeeded or failed.
+	ErrAlreadyStarted = errors.New("DI: container already started")
+	// ErrStartAfterShutdown is returned by Start once root Shutdown has begun.
+	// It is also the cause Shutdown gives the context of a running Start.
+	ErrStartAfterShutdown = errors.New("DI: container is shut down")
 )
 
 // ShutdownReport represents the result of a shutdown operation.
