@@ -164,6 +164,22 @@ type InjectorOpts struct {
 	// error Start returns.
 	HookContainerFailed []func(ctx context.Context, scope *RootScope, err error)
 
+	// HookContainerClosing is called by the root Shutdown that begins the
+	// close phase (the first one), before any service is shut down, with the
+	// Shutdown context. It fires whether or not Start ran or succeeded.
+	//
+	// A Closing hook must not call root Shutdown synchronously without a
+	// deadline: that call waits for the running Shutdown, which waits for the
+	// hook.
+	HookContainerClosing []func(ctx context.Context, scope *RootScope)
+
+	// HookContainerClosed is called by the first root Shutdown once every
+	// service is shut down and the close phase is closed, with the Shutdown
+	// context and the report Shutdown returns. Mutating the report is
+	// unsupported. Concurrent Shutdown callers may return before the Closed
+	// hooks have run.
+	HookContainerClosed []func(ctx context.Context, scope *RootScope, report *ShutdownReport)
+
 	// Logf is the logging function used by the DI container for internal logging.
 	// If not provided, no logging will occur. This function should handle the format
 	// string and arguments similar to fmt.Printf.
@@ -251,6 +267,8 @@ func (o *InjectorOpts) initDefaults() {
 	emptyIfNil(&o.HookContainerStarted)
 	emptyIfNil(&o.HookContainerReady)
 	emptyIfNil(&o.HookContainerFailed)
+	emptyIfNil(&o.HookContainerClosing)
+	emptyIfNil(&o.HookContainerClosed)
 
 	if o.Clock == nil {
 		o.Clock = clockwork.NewRealClock()

@@ -61,10 +61,10 @@ Rules:
 
 ## 8. Closing and Closed hooks bracket the root shutdown (Part H)
 
-- [ ] 8.1 RED: add `TestContainerClosingClosedHooks_Order` (scenario "Closing and Closed around service shutdown from every state", 3 rows), `TestContainerClosedHook_ReportErrors` (scenario "Closed hook sees shutdown errors in the report") and `TestContainerHooks_ShutdownOnSignalsWithContext` (scenario "Signal-driven shutdown fires the hooks"); verify `go test -race -run 'TestContainer(ClosingClosedHooks_Order|ClosedHook_ReportErrors|Hooks_ShutdownOnSignalsWithContext)' .` fails to compile only on the missing Closing/Closed fields and adders
-- [ ] 8.2 GREEN: add `HookContainerClosing`/`HookContainerClosed` with init and adders; fire Closing at `pointClosing` (winner only, after the in-flight Start wait) and Closed at `pointClosed` (after `finishClose`) with the winner's report (design D3, D5; start-lifecycle D6); verify the 8.1 command passes, `make test` is green and the existing `root_scope_test.go` shutdown tests pass unchanged
-- [ ] 8.3 REFACTOR: *Extract Function* `closeContainer(ctx) *ShutdownReport` if `ShutdownWithContext` exceeds ~25 lines, otherwise none needed; verify `make test` and `make lint` pass
-- [ ] 8.4 Add `ExampleInjectorOpts_containerHooks` (all six hooks, printed order for a start and a shutdown) and the Closing/Closed docs section; verify `go test -run ExampleInjectorOpts_containerHooks .` passes and `npm --prefix docs run build` succeeds
+- [x] 8.1 RED: add `TestContainerClosingClosedHooks_Order` (scenario "Closing and Closed around service shutdown from every state", 3 rows), `TestContainerClosedHook_ReportErrors` (scenario "Closed hook sees shutdown errors in the report") and `TestContainerHooks_ShutdownOnSignalsWithContext` (scenario "Signal-driven shutdown fires the hooks"); verify `go test -race -run 'TestContainer(ClosingClosedHooks_Order|ClosedHook_ReportErrors|Hooks_ShutdownOnSignalsWithContext)' .` fails to compile only on the missing Closing/Closed fields and adders
+- [x] 8.2 GREEN: add `HookContainerClosing`/`HookContainerClosed` with init and adders; fire Closing at `pointClosing` (winner only, after the in-flight Start wait) and Closed at `pointClosed` (after `finishClose`) with the winner's report (design D3, D5; start-lifecycle D6); verify the 8.1 command passes, `make test` is green and the existing `root_scope_test.go` shutdown tests pass unchanged
+- [x] 8.3 REFACTOR: *Extract Function* `closeContainer(ctx) *ShutdownReport` if `ShutdownWithContext` exceeds ~25 lines, otherwise none needed; verify `make test` and `make lint` pass
+- [x] 8.4 Add `ExampleInjectorOpts_containerHooks` (all six hooks, printed order for a start and a shutdown) and the Closing/Closed docs section; verify `go test -run ExampleInjectorOpts_containerHooks .` passes and `npm --prefix docs run build` succeeds
 
 ## 9. Calling Shutdown from hooks (Part H)
 

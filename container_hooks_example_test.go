@@ -74,3 +74,40 @@ func ExampleRootScope_AddContainerFailedHook() {
 	// start failed: DI: failed to start service `http` in scope `[root]`: port in use
 	// db stopped
 }
+
+func ExampleInjectorOpts_containerHooks() {
+	root := NewWithOpts(&InjectorOpts{
+		HookContainerStarting: []func(context.Context, *RootScope) error{
+			func(context.Context, *RootScope) error { fmt.Println("starting"); return nil },
+		},
+		HookContainerStarted: []func(context.Context, *RootScope){
+			func(context.Context, *RootScope) { fmt.Println("started") },
+		},
+		HookContainerReady: []func(context.Context, *RootScope){
+			func(context.Context, *RootScope) { fmt.Println("ready") },
+		},
+		HookContainerFailed: []func(context.Context, *RootScope, error){
+			func(_ context.Context, _ *RootScope, err error) { fmt.Println("failed:", err) },
+		},
+		HookContainerClosing: []func(context.Context, *RootScope){
+			func(context.Context, *RootScope) { fmt.Println("closing") },
+		},
+		HookContainerClosed: []func(context.Context, *RootScope, *ShutdownReport){
+			func(_ context.Context, _ *RootScope, report *ShutdownReport) {
+				fmt.Println("closed, succeed:", report.Succeed)
+			},
+		},
+	})
+	ProvideValue(root, &exampleDB{})
+
+	_ = root.Start()
+	root.Shutdown()
+	// Output:
+	// starting
+	// db started
+	// started
+	// ready
+	// closing
+	// db stopped
+	// closed, succeed: true
+}

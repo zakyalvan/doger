@@ -8,12 +8,14 @@ sidebar_position: 5
 
 Container hooks run container-wide logic once per root container: when it starts, when it is ready, when its start fails, and around its shutdown. They complement the per-service hooks (`HookBeforeStart`, `HookAfterShutdown`…), which run once per service.
 
-| Hook                    | Signature                                  | Fires                                      |
-| ----------------------- | ------------------------------------------ | ------------------------------------------ |
-| `HookContainerStarting` | `func(context.Context, *RootScope) error`  | first `Start`, before anything is built    |
-| `HookContainerStarted`  | `func(context.Context, *RootScope)`        | first `Start`, once its pipeline succeeded |
-| `HookContainerReady`    | `func(context.Context, *RootScope)`        | first `Start`, after every Started hook    |
-| `HookContainerFailed`   | `func(context.Context, *RootScope, error)` | first `Start`, when it fails               |
+| Hook                    | Signature                                            | Fires                                                |
+| ----------------------- | ---------------------------------------------------- | ---------------------------------------------------- |
+| `HookContainerStarting` | `func(context.Context, *RootScope) error`            | first `Start`, before anything is built              |
+| `HookContainerStarted`  | `func(context.Context, *RootScope)`                  | first `Start`, once its pipeline succeeded           |
+| `HookContainerReady`    | `func(context.Context, *RootScope)`                  | first `Start`, after every Started hook              |
+| `HookContainerFailed`   | `func(context.Context, *RootScope, error)`           | first `Start`, when it fails                         |
+| `HookContainerClosing`  | `func(context.Context, *RootScope)`                  | first root `Shutdown`, before any service shuts down |
+| `HookContainerClosed`   | `func(context.Context, *RootScope, *ShutdownReport)` | first root `Shutdown`, after every service shut down |
 
 Each hook list is a field of `doger.InjectorOpts`, and has a matching `RootScope.AddContainer<State>Hook` method.
 
@@ -79,4 +81,43 @@ Started and Ready also fire for a container with no services.
 root.AddContainerReadyHook(func(ctx context.Context, root *doger.RootScope) {
     readiness.Store(true) // the readiness probe now reports healthy
 })
+```
+
+## Failed {#failed}
+
+When the first `Start` fails after its one-shot guard, it runs every `HookContainerFailed` hook with the context passed to `StartWithContext` and the **exact error** it is about to return, then returns it. Started and Ready do not run. Failures include a Starting veto, a cancelled context, a provider, Starter, kind handler or runner error, and a `Shutdown` that began before the pipeline finished.
+
+Guard errors fire no hook: a second `Start` (`ErrAlreadyStarted`) or a `Start` after `Shutdown` (`ErrStartAfterShutdown`) returns before any container hook runs.
+
+`Start` rolls nothing back, so a Failed hook is a good place to clean up:
+
+```go
+root.AddContainerFailedHook(func(ctx context.Context, root *doger.RootScope, err error) {
+    log.Printf("start failed: %v", err)
+    root.Shutdown()
+})
+```
+
+## Closing and Closed {#closing-and-closed}
+
+The root `Shutdown` call that begins the close phase runs every `HookContainerClosing` hook before any service is shut down. Once every service is shut down and the close phase is closed, it runs every `HookContainerClosed` hook with the `*ShutdownReport` it returns. This holds whether or not `Start` ran or succeeded, and for `ShutdownOnSignals` and `ShutdownOnSignalsWithContext` too. Both receive the context passed to `ShutdownWithContext`.
+
+```text
+closing-hook, db.Shutdown, closed-hook
+```
+
+The Closed hook sees shutdown errors in the report. Do not mutate the report from a hook.
+
+```go
+root.AddContainerClosedHook(func(ctx context.Context, root *doger.RootScope, report *doger.ShutdownReport) {
+    if !report.Succeed {
+        log.Printf("shutdown errors: %v", report)
+    }
+})
+```
+
+For a start and a shutdown with all six hooks registered, the order is:
+
+```text
+starting, db started, started, ready, closing, db stopped, closed
 ```

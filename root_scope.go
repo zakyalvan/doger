@@ -228,6 +228,10 @@ func (s *RootScope) ShutdownWithContext(ctx context.Context) *ShutdownReport {
 	report := s.shutdownAsWinner(ctx, ticket)
 
 	// pointClosed: closeDone is closed, so code here may call Shutdown().
+	for _, hook := range slices.Clone(s.opts.HookContainerClosed) {
+		hook(ctx, s, report)
+	}
+
 	return report
 }
 
@@ -258,6 +262,7 @@ func (s *RootScope) shutdownAsWinner(ctx context.Context, ticket closeTicket) (r
 	startErr := waitForStart(ctx, ticket)
 
 	// pointClosing
+	s.runObserverHooks(ctx, s.opts.HookContainerClosing)
 
 	report = s.self.ShutdownWithContext(ctx)
 	if startErr != nil {
@@ -531,6 +536,20 @@ func (s *RootScope) AddContainerReadyHook(hook func(context.Context, *RootScope)
 // [InjectorOpts.HookContainerFailed].
 func (s *RootScope) AddContainerFailedHook(hook func(context.Context, *RootScope, error)) {
 	s.opts.HookContainerFailed = append(s.opts.HookContainerFailed, hook)
+}
+
+// AddContainerClosingHook adds a hook that will be called by the first root
+// Shutdown before any service is shut down. See
+// [InjectorOpts.HookContainerClosing].
+func (s *RootScope) AddContainerClosingHook(hook func(context.Context, *RootScope)) {
+	s.opts.HookContainerClosing = append(s.opts.HookContainerClosing, hook)
+}
+
+// AddContainerClosedHook adds a hook that will be called by the first root
+// Shutdown once every service is shut down, with its report. See
+// [InjectorOpts.HookContainerClosed].
+func (s *RootScope) AddContainerClosedHook(hook func(context.Context, *RootScope, *ShutdownReport)) {
+	s.opts.HookContainerClosed = append(s.opts.HookContainerClosed, hook)
 }
 
 // Clone clones injector with provided services but not with invoked instances.

@@ -344,3 +344,106 @@ func TestContainerFailedHook_GuardErrors(t *testing.T) {
 		})
 	}
 }
+
+// recordingShutdowner records "<name>.Shutdown" and returns err.
+type recordingShutdowner struct {
+	name string
+	rec  *callRecorder
+	err  error
+}
+
+func (s *recordingShutdowner) Shutdown() error {
+	s.rec.record(s.name + ".Shutdown")
+	return s.err
+}
+
+// provideBuiltShutdowner registers lazy Shutdowner name in root and builds it.
+func provideBuiltShutdowner(t *testing.T, root *RootScope, rec *callRecorder, name string, err error) {
+	t.Helper()
+	ProvideNamed(root, name, func(Injector) (*recordingShutdowner, error) {
+		return &recordingShutdowner{name: name, rec: rec, err: err}, nil
+	})
+	_, invokeErr := InvokeNamed[*recordingShutdowner](root, name)
+	require.NoError(t, invokeErr)
+}
+
+func TestContainerClosingClosedHooks_Order(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		prepare func(root *RootScope)
+	}{
+		{name: "configured (never started)", prepare: func(*RootScope) {}},
+		{name: "ready", prepare: func(root *RootScope) { _ = root.Start() }},
+		{
+			name: "failed",
+			prepare: func(root *RootScope) {
+				root.AddContainerStartingHook(func(context.Context, *RootScope) error { return errors.New("veto") })
+				_ = root.Start()
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+			is := assert.New(t)
+
+			root := New()
+			rec := &callRecorder{}
+			provideBuiltShutdowner(t, root, rec, "db", nil)
+			var closedReport *ShutdownReport
+			root.AddContainerClosingHook(func(context.Context, *RootScope) { rec.record("closing-hook") })
+			root.AddContainerClosedHook(func(_ context.Context, _ *RootScope, report *ShutdownReport) {
+				rec.record("closed-hook")
+				closedReport = report
+			})
+			tt.prepare(root)
+
+			report := root.Shutdown()
+
+			is.Equal([]string{"closing-hook", "db.Shutdown", "closed-hook"}, rec.list())
+			is.Same(report, closedReport)
+		})
+	}
+}
+
+func TestContainerClosedHook_ReportErrors(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+	is := assert.New(t)
+
+	root := New()
+	provideBuiltShutdowner(t, root, &callRecorder{}, "db", errors.New("flush failed"))
+	var closedReport *ShutdownReport
+	root.AddContainerClosedHook(func(_ context.Context, _ *RootScope, report *ShutdownReport) {
+		closedReport = report
+	})
+
+	root.Shutdown()
+
+	require.NotNil(t, closedReport)
+	is.False(closedReport.Succeed)
+	is.Len(closedReport.Errors, 1)
+	is.Contains(closedReport.Errors, newServiceDescription(root.ID(), root.Name(), "db"))
+}
+
+func TestContainerHooks_ShutdownOnSignalsWithContext(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+	is := assert.New(t)
+
+	root := New()
+	var closing, closed atomic.Int32
+	root.AddContainerClosingHook(func(context.Context, *RootScope) { closing.Add(1) })
+	root.AddContainerClosedHook(func(context.Context, *RootScope, *ShutdownReport) { closed.Add(1) })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, _ = root.ShutdownOnSignalsWithContext(ctx)
+
+	is.Equal(int32(1), closing.Load())
+	is.Equal(int32(1), closed.Load())
+}
