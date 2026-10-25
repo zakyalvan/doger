@@ -52,7 +52,7 @@ See proposal.md for the motivation and the pinned API contract, and `specs/` for
 
 **D3. Registration index comes from an atomic counter on `RootScope`.**
 - `nextRegIndex atomic.Uint64` lives on `RootScope` and is assigned in `provide` (and in `override` for a new name). Child scopes share it through `rootScope`, so indexes are unique across the root container, not per scope.
-- `CloneWithOpts` sets `clone.nextRegIndex` to the source's current value before copying wrappers, so later registrations in the clone come after every copied one (finding: a reset counter would collide with copied indexes).
+- `CloneWithOpts` sets `clone.nextRegIndex` to the source's current value **after** copying wrappers, so later registrations in the clone come after every copied one (finding: a reset counter would collide with copied indexes). After, not before: every copied wrapper got its index before it was stored, so its index is below a counter read after the copy. A counter read before the copy could miss a registration racing the clone, whose index the clone would then hand out again. Pinned by `TestRegistrationIndex_CloneDuringRegistration`.
 - Orderings in this change use `(scope depth, regIndex)`, which is a total order inside one container. Consumers that combine other keys (e.g. `add-collection-invocation`'s order values) fall back to the service name as the final tie-break on their side.
 
 **D4. Declared dependencies are resolved inside the build path.**
@@ -88,10 +88,12 @@ Rule: phases change only by compare-and-set inside `lifecycleMu`, and the lock i
 Abort rule inside the pipeline: before each candidate build, each handler call, each Starter, and once after the last step, `if startCtx.Err() != nil` → stop with `fmt.Errorf("DI: start aborted: %w", context.Cause(startCtx))`. When a step fails while `startCtx` is done, the step error additionally wraps the cause (`"%w (start aborted: %w)"`). So a caller cancellation matches `ctx.Err()`, and a Shutdown-initiated abort matches `ErrStartAfterShutdown`.
 
 `RootScope.ShutdownWithContext(ctx)`:
+0. A nil `ctx` becomes `context.Background()`, as in `StartWithContext`.
 1. `beginClose` (locked): if `closePhase == closeOpen` → set `closeClosing`, create `closeDone`, and capture `inFlight := startPhase == startStarting`, `startCancel` and `startDone`. This caller is the **winner**. Otherwise capture `closeDone` and become a **waiter**.
-2. Waiter: wait for `closeDone` or `ctx.Done()`. On `closeDone`, return `cloneShutdownReport(closeReport)` (a deep copy of slices and maps). On `ctx.Done()`, return `&ShutdownReport{Succeed: false, Errors: {rootDesc: fmt.Errorf("DI: waiting for root shutdown: %w", ctx.Err())}}`, with `rootDesc = ServiceDescription{ScopeID: root.ID(), ScopeName: root.Name(), Service: ""}`.
-3. Winner: steps 4–6 run inside a helper `shutdownAsWinner(ctx) (report *ShutdownReport)`, which starts with `defer finishClose(report)` (locked: set `closeClosed`, store `closeReport`, close `closeDone`; deferred so it survives panicking shutdown hooks).
-4. If `inFlight`: `startCancel(ErrStartAfterShutdown)`, then wait for `startDone` or `ctx.Done()`. If the deadline wins, the winner records `rootDesc: fmt.Errorf("DI: waiting for start: %w", ctx.Err())` in its report (so the report fails even when no service had anything to shut down) and shutdown proceeds while Start is still running (spec: last row of "Shutdown cancels a running Start"). Start then stops at its next abort check; a Starter that finishes late is not rolled back.
+2. Waiter: `awaitDone(closeDone, ctx)`. If it reports done, return `cloneShutdownReport(closeReport)` (a deep copy of slices and maps). Otherwise return `&ShutdownReport{Succeed: false, Errors: {rootDesc: fmt.Errorf("DI: waiting for root shutdown: %w", ctx.Err())}}`, with `rootDesc = ServiceDescription{ScopeID: root.ID(), ScopeName: root.Name(), Service: ""}`.
+   - `awaitDone(done <-chan struct{}, ctx) bool` prefers completion. It returns true at once if `done` is already closed; otherwise it selects on `done` and `ctx.Done()`, and when `ctx.Done()` wins it checks `done` once more, non-blocking, before returning false. A plain `select` picks at random when both are ready, so a caller arriving after completion with an ended context would get a deadline report half the time (spec "Later Shutdown with an ended context still returns the first report").
+3. Winner: steps 4–6 run inside a helper `shutdownAsWinner(ctx) (report *ShutdownReport)`, which starts with `defer finishClose(report)`. `finishClose` (locked) sets `closeClosed`, stores `closeReport = cloneShutdownReport(report)`, so no caller's copy, the winner's included, can change what later callers get, and closes `closeDone`. If `report` is nil because the winner panicked on its own goroutine (for example in a consumer `Logf`), it stores `&ShutdownReport{Succeed: false, Errors: {rootDesc: errors.New("DI: root shutdown did not complete")}}` instead, so waiters never receive nil. Being deferred, it releases waiters when the winner's goroutine panics. Panics in per-service shutdown hooks are not among these: `Scope` runs each service shutdown on its own goroutine (`wg.Go`), so such a panic terminates the process, as it does today.
+4. If `inFlight`: `startCancel(ErrStartAfterShutdown)`, then `awaitDone(startDone, ctx)`. If the deadline wins, the winner records `rootDesc: fmt.Errorf("DI: waiting for start: %w", ctx.Err())` in its report (so the report fails even when no service had anything to shut down) and shutdown proceeds while Start is still running (spec: last row of "Shutdown cancels a running Start"). Start then stops at its next abort check; a Starter that finishes late is not rolled back.
 5. `pointClosing` (empty here; the hooks change fires Closing hooks here, after the wait).
 6. `report := s.self.ShutdownWithContext(ctx)`, then stop and nil the health-check pool. Only the winner touches the pool, which removes the data race.
 7. `shutdownAsWinner` returns, so `finishClose` has run; `ShutdownWithContext` then reaches `pointClosed` (empty here). Being after `closeDone`, code there may call `Shutdown()` and gets the copied report.
@@ -117,8 +119,9 @@ Other rules:
 5. **Cycle check.** DFS over the candidates with the D5 neighbour function. A cycle fails Start with a wrapped `ErrCircularDependency` naming the chain. This catches cycles that only exist once providers have run (e.g. a dynamic edge declared before Start, closed by an invoked edge).
 6. **Order Starters** (D8), then for each one:
    - abort check;
+   - a deferred `AsStarter` instance with no variant yields the spec error **before** any hook runs (no `Start` method is called, so no start hook fires);
    - run `HookBeforeStart`;
-   - `startInstance(startCtx, instance)`: a type switch over the four variants, with `recover`. A deferred `AsStarter` instance with no variant yields the spec error;
+   - `startInstance(startCtx, instance)`: a type switch over the four variants, with `recover`;
    - run `HookAfterStart(err)` with the method's own (unwrapped) error.
 
    The first error stops the loop.
@@ -135,7 +138,7 @@ Other rules:
 **D9. Kinds.**
 - `Kind[T, M]` is `struct{ id *kindID }`, where `kindID{name string}`. `NewKind` allocates a new `kindID`, so equal names stay distinct. A zero `Kind` has a nil `id`: `Name()` returns `""`, and `With`/`Handle` panic with `DI: kind not created with NewKind`.
 - `With(meta)` adds a `kindBinding` with `target = reflect.TypeFor[T]()`; D2 decides immediate or deferred checking.
-- `Handle(root *RootScope, stage Stage, h func(context.Context, Component[T, M]) error)` panics on a nil handler (`DI: nil handler for kind \`%s\``) or an unknown stage (`DI: invalid stage %d for kind \`%s\``). It stores, under `RootScope.kindsMu`, an erased entry `{id, stage, run func(ctx, *Scope, string, any, any) error}`. The `run` closure uses checked assertions (`instance.(T)` with `, ok`, which also satisfies `forcetypeassert`) inside the recover scope.
+- `Handle(root *RootScope, stage Stage, h func(context.Context, Component[T, M]) error)` replaces a nil `root` with `DefaultRootScope`, the same rule `getInjectorOrDefault` applies to a nil `Injector`. It panics on a nil handler (`DI: nil handler for kind \`%s\``) or an unknown stage (`DI: invalid stage %d for kind \`%s\``). It stores, under `RootScope.kindsMu`, an erased entry `{id, stage, run func(ctx, *Scope, string, any, any) error}`. The `run` closure uses checked assertions (`instance.(T)` with `, ok`, which also satisfies `forcetypeassert`) inside the recover scope.
 - Entries are a slice. Replacement keeps the original slot, which gives "order of first `Handle`". Each stage iterates a snapshot of the entries taken when the stage begins.
 - Per stage, iterate entries in order. Each gets its candidates in D8 order generalized to all candidates (dependency, depth, regIndex). Every call has an abort check before it, is wrapped with `recover`, and errors are formatted as `DI: kind \`%s\` failed for service \`%s\` in scope \`%s\`: %w`.
 - The type `Stage int` has `StageBeforeStart` and `StageAfterStart`.
@@ -163,11 +166,16 @@ Other rules:
 
 - **[Deadlock]** Start-time code (Starter, handler, runner, provider, per-service hook) that calls `root.Shutdown()` without a deadline on the Start goroutine waits for `startDone` forever. → Godoc on `Start`, `Shutdown`, `Runner` and `Kind.Handle`: return an error instead. `pointAfterStart` and `pointClosed` are placed after `startDone`/`closeDone` so the hooks change's container hooks can call `Shutdown()` safely.
 - **[Late Starter after a Shutdown deadline]** A Starter that ignores its context and finishes after Shutdown stopped waiting leaves a running component that nothing shuts down. → Specified and tested (last row of "Shutdown cancels a running Start"); godoc: honour `ctx`.
-- **[Behavior change: repeated root Shutdown]** A second root `Shutdown` returns a copy of the first report and does not shut down services registered after the first `Shutdown`. → Flagged in the proposal and the upgrading note; child `Scope.Shutdown` is unchanged; pinned by "Later root Shutdown returns the first report". No existing test in the repo calls root `Shutdown` twice on the same container.
+- **[Behavior change: repeated root Shutdown]** A second root `Shutdown` returns a copy of the first report and does not shut down services registered after the first `Shutdown`. → Flagged in the proposal and the upgrading note; child `Scope.Shutdown` is unchanged; pinned by "Later root Shutdown returns the first report". Three existing tests call root `Shutdown` concurrently on one container: `TestConcurrentShutdown`, `TestConcurrentBlockingOperations` (`tests/concurrent_operations_test.go`) and `TestRaceConditionShutdownInvocation` (`tests/race_conditions_test.go`). Their assertions (each service shut down once; fewer than two services per report; the service is not invokable afterwards) hold under run-once, and they stay unchanged as compatibility evidence.
+- **[Random pick between completion and a caller's ended context]** A plain `select` on `closeDone`/`startDone` and `ctx.Done()` picks at random when both are ready. → `awaitDone` prefers completion (D6 step 2); pinned by "Later Shutdown with an ended context still returns the first report" (100 calls per row) and the `TestAwaitDone` mechanism test.
+- **[Nil Shutdown context]** The waiter and in-flight paths select on `ctx.Done()`, which panics on a nil context. → Normalized to `context.Background()` (D6 step 0); pinned by "Nil Shutdown context". This also fixes the existing panic when a built service has a `Shutdowner*` method.
+- **[`*RootScope` now has `Start() error`]** A `*RootScope` registered as a service of another container is auto-started by that container's `Start`. As today, it is never shut down automatically, because its `Shutdown` returns `*ShutdownReport` and matches no `Shutdowner*` variant. → Documented on the starter page; opt out with `DisableStarterAutoDetection` or register it under an interface type without `Start`.
+- **[Clones do not copy declared edges]** A clone gets a fresh DAG: `DependsOn` edges come back when the clone builds the dependent, `DeclareDependency` edges do not. → Specified ("Clones do not copy declared edges") and documented; kind handlers re-declare their edges when the clone is started.
+- **[Known flaky test during the gates]** `TestRootScope_queueServiceHealthcheck` fails about 4 times in 1,000 runs on `main`; the fix belongs to `add-clock-fix-healthcheck-timeouts`. → Policy for this change's `make test` gates: if only that test fails, with its known symptom ("An error is expected but got nil" at `root_scope_test.go:119` or `:131`), rerun once and record it in the task evidence. Any other failure blocks.
 - **[Invoke hot path]** D4 adds an `opts != nil` check per lazy build and per eager invoke, not per cached lazy invoke. → `bench/do_bench_test.go` runs before and after, compared with `benchstat`; the target is `~`.
 - **[Eager invoke can now fail]** This happens only when it has `DependsOn` with a missing or cyclic target. Eager registrations without options keep returning a nil error. → Pinned by `TestEager_NoOptionsNeverErrors`.
 - **[Interface-registered Starters are invisible to auto-detection]** This is by design, because detection uses the registered type. → `AsStarter()` is documented in the godoc and the docs page; the Detection "Invoke before Start" row pins the asymmetry with instance-based Shutdowner detection.
-- **[Surprising auto-detection]** Some standard-library types have `Start() error` (e.g. `*exec.Cmd`, `*httptest.Server`'s `Start()`) and would be auto-started when registered directly. → Documented, with the `DisableStarterAutoDetection` opt-out.
+- **[Surprising auto-detection]** Some standard-library types have `Start() error` (e.g. `*exec.Cmd`, `*httptest.Server`'s `Start()`) and would be auto-started when registered directly. This repository's own examples also register types with `Start()` that they call by hand (`Car` in `examples/dag`, `examples/shutdownable` and `examples/http/chi`, `Application` in `examples/eager-loading`). They are unaffected because they never call `root.Start()`, but a consumer adopting `Start` with such code would start them twice. → Documented, with the `DisableStarterAutoDetection` opt-out.
 - **[Clones share eager instances]** Starting a clone starts an eager Starter's instance a second time. → Pinned by "Clone of a started container" and documented.
 - **[Registrations during Start]** A provider or Starter that registers services while Start runs gets no guarantee about whether they are discovered. → Documented as unspecified; phase 2.
 - **[Wider unexported wrapper interface]** It touches all four wrappers. → Compile-time assertions (`var _ serviceWrapper[int] = ...`) already exist and catch omissions.
@@ -240,6 +248,9 @@ All gain a trailing `opts ...ProvideOption`. Call sites compile unchanged. Stori
 - a failed Start still counts as started
 - Shutdown cancels a running Start and waits for it, bounded by its own context
 - clones get the default `Runnable` handler, not consumer replacements
+- a nil Shutdown context becomes `Background`; a caller arriving after completion always gets the first report; waiters never get a nil report
+- a nil root in `Kind.Handle` means `DefaultRootScope`
+- clones re-record `DependsOn` edges on build and do not copy `DeclareDependency` edges
 
 **Example** (docs and `ExampleRootScope_Start`):
 
@@ -290,8 +301,13 @@ All tests run under `go test -race`. goleak runs through `TestMain` (`main_test.
 | container-start | Concurrent root Shutdown runs once (2 rows) | `root_scope_test.go: TestRootScope_ConcurrentShutdown/<opts>` (20 goroutines, `testWithTimeout`) | table / race (regression) |
 | container-start | Later root Shutdown returns the first report | `TestRootScope_RepeatedShutdown` | unit (regression) |
 | container-start | Waiting Shutdown caller honours its context | `TestRootScope_ShutdownWaiterDeadline` | synctest |
+| container-start | The stored report is isolated from the first caller | `TestRootScope_ShutdownReportIsolated` | unit (regression) |
+| container-start | Later Shutdown with an ended context still returns the first report (2 rows) | `TestRootScope_ShutdownWithEndedContext/<ctx>` (100 calls per row) | table (regression) |
+| container-start | Nil Shutdown context (2 rows) | `TestRootScope_ShutdownNilContext/<previous>` | table |
+| container-start | A panicking first caller still releases the others (2 rows) | `TestRootScope_ShutdownWinnerPanic/<call>` | table |
 | container-start | Late registration | `TestStart_LateRegistrationNotStarted` | unit |
 | container-start | Hooks around each Starter | `TestStart_Hooks` | unit |
+| container-start | No hooks for an AsStarter instance without a Start method | `TestStart_HooksSkipNonStarter` | unit |
 | registration-options | Registration with and without options (6 rows) | `options_test.go: TestProvideOptions_Registration/<row>` | table |
 | registration-options | Registration functions keep their parameters and add a variadic option list (18 rows) | `TestProvideOptions_SignatureHasVariadic/<function>` (reflect: `IsVariadic`, last param `[]ProvideOption`, other params unchanged) | table |
 | registration-options | Each constructor yields an option recognized by registration (5 rows) | `TestProvideOptions_Constructors/<option>` | table |
@@ -305,6 +321,7 @@ All tests run under `go test -race`. goleak runs through `TestMain` (`main_test.
 | component-kinds | Invalid kind values panic (4 rows) | `TestKind_InvalidValues/<call>` | table |
 | component-kinds | Handler stage relative to Starters (2 rows) | `TestKind_Stage/<stage>` | table |
 | component-kinds | Replacing a handler | `TestKind_ReplaceHandler` | unit |
+| component-kinds | Nil root uses the default root scope | `TestKind_NilRootUsesDefault` (not parallel; restores `DefaultRootScope` in `t.Cleanup`) | unit |
 | component-kinds | Kind without a handler | `TestKind_NoHandler` | unit |
 | component-kinds | Components are passed in deterministic order | `TestKind_ComponentOrder` | unit |
 | component-kinds | Handler failure stops Start (3 rows) | `TestKind_HandlerFailure/<row>` | table |
@@ -322,11 +339,12 @@ All tests run under `go test -race`. goleak runs through `TestMain` (`main_test.
 | dependency-declaration | Missing or circular declared dependency (5 rows) | `TestDependsOn_Errors/<row>` | table |
 | dependency-declaration | Declaring edges dynamically (11 rows) | `TestDeclareDependency/<row>` | table |
 | dependency-declaration | Concurrent declarations are race-free | `TestDeclareDependency_Concurrent` | race |
+| dependency-declaration | Clones do not copy declared edges (2 rows) | `TestDeclareDependency_Clone/<invoked>` | table |
 | dependency-declaration | Start rejects a cycle closed by a dynamic edge | `root_start_test.go: TestStart_RejectsDeclaredCycle` | unit |
 | dependency-declaration | Scheduler is shut down before the jobs it drives (2 rows) | `TestDeclaredEdges_ShutdownOrder/<row>` | table |
 | dependency-declaration | Ties broken by scope depth then registration order | `root_start_test.go: TestStart_TieBreak`; repeated 100× in `TestStart_TieBreak_Stable` | unit |
 
-Additional mechanism tests (no scenario of their own): `TestRegistrationIndex_Order` (same-scope override keeps the index, child-scope override gets a new one, clone continues the counter), `TestRegistrationIndex_ConcurrentUnique` (100 goroutines, all indexes distinct, `-race`), `TestEager_NoOptionsNeverErrors` (compatibility).
+Additional mechanism tests (no scenario of their own): `TestRegistrationIndex_Order` (same-scope override keeps the index, child-scope override gets a new one, clone continues the counter), `TestRegistrationIndex_ConcurrentUnique` (100 goroutines, all indexes distinct, `-race`), `TestRegistrationIndex_CloneDuringRegistration` (50 goroutines register on the source while `Clone` runs, `-race -count=20`; all indexes in the clone are distinct; a stress test, because the wrong snapshot order is a narrow race), `TestAwaitDone` (done closed and context ended: true in 1,000 of 1,000 calls; only the context ended: false; done closed while waiting: true), `TestEager_NoOptionsNeverErrors` (compatibility).
 
 **Documentation tests** (each in the group that builds the feature, after its REFACTOR):
 - `ExampleRootScope_Start` (default auto-detection and the caller-cleanup idiom)
@@ -341,7 +359,7 @@ Additional mechanism tests (no scenario of their own): `TestRegistrationIndex_Or
 - **Resolution/invocation:** `Invoke`/`MustInvoke` with and without options. The existing `di_test.go`/`invoke_test.go` stay green unchanged. `TestDependsOn_*` covers the new build branch, including eager dependents. `bench/do_bench_test.go` is compared before and after with `benchstat`.
 - **Lifecycle:** `TestStart_*` (start), `TestRootScope_*Shutdown*` (run-once shutdown), `TestStart_ShutdownCancels`, `TestDeclaredEdges_ShutdownOrder` and `TestStart_ShutdownAfterFailure` (shutdown). The existing `di_lifecycle_test.go`, `root_scope_test.go` and `scope_test.go` shutdown tests stay green.
 - **Scope traversal:** `TestStart_ScopeTraversal`, `TestStart_TieBreak`, `TestStart_RegistrationOrder`, `TestDependsOn_AncestorScope`, the cross-scope rows of `TestDeclareDependency`.
-- **Concurrency:** `TestRootScope_ConcurrentShutdown`, `TestStart_Concurrent`, `TestStart_ConcurrentInvoke`, `TestStart_ShutdownCancels`, `TestRootScope_ShutdownWaiterDeadline`, `TestDependsOn_ConcurrentSingleBuild`, `TestDeclareDependency_Concurrent`, `TestRegistrationIndex_ConcurrentUnique`, all under `-race` with goleak.
+- **Concurrency:** `TestRootScope_ConcurrentShutdown`, `TestRootScope_ShutdownWithEndedContext`, `TestAwaitDone`, `TestRegistrationIndex_CloneDuringRegistration`, `TestStart_Concurrent`, `TestStart_ConcurrentInvoke`, `TestStart_ShutdownCancels`, `TestRootScope_ShutdownWaiterDeadline`, `TestDependsOn_ConcurrentSingleBuild`, `TestDeclareDependency_Concurrent`, `TestRegistrationIndex_ConcurrentUnique`, all under `-race` with goleak.
 - **Panics:** `TestStart_StarterFailure` (recovered Start panic), `TestKind_HandlerFailure` (recovered handler panic), `TestStart_PanicReleasesShutdown` (escaping panic).
 - **Compatibility:**
   - `TestProvideOptions_Registration/none` and `TestEager_NoOptionsNeverErrors`: eager invoke without options never errors.

@@ -42,6 +42,9 @@ Starting and shutting down must be serialized at the root, and root `Shutdown` i
 **Bug fix: root Shutdown runs once**
 - Root `Shutdown`/`ShutdownWithContext` shuts services down exactly once per root container. The caller that moves the close phase from `open` to `closing` does the work; concurrent and later callers wait for it (bounded by their own context) and return a copy of its report.
 - **Behavior change (flagged):** a second root `Shutdown` returns a copy of the first report instead of an empty successful one, and no longer shuts down services registered on the root after the first `Shutdown`. Child `Scope.Shutdown` is unchanged.
+- A caller that arrives after the shutdown has completed always gets the first report, even if its own context has already ended. The stored report is isolated from every caller's copy, including the first caller's.
+- A nil Shutdown context is treated as `context.Background()`, as a nil Start context is. Before, it panicked as soon as a built service had a `Shutdowner*` method.
+- If the first caller panics on its own goroutine before producing a report, the close still completes and every other caller gets a failed report instead of nil.
 
 **Registration options and metadata**
 - **BREAKING (signature)**: `Provide*`, `Override*` and the `Package` helpers (`Lazy*`, `Eager*`, `Transient*`) gain a trailing variadic `...ProvideOption`. Every existing call compiles unchanged. Code that stores these generic functions as values of the old function type (assignment, or passing them as an argument of that type) no longer compiles. Migration: wrap the call in a closure, e.g. `func(i doger.Injector, p doger.Provider[T]) { doger.Provide(i, p) }`. The note goes into `docs/docs/upgrading/`.
@@ -59,6 +62,7 @@ Starting and shutting down must be serialized at the root, and root `Shutdown` i
   - Registering a handler for a kind that already has one replaces it.
   - Opted-in services of a kind that has no handler are still instantiated at Start, but nothing else happens to them.
   - A zero `Kind` (not from `NewKind`), an invalid stage and a nil handler panic with explicit messages.
+  - A nil root passed to `Handle` means `DefaultRootScope`, as a nil `Injector` does elsewhere in the library.
 - Ship the built-in `Runnable` kind, `Kind[Runner, struct{}]`, where `Runner` is `Run(context.Context) error`. `AsRunnable()` is shorthand for `Runnable.With(struct{}{})`.
   - Its default `StageAfterStart` handler runs every opted-in runner once, in dependency then registration order, and stops at the first error.
   - `AsRunnable()` and the default handler use an unexported copy of the kind, so reassigning the exported `Runnable` variable cannot break them. Godoc says "do not reassign".
@@ -109,6 +113,9 @@ None (no existing specs).
 | Start context | Cancelled when Start returns, or when root Shutdown begins | Long-running work uses its own context (Starter plus Shutdowner) |
 | Shutdown during Start | Cancels Start, waits for it, bounded by Shutdown's own context | Pass a deadline to `ShutdownWithContext` to bound the wait |
 | Repeated or concurrent root Shutdown | Runs once; other callers get a copy of the first report | None needed: shutting the same services down twice is never correct |
+| Nil Shutdown context | Treated as `context.Background()` | Pass a context with a deadline to bound the shutdown |
+| Nil root in `Kind.Handle` | `DefaultRootScope`, like a nil `Injector` | Pass an explicit `*RootScope` |
+| Declared edges on clone | `DependsOn` edges are recorded again when the clone builds the dependent; `DeclareDependency` edges are not copied | Re-declare them on the clone, e.g. from a kind handler, which runs again when the clone starts |
 | Per-service start hooks | None registered | `HookBeforeStart` / `HookAfterStart` |
 | Calling `Start` again / after shutdown | `ErrAlreadyStarted` / `ErrStartAfterShutdown` | None needed: a container is started once. Re-running belongs to the deferred `Refresh` operation. |
 | Start order among independent services | Sequential, registration order | Declare edges; parallel start is a possible later option |
@@ -116,6 +123,6 @@ None (no existing specs).
 
 ## Defect (bug fix included in this change)
 
-- **Observed:** with 20 goroutines calling `root.Shutdown()` concurrently on a container with built services, each run yields 12–21 spurious `ErrServiceNotFound` errors in the reports (several callers list the same services and race to remove them in `Scope.serviceShutdown`, scope.go:772-784). With `HealthCheckParallelism: 2`, `go test -race` also reports a data race on `RootScope.healthCheckPool`, which every caller reads and sets to nil in `RootScope.ShutdownWithContext` (root_scope.go:177-180).
+- **Observed:** with 20 goroutines calling `root.Shutdown()` concurrently on a container with built services, every run yields spurious `ErrServiceNotFound` errors in the reports (several callers list the same services and race to remove them in `Scope.serviceShutdown`, scope.go:772-784). Re-measured on 2026-10-25: 3–17 per run, in 6 of 6 runs, with default options and with `HealthCheckParallelism: 2`; each service's `Shutdown` was still called once. With `HealthCheckParallelism: 2`, `go test -race` also reports a data race on `RootScope.healthCheckPool`, which every caller reads and sets to nil in `RootScope.ShutdownWithContext` (root_scope.go:177-180). The race report is intermittent (1 of 3 runs). A second, later `Shutdown()` returns an empty report with `Succeed: true`.
 - **Expected:** services are shut down once, every caller gets the same successful report, and there is no race.
 - **Minimal reproduction:** `root := NewWithOpts(&InjectorOpts{HealthCheckParallelism: 2})`; register and invoke lazy "a", "b", "c" with `Shutdown() error`; start 20 goroutines calling `root.Shutdown()`; assert every report has no errors. It fails on the current code (reproduced by the `add-container-lifecycle-hooks` audit), and becomes the regression test `TestRootScope_ConcurrentShutdown` (tasks group 1).

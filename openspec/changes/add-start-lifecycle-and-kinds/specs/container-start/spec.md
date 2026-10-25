@@ -347,12 +347,77 @@ And "a" had Shutdown called 1 time after it is released
 ```
 
 <!-- cases: N/A 2 overrides: running shutdown more than once is never correct; there is nothing to override -->
-<!-- cases: 3 zero values: an empty container is covered by existing shutdown tests; a nil context is unchanged (existing behavior) -->
-<!-- cases: 5 errors: per-service errors are carried in the copied report (second scenario) -->
-<!-- cases: 7 lifecycle: double shutdown is the second scenario; Start after Shutdown is covered by "Start is one-shot" -->
-<!-- cases: 8 concurrency: first scenario under -race with 20 goroutines; deadline in the third -->
-<!-- cases: N/A 9 panics: shutdown hook panics propagate as today; the close phase still completes (closed via defer) -->
+<!-- cases: 3 zero values: an empty container is covered by existing shutdown tests; a nil context is covered by "Root Shutdown reports stay usable" -->
+<!-- cases: 5 errors: per-service errors are carried in the copied report ("Later root Shutdown returns the first report") -->
+<!-- cases: 7 lifecycle: double shutdown is "Later root Shutdown returns the first report"; Start after Shutdown is covered by "Start is one-shot" -->
+<!-- cases: 8 concurrency: first scenario under -race with 20 goroutines; deadline in "Waiting Shutdown caller honours its context" -->
+<!-- cases: N/A 9 panics: covered by "Root Shutdown reports stay usable" -->
 <!-- cases: 10 compatibility: BEHAVIOR CHANGE - a later root Shutdown returns the first report instead of an empty one, and no longer shuts down services registered on the root after the first Shutdown; Scope.Shutdown on child scopes is unchanged -->
+
+### Requirement: Root Shutdown reports stay usable
+A root Shutdown caller that finds the first shutdown completed SHALL get a copy of the first report, even with an ended context. The stored report SHALL be isolated from every caller's copy. A nil context SHALL mean `context.Background()`. If the first caller panics before producing a report, every other caller SHALL get a failed report whose only root-scope error (empty service name) contains `DI: root shutdown did not complete`.
+
+#### Scenario: The stored report is isolated from the first caller
+```gherkin
+Given a root scope with built lazy "a" whose Shutdown() returns errClose
+And the consumer called Shutdown(), which returned report r1
+And the consumer then deleted every entry of r1's Errors map
+When the consumer calls Shutdown() again
+Then the returned report has the errClose entry for "a"
+```
+
+#### Scenario: Later Shutdown with an ended context still returns the first report
+```gherkin
+Given a root scope with built lazy "a" implementing Shutdown() error
+And the consumer called Shutdown(), which returned report r1
+When the consumer calls ShutdownWithContext(ctx) 100 times, where ctx <ctx>
+Then every returned report equals r1
+And "a" had Shutdown called 1 time
+
+Examples:
+  | ctx                                      |
+  | was cancelled before the calls           |
+  | has a deadline that passed before the calls |
+```
+
+#### Scenario: Nil Shutdown context
+```gherkin
+Given a root scope with built lazy "a" whose Shutdown(ctx) error records the context it receives
+And the consumer has <previous>
+When the consumer calls ShutdownWithContext(nil)
+Then it returns a report with Succeed true
+And "a" received a non-nil context exactly once
+
+Examples:
+  | previous            |
+  | called nothing      |
+  | called Shutdown()   |
+```
+
+#### Scenario: A panicking first caller still releases the others
+```gherkin
+Given a root scope whose Logf panics with "log-boom" when the message contains "requested shutdown"
+And the consumer called Shutdown(), which panicked with "log-boom"
+When the consumer calls <call>
+Then it returns without panicking
+And the report has Succeed false
+And its only error is keyed by the root scope with an empty service name and its message contains "DI: root shutdown did not complete"
+
+Examples:
+  | call                                          |
+  | Shutdown()                                    |
+  | ShutdownWithContext(ctx) with a 1s deadline   |
+```
+
+<!-- cases: N/A 2 overrides: these rules only make every caller's report usable; there is nothing to override -->
+<!-- cases: 3 zero values: a nil context is covered by "Nil Shutdown context" -->
+<!-- cases: 4 boundaries: a context that ended before the call, after the first shutdown completed, is covered by "Later Shutdown with an ended context still returns the first report" -->
+<!-- cases: 5 errors: the "did not complete" report is covered by "A panicking first caller still releases the others" -->
+<!-- cases: N/A 6 duplicates: repeated calls are the subject of "Root Shutdown runs once" -->
+<!-- cases: 7 lifecycle: callers after completion are covered by the ended-context and isolation scenarios -->
+<!-- cases: 8 concurrency: 100 calls per row pin completion over an ended context, which a random select would violate about half the time -->
+<!-- cases: 9 panics: a panic on the first caller's goroutine propagates to that caller and the others get a failed report; panics in per-service shutdown hooks happen on internal goroutines and terminate the process, as today -->
+<!-- cases: 10 compatibility: a nil context no longer panics when a built service has a Shutdowner* method (fix); the rest is part of the run-once behavior change -->
 
 ### Requirement: Registrations after Start are not started
 Services registered after `Start` returned, and child scopes created after `Start` took its discovery snapshot, SHALL NOT be started or handled automatically in this change. They remain invokable as usual.
@@ -388,4 +453,22 @@ And the err passed for "b" is errBoom itself, not a wrapping error
 <!-- cases: N/A 4 boundaries: 0, 1 and many hooks follow the same slice iteration as the existing shutdown hooks -->
 <!-- cases: 9 panics: a panicking hook propagates exactly as a panicking shutdown hook does today (no new recovery); container state is still released, see "A panic escaping Start still releases Shutdown" -->
 <!-- cases: N/A 8 concurrency: hooks run on the Start goroutine -->
+<!-- cases: N/A 10 compatibility: new hooks -->
+
+### Requirement: No start hooks without a Start method
+No start hook SHALL be called for a service opted in with `AsStarter()` whose instance implements no Starter variant, because no `Start` method is called. `Start` SHALL return the error instead.
+
+#### Scenario: No hooks for an AsStarter instance without a Start method
+```gherkin
+Given a root scope with HookBeforeStart and HookAfterStart recording calls
+And lazy "app.Lifecycle" registered with AsStarter(), whose provider returns an instance with no Start method
+When the consumer calls Start()
+Then Start returns an error containing "DI: service `app.Lifecycle` was opted in with AsStarter but does not implement any Starter interface"
+And no start hook was called
+```
+
+<!-- cases: N/A 2 overrides, 3 zero values, 4 boundaries: a single rule with one input shape -->
+<!-- cases: 5 errors: the returned error is the one specified in "AsStarter on an interface whose instance cannot start" -->
+<!-- cases: N/A 6 duplicates, 7 lifecycle, 8 concurrency: hooks run on the Start goroutine -->
+<!-- cases: N/A 9 panics: no method is called, so nothing can panic -->
 <!-- cases: N/A 10 compatibility: new hooks -->
