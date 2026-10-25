@@ -157,6 +157,10 @@ type startCandidate struct {
 
 func (s *RootScope) runStartPipeline(startCtx context.Context) error {
 	// pointStarting
+	if err := s.runStartingHooks(startCtx); err != nil {
+		return err
+	}
+
 	if err := checkAbort(startCtx); err != nil {
 		return err
 	}
@@ -186,6 +190,18 @@ func (s *RootScope) runStartPipeline(startCtx context.Context) error {
 
 	if err := checkAbort(startCtx); err != nil {
 		return err
+	}
+
+	return nil
+}
+
+// runStartingHooks runs the container Starting hooks in order. The first
+// error is a veto: the remaining hooks do not run and Start fails with it.
+func (s *RootScope) runStartingHooks(startCtx context.Context) error {
+	for _, hook := range slices.Clone(s.opts.HookContainerStarting) {
+		if err := hook(startCtx, s); err != nil {
+			return fmt.Errorf("DI: container start aborted: %w", err)
+		}
 	}
 
 	return nil

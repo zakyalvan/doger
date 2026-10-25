@@ -99,6 +99,9 @@ func NewWithOpts(opts *InjectorOpts, packages ...func(Injector)) *RootScope {
 	if opts.HookAfterStart == nil {
 		opts.HookAfterStart = []func(*Scope, string, error){}
 	}
+	if opts.HookContainerStarting == nil {
+		opts.HookContainerStarting = []func(context.Context, *RootScope) error{}
+	}
 	if opts.Clock == nil {
 		opts.Clock = clockwork.NewRealClock()
 	}
@@ -530,6 +533,18 @@ func (s *RootScope) AddBeforeStartHook(hook func(*Scope, string)) {
 // service's Start method, with the error the method returned.
 func (s *RootScope) AddAfterStartHook(hook func(*Scope, string, error)) {
 	s.opts.HookAfterStart = append(s.opts.HookAfterStart, hook)
+}
+
+// AddContainerStartingHook adds a hook that will be called by the first
+// Start, after its one-shot guard and before its context check or any
+// instantiation. A non-nil error vetoes Start: later Starting hooks do not
+// run, nothing is built, and Start returns an error wrapping it.
+//
+// The hook must not call root Shutdown synchronously without a deadline: it
+// would wait for the running Start, which waits for the hook. See
+// [InjectorOpts.HookContainerStarting].
+func (s *RootScope) AddContainerStartingHook(hook func(context.Context, *RootScope) error) {
+	s.opts.HookContainerStarting = append(s.opts.HookContainerStarting, hook)
 }
 
 // Clone clones injector with provided services but not with invoked instances.

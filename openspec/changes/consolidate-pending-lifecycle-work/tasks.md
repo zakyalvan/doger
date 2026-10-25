@@ -38,11 +38,11 @@ Rules:
 
 ## 5. Starting hooks run first and can abort Start (Part H)
 
-- [ ] 5.1 RED: add `TestContainerStartingHook_Veto` (scenario "Starting hook allows or vetoes Start", 4 rows), `TestContainerStartingHook_BeforeContextCheck` (scenario "Starting hooks run before the context check", 2 rows) and `TestContainerStartingHook_ReceivesContext` (scenario "Starting hook receives the Start context"); verify `go test -race -run 'TestContainerStartingHook_(Veto|BeforeContextCheck|ReceivesContext)' .` fails to compile only on the missing `HookContainerStarting` field and `AddContainerStartingHook` method
-- [ ] 5.2 GREEN: add `InjectorOpts.HookContainerStarting`, its nil-to-empty init in `NewWithOpts` and `AddContainerStartingHook`, and run the hooks with `startCtx` at `pointStarting` (before D7's first abort check), returning a veto as `DI: container start aborted: %w` (design D4, D5); verify the 5.1 command passes and `make test` is green
-- [ ] 5.3 REFACTOR: *Extract Function* `runStartingHooks(ctx) error` out of `StartWithContext`; verify `make test` and `make lint` pass
-- [ ] 5.4 Add `ExampleRootScope_AddContainerStartingHook` (fail-fast config validation that vetoes `Start`) and godoc on the field and method stating firing point, veto and the "must not call Shutdown synchronously" rule (D8); verify `go test -run ExampleRootScope_AddContainerStartingHook .` passes
-- [ ] 5.5 Create `docs/docs/service-lifecycle/container-hooks.md` with the phase diagram (start-lifecycle D6 plus `ready`) and the Starting section; verify `npm --prefix docs run build` succeeds
+- [x] 5.1 RED: add `TestContainerStartingHook_Veto` (scenario "Starting hook allows or vetoes Start", 4 rows), `TestContainerStartingHook_BeforeContextCheck` (scenario "Starting hooks run before the context check", 2 rows) and `TestContainerStartingHook_ReceivesContext` (scenario "Starting hook receives the Start context"); verify `go test -race -run 'TestContainerStartingHook_(Veto|BeforeContextCheck|ReceivesContext)' .` fails to compile only on the missing `HookContainerStarting` field and `AddContainerStartingHook` method
+- [x] 5.2 GREEN: add `InjectorOpts.HookContainerStarting`, its nil-to-empty init in `NewWithOpts` and `AddContainerStartingHook`, and run the hooks with `startCtx` at `pointStarting` (before D7's first abort check), returning a veto as `DI: container start aborted: %w` (design D4, D5); verify the 5.1 command passes and `make test` is green
+- [x] 5.3 REFACTOR: *Extract Function* `runStartingHooks(ctx) error` out of `StartWithContext`; verify `make test` and `make lint` pass
+- [x] 5.4 Add `ExampleRootScope_AddContainerStartingHook` (fail-fast config validation that vetoes `Start`) and godoc on the field and method stating firing point, veto and the "must not call Shutdown synchronously" rule (D8); verify `go test -run ExampleRootScope_AddContainerStartingHook .` passes
+- [x] 5.5 Create `docs/docs/service-lifecycle/container-hooks.md` with the phase diagram (start-lifecycle D6 plus `ready`) and the Starting section; verify `npm --prefix docs run build` succeeds
 
 ## 6. Started and Ready hooks mark a successful start (Part H)
 

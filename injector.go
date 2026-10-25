@@ -138,6 +138,16 @@ type InjectorOpts struct {
 	// recovered panic as an error).
 	HookAfterStart []func(scope *Scope, serviceName string, err error)
 
+	// HookContainerStarting is called by the root container's first Start,
+	// after its one-shot guard and before its context check, discovery or any
+	// instantiation, with the Start-time context. A non-nil error vetoes
+	// Start: the remaining Starting hooks do not run, nothing is built or
+	// started, and Start returns an error wrapping it.
+	//
+	// A Starting hook must not call root Shutdown synchronously without a
+	// deadline: Shutdown waits for the running Start, which waits for the hook.
+	HookContainerStarting []func(ctx context.Context, scope *RootScope) error
+
 	// Logf is the logging function used by the DI container for internal logging.
 	// If not provided, no logging will occur. This function should handle the format
 	// string and arguments similar to fmt.Printf.
