@@ -87,7 +87,7 @@ See proposal.md (Why, Defect) for the motivation, and `specs/health-check-timeou
   - global timeout: `clockwork.WithTimeout(ctx, root.opts.Clock, HealthCheckGlobalTimeout)` in `scope.go`;
   - per-service timeout: the same in `root_scope.go`;
   - shutdown and per-service shutdown times: `Clock.Now`/`Clock.Since` in `scope.go`;
-  - lazy build time: `serviceLazy.build(i)` reads the clock through `i.RootScope()`, because a lazy service does not know its scope until it is built.
+  - lazy build time: `serviceLazy.build(i)` reads the clock through `i.RootScope()`, because a lazy service does not know its scope until it is built. With no injector (`i == nil`, which internal wrapper tests pass), it falls back to the real clock, as before this change (`injectorClock`).
 - Child scopes reach the clock via `rootScope.opts`.
 - *Alternatives:*
   - a doger-owned `Clock` interface: rejected by decision; `clockwork.Clock` is exposed directly;
@@ -117,7 +117,7 @@ See proposal.md (Why, Defect) for the motivation, and `specs/health-check-timeou
 
 **D7. A service without a health check is never a timeout.**
 - `serviceHealthCheck` asks the wrapper `isHealthchecker()` once, before running anything. When it reports false, the result is `nil`, without racing and without consulting the context. Every wrapper already implements `isHealthchecker` (`serviceWrapperIsHealthchecker`).
-- That snapshot is final for the call. A lazy service built while the call is in flight is still reported `nil`, consistent with "not a health checker when its check began".
+- The decision uses that single snapshot, taken when the check begins: the call either returns `nil` at once or runs the check it resolved. No code runs between the snapshot and that outcome, so no later build can change it. This is not separately tested: the window cannot be forced from outside without depending on internal ordering.
 - The non-pool `queueServiceHealthcheck` goroutine stops making its own decision in the `ctx.Done()` branch. It routes through the same decision as `raceWithTimeout` (2.3 refactor), so it cannot report a timeout for a service with no check.
 - Service lookup stays first: an unknown name returns `ErrServiceNotFound` before D7 or D1 apply.
 - *Alternative:* apply D1 to every service (always a timeout on a done context). Rejected by decision: it reports a timeout for a check that never ran, and contradicts the existing comment in `serviceHealthCheck`.

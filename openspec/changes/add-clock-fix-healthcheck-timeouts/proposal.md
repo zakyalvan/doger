@@ -22,7 +22,7 @@ Consumers cannot test timeout behavior without real sleeps, because the containe
 - Tests: the wall-clock-sensitive health-check tests use `testing/synctest`:
   - `TestRootScope_queueServiceHealthcheck` and the five `TestScope_HealthCheckWithContextExpiration_*` tests;
   - their fixtures (`lazyTestHeathcheckerOKTimeout`, `scopeTestSlowHealthchecker`) are unchanged;
-  - duration assertions such as `duration < 70ms` become exact fake-time assertions.
+  - their assertions, including duration bounds such as `duration < 70ms`, are unchanged; inside the bubble they hold on every run.
 - Tests: `tests/service_types_test.go: TestMixedServiceTypesPerformance` also runs inside `testing/synctest`, with assertions unchanged. It compares wall-clock durations of eager, lazy and transient invocations and fails at random (Defect 5).
 - No exported identifier is removed or changed. Adding a field to `InjectorOpts` only breaks unkeyed struct literals of it, which the Go 1 compatibility guidelines exclude.
 
