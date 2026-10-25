@@ -121,3 +121,20 @@ func validateStarterOpt(name string, registered reflect.Type, opts *serviceOptio
 		panic(fmt.Errorf("DI: service `%s` does not implement any Starter interface", name))
 	}
 }
+
+// resolveDeclaredDependencies invokes each declared dependency, in declaration
+// order, on the virtual scope the wrapper received. This reuses circular
+// dependency detection, DAG edge recording and invocation hooks unchanged.
+func resolveDeclaredDependencies(i Injector, opts *serviceOptions) error {
+	if opts == nil {
+		return nil
+	}
+
+	for _, dependency := range opts.dependsOn {
+		if _, err := invokeAnyByName(i, dependency); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}

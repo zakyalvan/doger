@@ -102,6 +102,10 @@ func (s *serviceLazy[T]) getInstance(i Injector) (T, error) {
 func (s *serviceLazy[T]) build(i Injector) (err error) {
 	start := time.Now()
 
+	if err := resolveDeclaredDependencies(i, s.opts); err != nil {
+		return err
+	}
+
 	instance, err := handleProviderPanic(s.provider, i)
 	if err != nil {
 		return err

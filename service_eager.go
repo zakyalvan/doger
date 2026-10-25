@@ -27,6 +27,10 @@ type serviceEager[T any] struct {
 	invokationFrames        map[stacktrace.Frame]struct{} // map garanties uniqueness
 	invokationFramesMu      sync.RWMutex
 	invokationFramesCounter uint32
+
+	// declared dependencies, resolved on the first successful invocation
+	depsMu       sync.Mutex
+	depsResolved bool
 }
 
 func newServiceEager[T any](name string, instance T) *serviceEager[T] {
@@ -75,6 +79,19 @@ func (s *serviceEager[T]) getInstance(i Injector) (T, error) {
 			s.invokationFrames[frame] = struct{}{}
 		}
 		s.invokationFramesMu.Unlock()
+	}
+
+	if s.opts != nil && len(s.opts.dependsOn) > 0 {
+		s.depsMu.Lock()
+		defer s.depsMu.Unlock()
+
+		// set only on success, so a failed resolution is retried on the next invocation
+		if !s.depsResolved {
+			if err := resolveDeclaredDependencies(i, s.opts); err != nil {
+				return empty[T](), err
+			}
+			s.depsResolved = true
+		}
 	}
 
 	return s.instance, nil

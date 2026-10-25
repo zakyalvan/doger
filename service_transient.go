@@ -54,6 +54,10 @@ func (s *serviceTransient[T]) getInstanceAny(i Injector) (any, error) {
 }
 
 func (s *serviceTransient[T]) getInstance(i Injector) (T, error) {
+	if err := resolveDeclaredDependencies(i, s.opts); err != nil {
+		return empty[T](), err
+	}
+
 	return handleProviderPanic(s.provider, i)
 }
 
