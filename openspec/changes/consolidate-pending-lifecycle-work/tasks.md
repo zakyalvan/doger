@@ -34,7 +34,7 @@ Rules:
 
 ## 4. healthCheckPool race investigation (design F5)
 
-- [ ] 4.1 Add `TestRootScope_HealthCheckDuringShutdown` (HealthCheck with `HealthCheckParallelism: 2` racing root Shutdown, 50 iterations) and run it with `go test -race -count=2000 -run TestRootScope_HealthCheckDuringShutdown .`; verify: if no race is reported, keep the test as a race guard and record "not reproduced"; if a race is reported, stop and ask the user before any fix (CLAUDE.md rule 5)
+- [x] 4.1 Add `TestRootScope_HealthCheckDuringShutdown` (HealthCheck with `HealthCheckParallelism: 2` racing root Shutdown, 50 iterations) and run it with `go test -race -count=2000 -run TestRootScope_HealthCheckDuringShutdown .`; verify: if no race is reported, keep the test as a race guard and record "not reproduced"; if a race is reported, stop and ask the user before any fix (CLAUDE.md rule 5)
 
 ## 5. Starting hooks run first and can abort Start (Part H)
 

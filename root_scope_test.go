@@ -612,6 +612,35 @@ func TestRootScope_ShutdownWinnerPanic(t *testing.T) {
 	}
 }
 
+// healthyProbe is a health checker that always succeeds.
+type healthyProbe struct{}
+
+func (*healthyProbe) HealthCheck() error { return nil }
+
+// TestRootScope_HealthCheckDuringShutdown is a race guard: HealthCheck with
+// a parallelism pool racing root Shutdown must not race on the pool.
+func TestRootScope_HealthCheckDuringShutdown(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, 10*time.Second)
+
+	for range 50 {
+		root := NewWithOpts(&InjectorOpts{HealthCheckParallelism: 2})
+		ProvideNamedValue(root, "db", &healthyProbe{})
+		ProvideNamedValue(root, "cache", &healthyProbe{})
+
+		begin := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Go(func() {
+			<-begin
+			_ = root.HealthCheck()
+		})
+
+		close(begin)
+		_ = root.Shutdown()
+		wg.Wait()
+	}
+}
+
 func TestAwaitDone(t *testing.T) {
 	t.Parallel()
 
