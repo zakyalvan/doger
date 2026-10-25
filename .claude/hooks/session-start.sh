@@ -7,6 +7,8 @@
 #   - golangci-lint: the preinstalled one may be too old for .golangci.yml;
 #     override with GOLANGCI_LINT_VERSION. Rebuilt whenever Go changes,
 #     because it cannot load code newer than the Go it was built with.
+#   - gopls: required by the gopls-lsp plugin; override with GOPLS_VERSION.
+#     Rebuilt whenever Go changes, for the same reason.
 set -euo pipefail
 
 if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then
@@ -16,6 +18,7 @@ fi
 GO_VERSION="${GO_VERSION:-1.27.3}"
 OPENSPEC_VERSION="${OPENSPEC_VERSION:-1.15.0}"
 GOLANGCI_LINT_VERSION="${GOLANGCI_LINT_VERSION:-2.15.0}"
+GOPLS_VERSION="${GOPLS_VERSION:-0.24.0}"
 TOOLS_BIN="$HOME/.local/bin"
 
 GO_ROOT="/usr/local/go${GO_VERSION}"
@@ -46,14 +49,26 @@ if [ "$(openspec --version 2>/dev/null || true)" != "$OPENSPEC_VERSION" ]; then
   npm install -g --no-fund --no-audit "@fission-ai/openspec@${OPENSPEC_VERSION}"
 fi
 
-# GitHub release downloads are blocked by the proxy, so build from the Go
-# module proxy instead of using the official install script.
+# Builds the Go tool PKG from MODULE at VERSION into TOOLS_BIN, unless the
+# installed binary already matches all three and was built with GO_VERSION. Builds from the Go module
+# proxy, because the proxy blocks GitHub release downloads.
+install_go_tool() {
+  local module="$1" pkg="$2" version="$3"
+  local bin="$TOOLS_BIN/${pkg##*/}"
+  local info
+  info="$(go version -m "$bin" 2>/dev/null || true)"
+  if [[ "$info" == "$bin: go${GO_VERSION}"$'\n'* \
+    && "$info" == *$'\tpath\t'"$pkg"$'\n'* \
+    && "$info" == *$'\tmod\t'"$module"$'\t'"v${version}"$'\t'* ]]; then
+    return
+  fi
+  GOBIN="$TOOLS_BIN" go install "${pkg}@v${version}"
+}
+
 mkdir -p "$TOOLS_BIN"
-if ! "$TOOLS_BIN/golangci-lint" --version 2>/dev/null \
-  | grep -q "version ${GOLANGCI_LINT_VERSION} built with go${GO_VERSION} "; then
-  GOBIN="$TOOLS_BIN" go install \
-    "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v${GOLANGCI_LINT_VERSION}"
-fi
+install_go_tool github.com/golangci/golangci-lint/v2 \
+  github.com/golangci/golangci-lint/v2/cmd/golangci-lint "$GOLANGCI_LINT_VERSION"
+install_go_tool golang.org/x/tools/gopls golang.org/x/tools/gopls "$GOPLS_VERSION"
 
 case ":$PATH:" in
   *":$TOOLS_BIN:"*) ;;
@@ -63,3 +78,4 @@ esac
 go version
 openspec --version
 "$TOOLS_BIN/golangci-lint" --version
+"$TOOLS_BIN/gopls" version
