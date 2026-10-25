@@ -38,12 +38,12 @@ There is no `Stop` counterpart: a started service is stopped by its [`Shutdown` 
 
 Unlike `Shutdowner`, which is detected on the built instance, a starter is detected on its **registered type**, so a lazy service is discovered without being built.
 
-| Registration | Started |
-|---|---|
-| Lazy or eager, registered type has a `Start` method | yes |
-| Registered under an interface type without `Start` | no, unless registered with `doger.AsStarter()` |
-| Transient | never (a factory has no single instance to start) |
-| Alias (`As`, `Bind`) | no; the target is started once |
+| Registration                                        | Started                                           |
+| --------------------------------------------------- | ------------------------------------------------- |
+| Lazy or eager, registered type has a `Start` method | yes                                               |
+| Registered under an interface type without `Start`  | no, unless registered with `doger.AsStarter()`    |
+| Transient                                           | never (a factory has no single instance to start) |
+| Alias (`As`, `Bind`)                                | no; the target is started once                    |
 
 ```go
 // The interface has no Start method: opt in explicitly.

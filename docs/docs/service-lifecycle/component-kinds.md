@@ -52,10 +52,10 @@ Scheduled.Handle(root, doger.StageBeforeStart, func(ctx context.Context, c doger
 
 ### Stages {#stages}
 
-| Stage | Runs |
-|---|---|
+| Stage                    | Runs                                                      |
+| ------------------------ | --------------------------------------------------------- |
 | `doger.StageBeforeStart` | after every candidate is built, before any starter starts |
-| `doger.StageAfterStart` | after every starter has started |
+| `doger.StageAfterStart`  | after every starter has started                           |
 
 Edges declared with `DeclareDependency` during `StageBeforeStart` order the starters of the same `Start`; edges from both stages order shutdown.
 
