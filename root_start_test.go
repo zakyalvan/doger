@@ -369,3 +369,181 @@ func TestStart_LateRegistrationNotStarted(t *testing.T) {
 	is.NoError(err)
 	is.Equal(int32(0), instance.starts.Load())
 }
+
+func TestStart_DependencyOrder(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+	is := assert.New(t)
+
+	root := New()
+	events := &callRecorder{}
+	starter := func(name string, deps ...string) {
+		ProvideNamed(root, name, func(i Injector) (*recordingStarter, error) {
+			for _, dep := range deps {
+				if _, err := invokeAnyByName(i, dep); err != nil {
+					return nil, err
+				}
+			}
+			events.record("build " + name)
+			return &recordingStarter{name: "start " + name, rec: events}, nil
+		})
+	}
+	starter("http", "db")
+	starter("db")
+	ProvideNamed(root, "repo", func(i Injector) (*depValue, error) {
+		_, err := InvokeNamed[*recordingStarter](i, "db")
+		events.record("build repo")
+		return &depValue{name: "repo"}, err
+	})
+	starter("consumer", "repo")
+
+	require.NoError(t, root.Start())
+
+	recorded := events.list()
+	firstStart := slices.IndexFunc(recorded, func(e string) bool { return len(e) > 6 && e[:6] == "start " })
+	require.GreaterOrEqual(t, firstStart, 0)
+	for _, e := range recorded[firstStart:] {
+		is.NotContains(e, "build", "every provider call happens before the first start call")
+	}
+	is.Contains(recorded, "build repo")
+	is.Equal([]string{"start db", "start http", "start consumer"}, recorded[firstStart:])
+}
+
+func TestStart_ScopeTraversal(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	rec := &callRecorder{}
+	tenant := root.Scope("tenant-a")
+	jobs := tenant.Scope("jobs")
+
+	provideRecordingStarter(jobs, rec, "cron")
+	ProvideNamed(tenant, "worker", func(i Injector) (*recordingStarter, error) {
+		_, err := InvokeNamed[*recordingStarter](i, "db")
+		return &recordingStarter{name: "worker", rec: rec}, err
+	})
+	provideRecordingStarter(root, rec, "db")
+
+	require.NoError(t, root.Start())
+	assert.Equal(t, []string{"db", "worker", "cron"}, rec.list())
+}
+
+// tieBreakOrder registers "z" in "request", then "b" and "a" in root, starts
+// the container and returns the start order.
+func tieBreakOrder(t *testing.T) []string {
+	t.Helper()
+
+	root := New()
+	rec := &callRecorder{}
+	request := root.Scope("request")
+	provideRecordingStarter(request, rec, "z")
+	provideRecordingStarter(root, rec, "b")
+	provideRecordingStarter(root, rec, "a")
+
+	require.NoError(t, root.Start())
+
+	return rec.list()
+}
+
+func TestStart_TieBreak(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	assert.Equal(t, []string{"b", "a", "z"}, tieBreakOrder(t))
+}
+
+func TestStart_TieBreak_Stable(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, 5*time.Second)
+
+	for n := range 100 {
+		assert.Equalf(t, []string{"b", "a", "z"}, tieBreakOrder(t), "run %d", n)
+	}
+}
+
+func TestStart_RegistrationOrder(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		operation func(root *RootScope, request *Scope, rec *callRecorder) *RootScope
+		order     []string
+	}{
+		{
+			name:      "nothing_else",
+			operation: func(root *RootScope, _ *Scope, _ *callRecorder) *RootScope { return root },
+			order:     []string{"a", "c", "b"},
+		},
+		{
+			name: "override_in_root",
+			operation: func(root *RootScope, _ *Scope, rec *callRecorder) *RootScope {
+				OverrideNamed(root, "a", func(Injector) (*recordingStarter, error) {
+					return &recordingStarter{name: "a", rec: rec}, nil
+				})
+				return root
+			},
+			order: []string{"a", "c", "b"},
+		},
+		{
+			name: "override_in_request",
+			operation: func(root *RootScope, request *Scope, rec *callRecorder) *RootScope {
+				OverrideNamed(request, "a", func(Injector) (*recordingStarter, error) {
+					return &recordingStarter{name: "request/a", rec: rec}, nil
+				})
+				return root
+			},
+			order: []string{"a", "c", "b", "request/a"},
+		},
+		{
+			name: "clone_then_register",
+			operation: func(root *RootScope, _ *Scope, rec *callRecorder) *RootScope {
+				clone := root.Clone()
+				provideRecordingStarter(clone, rec, "d")
+				return clone
+			},
+			order: []string{"a", "c", "d", "b"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+
+			root := New()
+			rec := &callRecorder{}
+			request := root.Scope("request")
+			provideRecordingStarter(root, rec, "a")
+			provideRecordingStarter(request, rec, "b")
+			provideRecordingStarter(root, rec, "c")
+
+			container := tt.operation(root, request, rec)
+
+			require.NoError(t, container.Start())
+			assert.Equal(t, tt.order, rec.list())
+		})
+	}
+}
+
+func TestStart_RejectsDeclaredCycle(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+	is := assert.New(t)
+
+	root := New()
+	rec := &callRecorder{}
+	provideRecordingStarter(root, rec, "scheduler")
+	ProvideNamed(root, "job", func(i Injector) (*recordingStarter, error) {
+		_, err := InvokeNamed[*recordingStarter](i, "scheduler")
+		return &recordingStarter{name: "job", rec: rec}, err
+	})
+	require.NoError(t, DeclareDependency(root, "scheduler", "job"))
+
+	err := root.Start()
+
+	is.ErrorIs(err, ErrCircularDependency)
+	is.ErrorContains(err, "`scheduler`")
+	is.ErrorContains(err, "`job`")
+	is.Empty(rec.list())
+}

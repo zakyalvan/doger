@@ -113,7 +113,17 @@ func (s *RootScope) runStartPipeline(ctx context.Context) error {
 		return err
 	}
 
-	return startStarters(ctx, candidates)
+	// StageBeforeStart handlers will run here.
+
+	if err := s.checkCycles(candidates); err != nil {
+		return err
+	}
+
+	return startStarters(ctx, s.orderByDependencies(starterCandidates(candidates)))
+}
+
+func (c *startCandidate) desc() ServiceDescription {
+	return newServiceDescription(c.scope.ID(), c.scope.Name(), c.name)
 }
 
 // discoverCandidates snapshots the scope tree breadth-first, root first, and
@@ -191,6 +201,18 @@ func buildCandidates(candidates []*startCandidate) error {
 	}
 
 	return nil
+}
+
+// starterCandidates returns the Starter candidates, keeping their order.
+func starterCandidates(candidates []*startCandidate) []*startCandidate {
+	starters := make([]*startCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.starter {
+			starters = append(starters, candidate)
+		}
+	}
+
+	return starters
 }
 
 // startStarters starts the Starter candidates in order, stopping at the

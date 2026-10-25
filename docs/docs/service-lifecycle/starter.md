@@ -68,6 +68,36 @@ Any registered type with a matching `Start` method is started, including standar
 
 :::
 
+## Order {#order}
+
+`Start` runs in two passes:
+
+1. **Build.** Every candidate is built first, so every provider call happens before the first `Start` method. A service's dependencies, whether invoked by its provider or declared with [`DependsOn`](../service-registration/declared-dependencies.md), are built before it.
+2. **Start.** Starters start one at a time. A starter starts only after every starter it depends on, directly or through services that are not starters, has started.
+
+The dependency graph is the only source of ordering; there is no `Order` or `Phase` interface. To force an order between services that do not invoke each other, declare a dependency edge with `DependsOn` or `DeclareDependency`.
+
+### Ties {#ties}
+
+Starters with no dependency path between them start in a deterministic order:
+
+1. by scope depth: the root scope first, then its children, then grandchildren;
+2. then by registration order. An `Override` in the same scope keeps the position of the first registration; a clone keeps its source's positions, and services registered later in the clone come after them.
+
+```go
+request := root.Scope("request")
+doger.ProvideNamed(request, "z", NewZ) // registered first, but in a child scope
+doger.ProvideNamed(root, "b", NewB)
+doger.ProvideNamed(root, "a", NewA)
+_ = root.Start() // starts b, a, z
+```
+
+Starters are started sequentially.
+
+### Cycles {#cycles}
+
+A cycle that only exists once services are built, for example a [declared edge](../service-registration/declared-dependencies.md#declare-dependency) later closed by a provider's invocation, makes `Start` fail with an error matching `doger.ErrCircularDependency`, naming the chain, before any starter is started.
+
 ## Start is one-shot {#one-shot}
 
 A container starts at most once:
