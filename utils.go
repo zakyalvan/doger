@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"slices"
 	"sync"
 )
 
@@ -126,13 +127,7 @@ func orderedUniq[V comparable](in []V) []V {
 }
 
 func contains[T comparable](list []T, elem T) bool {
-	for _, v := range list {
-		if v == elem {
-			return true
-		}
-	}
-
-	return false
+	return slices.Contains(list, elem)
 }
 
 func coalesce[T comparable](v ...T) (result T) {
