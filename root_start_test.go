@@ -829,3 +829,218 @@ func TestStart_ContextEndsWithStart(t *testing.T) {
 	require.NotNil(t, kept)
 	assert.ErrorIs(t, kept.Err(), context.Canceled)
 }
+
+// blockingStarter signals entered when Start begins, then runs behavior.
+type blockingStarter struct {
+	entered   chan struct{}
+	behavior  func(ctx context.Context) error
+	shutdowns atomic.Int32
+}
+
+func (s *blockingStarter) Start(ctx context.Context) error {
+	close(s.entered)
+	return s.behavior(ctx)
+}
+
+func (s *blockingStarter) Shutdown() error {
+	s.shutdowns.Add(1)
+	return nil
+}
+
+func TestStart_ShutdownCancels(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		// behavior of a's Start; release is closed by the test as the row says
+		behavior func(release <-chan struct{}) func(ctx context.Context) error
+		// releaseWhileShutdownBlocked releases "a" once Shutdown is blocked
+		releaseWhileShutdownBlocked bool
+		shutdownTimeout             time.Duration // 0: context.Background()
+		wantSucceed                 bool
+		wantAShutdowns              int32
+	}{
+		{
+			name: "starter_honours_ctx",
+			behavior: func(<-chan struct{}) func(ctx context.Context) error {
+				return func(ctx context.Context) error {
+					<-ctx.Done()
+					return ctx.Err()
+				}
+			},
+			wantSucceed: true, wantAShutdowns: 1,
+		},
+		{
+			name: "starter_ignores_ctx_released_while_shutdown_waits",
+			behavior: func(release <-chan struct{}) func(ctx context.Context) error {
+				return func(context.Context) error {
+					<-release
+					return nil
+				}
+			},
+			releaseWhileShutdownBlocked: true,
+			wantSucceed:                 true, wantAShutdowns: 1,
+		},
+		{
+			name: "starter_ignores_ctx_shutdown_deadline",
+			behavior: func(release <-chan struct{}) func(ctx context.Context) error {
+				return func(context.Context) error {
+					<-release
+					return nil
+				}
+			},
+			shutdownTimeout: time.Second,
+			wantSucceed:     false, wantAShutdowns: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			synctest.Test(t, func(t *testing.T) {
+				is := assert.New(t)
+
+				root := New()
+				release := make(chan struct{})
+				a := &blockingStarter{entered: make(chan struct{}), behavior: tt.behavior(release)}
+				ProvideNamed(root, "a", func(Injector) (*blockingStarter, error) { return a, nil })
+				z := provideCounted(root, "z", &startWithCtxErr{})
+
+				started := make(chan error, 1)
+				go func() { started <- root.Start() }()
+				<-a.entered
+
+				helperDone := make(chan struct{})
+				if tt.releaseWhileShutdownBlocked {
+					go func() {
+						defer close(helperDone)
+						synctest.Wait() // Shutdown is blocked waiting for Start
+						close(release)
+					}()
+				} else {
+					close(helperDone)
+				}
+
+				ctx := context.Background()
+				if tt.shutdownTimeout > 0 {
+					var cancel context.CancelFunc
+					ctx, cancel = context.WithTimeout(ctx, tt.shutdownTimeout)
+					defer cancel()
+				}
+
+				begin := time.Now()
+				report := root.ShutdownWithContext(ctx)
+				elapsed := time.Since(begin)
+
+				if tt.shutdownTimeout > 0 {
+					is.Equal(tt.shutdownTimeout, elapsed, "returns at the deadline")
+					select {
+					case <-started:
+						is.Fail("Start returned before Shutdown stopped waiting")
+					default:
+					}
+					is.False(report.Succeed)
+					is.Contains(report.Errors, rootServiceDescription(root))
+					for desc, err := range report.Errors {
+						is.ErrorIsf(err, context.DeadlineExceeded, "error of %v", desc)
+					}
+					close(release)
+				} else {
+					<-helperDone // only one goroutine may call synctest.Wait at a time
+					synctest.Wait()
+					is.Len(started, 1, "Start returned before Shutdown")
+					is.True(report.Succeed)
+				}
+
+				is.ErrorIs(<-started, ErrStartAfterShutdown)
+				is.Equal(tt.wantAShutdowns, a.shutdowns.Load())
+				is.Equal(int32(0), z.starts.Load())
+			})
+		})
+	}
+}
+
+func TestStart_PanicReleasesShutdown(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+	is := assert.New(t)
+
+	root := NewWithOpts(&InjectorOpts{
+		HookBeforeInvocation: []func(*Scope, string){
+			func(*Scope, string) { panic("hook-boom") },
+		},
+	})
+	provideCounted(root, "a", &startWithErr{})
+
+	is.PanicsWithValue("hook-boom", func() { _ = root.Start() })
+
+	is.True(root.Shutdown().Succeed)
+	is.ErrorIs(root.Start(), ErrStartAfterShutdown)
+}
+
+func TestStart_Concurrent(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, 5*time.Second)
+	is := assert.New(t)
+
+	root := New()
+	instance := provideCounted(root, "a", &startWithErr{})
+
+	const callers = 10
+	errs := make([]error, callers)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for n := range callers {
+		wg.Go(func() {
+			<-start
+			errs[n] = root.Start()
+		})
+	}
+	close(start)
+	wg.Wait()
+
+	succeeded, already := 0, 0
+	for _, err := range errs {
+		switch {
+		case err == nil:
+			succeeded++
+		case errors.Is(err, ErrAlreadyStarted):
+			already++
+		}
+	}
+	is.Equal(1, succeeded)
+	is.Equal(callers-1, already)
+	is.Equal(int32(1), instance.starts.Load())
+}
+
+func TestStart_ConcurrentInvoke(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, 5*time.Second)
+	is := assert.New(t)
+
+	root := New()
+	var builds atomic.Int32
+	ProvideNamed(root, "a", func(Injector) (*startWithErr, error) {
+		builds.Add(1)
+		return &startWithErr{}, nil
+	})
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		<-start
+		is.NoError(root.Start())
+	})
+	for range 50 {
+		wg.Go(func() {
+			<-start
+			_, err := InvokeNamed[*startWithErr](root, "a")
+			is.NoError(err)
+		})
+	}
+	close(start)
+	wg.Wait()
+
+	is.Equal(int32(1), builds.Load())
+}

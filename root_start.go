@@ -55,8 +55,23 @@ func (s *RootScope) Start() error {
 // back: cleanup is the caller's job, typically by calling Shutdown, so
 // services must tolerate Shutdown without a prior Start.
 //
+// Shutdown during Start: a root Shutdown that begins while Start runs
+// cancels the Start-time context with cause [ErrStartAfterShutdown] and waits
+// for Start to return, bounded by its own context. Start stops before its
+// next Starter or handler and returns an error matching
+// ErrStartAfterShutdown. A Starter that ignores its context and finishes
+// after Shutdown stopped waiting is not rolled back: honour ctx.
+//
+// Never call Shutdown synchronously from code that runs during Start (a
+// Starter, a kind handler, a runner, a provider or a hook): Shutdown waits
+// for Start, which waits for that code, so it deadlocks unless Shutdown's
+// context has a deadline. Return an error instead. Calling Start from such
+// code returns [ErrAlreadyStarted] immediately.
+//
 // Only [RootScope] methods are container-level: the root's *Scope (the
-// injector a provider receives) and child scopes have no Start.
+// injector a provider receives, or [Component.Scope] of a root service) and
+// child scopes have no Start, and a Shutdown reached through them bypasses
+// this coordination.
 func (s *RootScope) StartWithContext(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()

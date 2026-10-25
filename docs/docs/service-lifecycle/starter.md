@@ -136,6 +136,26 @@ if err := root.Start(); err != nil {
 
 Services must therefore tolerate `Shutdown` without a prior `Start`. A panic that escapes `Start` (for example from a hook) still marks the container as started, so a later `Shutdown()` never blocks on it.
 
+## Shutdown during Start {#shutdown-during-start}
+
+A root `Shutdown()` that begins while `Start` runs:
+
+1. cancels the Start-time context with cause `doger.ErrStartAfterShutdown`;
+2. waits for `Start` to return, bounded by its own context;
+3. shuts services down.
+
+`Start` stops before its next starter or handler and returns an error matching `doger.ErrStartAfterShutdown`.
+
+If Shutdown's own context ends first (for example a 10-second deadline), its report fails with an error for the root scope wrapping `ctx.Err()`, and shutdown proceeds while `Start` is still running. A starter that ignores its context and finishes after that is **not rolled back**: honour `ctx` in `Start(ctx)`.
+
+:::danger Do not call Shutdown from Start-time code
+
+A starter, kind handler, runner, provider or hook that runs during `Start` must not call `root.Shutdown()` synchronously: Shutdown waits for `Start`, which waits for that code. Return an error instead; `Start` stops and the caller shuts down. Calling `Start` from such code returns `ErrAlreadyStarted` immediately.
+
+:::
+
+Only the root scope coordinates Start and Shutdown. A shutdown reached through the root's `*Scope` (the injector a provider receives) or a child scope bypasses this coordination.
+
 ## Start is one-shot {#one-shot}
 
 A container starts at most once:

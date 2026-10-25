@@ -220,6 +220,13 @@ func (s *RootScope) Shutdown() *ShutdownReport { return s.ShutdownWithContext(co
 //   - Services registered on the root after the first Shutdown are not shut
 //     down by a later root Shutdown.
 //
+// A Shutdown that begins while [RootScope.StartWithContext] runs cancels
+// Start, with cause [ErrStartAfterShutdown], and waits for it to return
+// before shutting services down. If ctx ends first, the report fails with a
+// root-scope error wrapping ctx.Err(), and shutdown proceeds while Start is
+// still running. Never call Shutdown synchronously from a Starter, handler,
+// runner, provider or hook running during Start: it would wait for itself.
+//
 // Only the [RootScope] methods follow this model. A shutdown reached through
 // the root's *Scope (a provider's injector, or [Injector.Shutdown] on a
 // virtual scope) and Scope.Shutdown on child scopes bypass it and behave as
@@ -229,12 +236,12 @@ func (s *RootScope) ShutdownWithContext(ctx context.Context) *ShutdownReport {
 		ctx = context.Background()
 	}
 
-	done, winner := s.beginClose()
-	if !winner {
-		return s.waitForClose(ctx, done)
+	ticket := s.beginClose()
+	if !ticket.winner {
+		return s.waitForClose(ctx, ticket.done)
 	}
 
-	report := s.shutdownAsWinner(ctx)
+	report := s.shutdownAsWinner(ctx, ticket)
 
 	// pointClosed: closeDone is closed, so code here may call Shutdown().
 	return report
@@ -254,7 +261,7 @@ func (s *RootScope) waitForClose(ctx context.Context, done <-chan struct{}) *Shu
 
 // shutdownAsWinner shuts the container down. Its deferred finishClose runs
 // even when this goroutine panics, so waiters are always released.
-func (s *RootScope) shutdownAsWinner(ctx context.Context) (report *ShutdownReport) {
+func (s *RootScope) shutdownAsWinner(ctx context.Context, ticket closeTicket) (report *ShutdownReport) {
 	defer func() { s.finishClose(report) }()
 	defer func() {
 		// Only the winner touches the pool.
@@ -264,22 +271,66 @@ func (s *RootScope) shutdownAsWinner(ctx context.Context) (report *ShutdownRepor
 		}
 	}()
 
-	return s.self.ShutdownWithContext(ctx)
+	startErr := waitForStart(ctx, ticket)
+
+	// pointClosing
+
+	report = s.self.ShutdownWithContext(ctx)
+	if startErr != nil {
+		report.Errors[newServiceDescription(s.ID(), s.Name(), "")] = startErr
+		report.Succeed = false
+	}
+
+	return report
+}
+
+// waitForStart cancels a Start that was running when the close phase began,
+// with cause ErrStartAfterShutdown, and waits for it to return, bounded by
+// ctx. It returns an error when ctx ended first.
+func waitForStart(ctx context.Context, ticket closeTicket) error {
+	if !ticket.inFlight {
+		return nil
+	}
+
+	ticket.startCancel(ErrStartAfterShutdown)
+	if !awaitDone(ticket.startDone, ctx) {
+		return fmt.Errorf("DI: waiting for start: %w", ctx.Err())
+	}
+
+	return nil
+}
+
+// closeTicket is what a Shutdown caller learns when it enters the close phase.
+type closeTicket struct {
+	done   chan struct{} // closed when the winner finished
+	winner bool          // this caller runs the shutdown
+
+	// winner only: a Start running when the close phase began
+	inFlight    bool
+	startCancel context.CancelCauseFunc
+	startDone   chan struct{}
 }
 
 // beginClose moves the close phase from open to closing. The caller that
 // does it is the winner and runs the shutdown; any other caller waits on done.
-func (s *RootScope) beginClose() (done chan struct{}, winner bool) {
+func (s *RootScope) beginClose() closeTicket {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
 
-	if s.closePhase == closeOpen {
-		s.closePhase = closeClosing
-		s.closeDone = make(chan struct{})
-		return s.closeDone, true
+	if s.closePhase != closeOpen {
+		return closeTicket{done: s.closeDone}
 	}
 
-	return s.closeDone, false
+	s.closePhase = closeClosing
+	s.closeDone = make(chan struct{})
+
+	return closeTicket{
+		done:        s.closeDone,
+		winner:      true,
+		inFlight:    s.startPhase == startStarting,
+		startCancel: s.startCancel,
+		startDone:   s.startDone,
+	}
 }
 
 // finishClose stores a private copy of the winner's report and releases the
