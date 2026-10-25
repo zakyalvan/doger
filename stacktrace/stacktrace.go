@@ -21,7 +21,7 @@ var (
 
 	// selfPkgPath is the import path of this package, derived at runtime so
 	// that frame classification does not depend on the module path.
-	selfPkgPath = reflect.TypeOf(pkgMarker{}).PkgPath()
+	selfPkgPath = reflect.TypeFor[pkgMarker]().PkgPath()
 )
 
 // pkgMarker is an empty type used to derive this package's import path.

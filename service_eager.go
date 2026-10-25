@@ -55,7 +55,7 @@ func (s *serviceEager[T]) getServiceType() ServiceType {
 }
 
 func (s *serviceEager[T]) getReflectType() reflect.Type {
-	return reflect.TypeOf((*T)(nil)).Elem() // if T is a pointer or interface, it will return a typed nil
+	return reflect.TypeFor[T]() // if T is a pointer or interface, it will return a typed nil
 }
 
 func (s *serviceEager[T]) getInstanceAny(i Injector) (any, error) {

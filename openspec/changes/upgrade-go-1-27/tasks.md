@@ -15,7 +15,7 @@ Specs: `specs/toolchain-support/spec.md`, `specs/provider-panic-handling/spec.md
 - [x] 2.5 REFACTOR: in `.golangci.yml` add `run.go: "1.27"` and `linters.settings.modernize.disable: [atomictypes]`, with the design D4 reason as a comment; verify `golangci-lint config verify` passes and `golangci-lint run --enable-only modernize ./...` reports only `rangeint`, `reflecttypefor`, `mapsloop`, `slicescontains` and `waitgroupgo` findings.
 - [x] 2.6 REFACTOR *Substitute Algorithm*: run `go fix -slicescontains ./...` after reviewing `-diff` (it rewrites the `contains` body; design D2); verify `make test` passes and lint shows no `slicescontains` finding.
 - [x] 2.7 REFACTOR: run `go fix -mapsloop ./...` after reviewing `-diff` (`errors.go`, `scope.go`); verify `make test` passes and lint shows no `mapsloop` finding.
-- [ ] 2.8 REFACTOR: run `go fix -reflecttypefor ./...` after reviewing `-diff`; verify `make test` passes and lint shows no `reflecttypefor` finding.
+- [x] 2.8 REFACTOR: run `go fix -reflecttypefor ./...` after reviewing `-diff`; verify `make test` passes and lint shows no `reflecttypefor` finding.
 - [ ] 2.9 REFACTOR: run `go fix -rangeint ./...` after reviewing `-diff`; verify `make test` passes and lint shows no `rangeint` finding.
 - [ ] 2.10 REFACTOR: run `go fix -waitgroupgo ./...` after reviewing `-diff` (3 sites in `scope_test.go`); verify `go test -race -count=3 -run Shutdown .` and `make test` pass and lint shows no `waitgroupgo` finding.
 - [ ] 2.11 REFACTOR: run `go fix -any ./...` in every workspace module and hand-edit the 3 `interface{}` comments (`invoke.go:14,21`, `invoke_test.go:69`); verify `grep -rn 'interface{}' --include='*.go' .` prints nothing, every module still passes `go vet ./...`, and `make lint` reports 0 issues.

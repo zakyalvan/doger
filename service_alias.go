@@ -61,7 +61,7 @@ func (s *serviceAlias[Initial, Alias]) getServiceType() ServiceType {
 }
 
 func (s *serviceAlias[Initial, Alias]) getReflectType() reflect.Type {
-	return reflect.TypeOf((*Alias)(nil)).Elem() // if T is a pointer or interface, it will return a typed nil
+	return reflect.TypeFor[Alias]() // if T is a pointer or interface, it will return a typed nil
 }
 
 func (s *serviceAlias[Initial, Alias]) getInstanceAny(i Injector) (any, error) {

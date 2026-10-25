@@ -70,7 +70,7 @@ func TestModuleIdentity_RootModulePackages(t *testing.T) {
 			}
 			is.Equal(tt.importPath, importPath)
 			if tt.dir == "." {
-				is.Equal(tt.importPath, reflect.TypeOf((*RootScope)(nil)).Elem().PkgPath())
+				is.Equal(tt.importPath, reflect.TypeFor[RootScope]().PkgPath())
 			}
 
 			pkg, err := build.ImportDir(tt.dir, 0)

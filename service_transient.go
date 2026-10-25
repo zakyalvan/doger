@@ -44,7 +44,7 @@ func (s *serviceTransient[T]) getServiceType() ServiceType {
 }
 
 func (s *serviceTransient[T]) getReflectType() reflect.Type {
-	return reflect.TypeOf((*T)(nil)).Elem() // if T is a pointer or interface, it will return a typed nil
+	return reflect.TypeFor[T]() // if T is a pointer or interface, it will return a typed nil
 }
 
 func (s *serviceTransient[T]) getInstanceAny(i Injector) (any, error) {

@@ -62,7 +62,7 @@ func testWithTimeout(t *testing.T, timeout time.Duration) {
 // pkgName holds the current package name (eg. "do"). It won't break
 // if the package name is changed, in case of a fork or anything.
 var pkgName = func() string {
-	t := reflect.TypeOf(__pkg_probe_type{})
+	t := reflect.TypeFor[__pkg_probe_type]()
 	s := t.String() // eg. "do.__pkg_probe_type"
 	if i := strings.IndexByte(s, '.'); i > 0 {
 		return s[:i]

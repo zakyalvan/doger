@@ -240,7 +240,7 @@ func genericCanCastToGeneric[From any, To any]() bool {
 
 	if anyFrom == nil { // check for interface by reflect
 		typeFrom := reflect.TypeOf(&from).Elem()
-		typeTo := reflect.TypeOf((*To)(nil)).Elem()
+		typeTo := reflect.TypeFor[To]()
 
 		toInterface := typeTo.Kind() == reflect.Interface
 
@@ -252,7 +252,7 @@ func genericCanCastToGeneric[From any, To any]() bool {
 }
 
 func typeCanCastToGeneric[To any](fromType reflect.Type) bool {
-	toType := reflect.TypeOf((*To)(nil)).Elem()
+	toType := reflect.TypeFor[To]()
 	return typeCanCastToType(fromType, toType)
 }
 
