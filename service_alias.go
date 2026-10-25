@@ -17,6 +17,7 @@ var (
 )
 
 type serviceAlias[Initial any, Alias any] struct {
+	regIndex   uint64 // registration order, unique per root container
 	mu         sync.RWMutex
 	name       string
 	typeName   string // string representation of the Alias type
@@ -157,6 +158,7 @@ func (s *serviceAlias[Initial, Alias]) clone(newScope Injector) any {
 	return &serviceAlias[Initial, Alias]{
 		mu:         sync.RWMutex{},
 		name:       s.name,
+		regIndex:   s.regIndex,
 		typeName:   s.typeName,
 		scope:      newScope,
 		targetName: s.targetName,
@@ -176,4 +178,12 @@ func (s *serviceAlias[Initial, Alias]) source() (stacktrace.Frame, []stacktrace.
 	s.mu.RUnlock()
 
 	return s.providerFrame, invokationFrames
+}
+
+func (s *serviceAlias[Initial, Alias]) getRegistrationIndex() uint64 {
+	return s.regIndex
+}
+
+func (s *serviceAlias[Initial, Alias]) setRegistrationIndex(index uint64) {
+	s.regIndex = index
 }

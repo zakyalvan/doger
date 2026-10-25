@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -130,6 +131,8 @@ type RootScope struct {
 	opts            *InjectorOpts   // Configuration options
 	dag             *DAG            // Dependency graph for service relationships
 	healthCheckPool *jobPool[error] // Pool for parallel health check operations
+
+	nextRegIndex atomic.Uint64 // next registration index, shared by every scope of this container
 
 	// Lifecycle state. Phases change only by compare-and-set under lifecycleMu,
 	// which is never held while user code runs.
@@ -463,6 +466,9 @@ func (s *RootScope) Clone() *RootScope {
 func (s *RootScope) CloneWithOpts(opts *InjectorOpts) *RootScope {
 	clone := NewWithOpts(opts)
 	clone.self = s.clone(clone, nil)
+	// Read after copying: every copied wrapper got its index before it was
+	// stored, so later registrations in the clone come after all of them.
+	clone.nextRegIndex.Store(s.nextRegIndex.Load())
 
 	s.opts.Logf("DI: injector cloned")
 

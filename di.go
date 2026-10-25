@@ -171,9 +171,24 @@ func provide[T any, A any](i Injector, name string, valueOrProvider A, serviceCt
 	}
 
 	service := serviceCtor(name, valueOrProvider)
+	service.setRegistrationIndex(assignRegistrationIndex(_i, name))
 	_i.serviceSet(name, service)
 
 	_i.RootScope().opts.Logf("DI: service %s injected", name)
+}
+
+// assignRegistrationIndex returns the registration index for name in scope.
+// A name already registered in scope itself keeps its index, so an override
+// keeps the position of the first registration. Otherwise the next index of
+// the root container is taken.
+func assignRegistrationIndex(scope Injector, name string) uint64 {
+	if previous, ok := scope.serviceGet(name); ok {
+		if indexed, ok := previous.(interface{ getRegistrationIndex() uint64 }); ok {
+			return indexed.getRegistrationIndex()
+		}
+	}
+
+	return scope.RootScope().nextRegIndex.Add(1) - 1
 }
 
 // Override replaces the service in the DI container, using type inference to determine the service name.
@@ -262,6 +277,7 @@ func override[T any, A any](i Injector, name string, valueOrProvider A, serviceC
 
 	// Note: We don't check if the service exists here, allowing override
 	service := serviceCtor(name, valueOrProvider)
+	service.setRegistrationIndex(assignRegistrationIndex(_i, name))
 	_i.serviceSet(name, service) // @TODO: should we unload/shutdown the previous service ?
 
 	_i.RootScope().opts.Logf("DI: service %s overridden", name)

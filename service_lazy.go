@@ -18,6 +18,7 @@ var (
 )
 
 type serviceLazy[T any] struct {
+	regIndex uint64 // registration order, unique per root container
 	mu       sync.RWMutex
 	name     string
 	typeName string
@@ -215,6 +216,7 @@ func (s *serviceLazy[T]) clone(newScope Injector) any {
 	return &serviceLazy[T]{
 		mu:       sync.RWMutex{},
 		name:     s.name,
+		regIndex: s.regIndex,
 		typeName: s.typeName,
 
 		built:     false,
@@ -240,4 +242,12 @@ func (s *serviceLazy[T]) source() (stacktrace.Frame, []stacktrace.Frame) {
 
 func (s *serviceLazy[T]) getBuildTime() (time.Duration, bool) {
 	return s.buildTime, s.built
+}
+
+func (s *serviceLazy[T]) getRegistrationIndex() uint64 {
+	return s.regIndex
+}
+
+func (s *serviceLazy[T]) setRegistrationIndex(index uint64) {
+	s.regIndex = index
 }

@@ -17,6 +17,7 @@ var (
 )
 
 type serviceEager[T any] struct {
+	regIndex uint64 // registration order, unique per root container
 	name     string
 	typeName string
 	instance T
@@ -144,6 +145,7 @@ func (s *serviceEager[T]) shutdown(ctx context.Context) error {
 func (s *serviceEager[T]) clone(newScope Injector) any {
 	return &serviceEager[T]{
 		name:     s.name,
+		regIndex: s.regIndex,
 		typeName: s.typeName,
 		instance: s.instance,
 
@@ -163,4 +165,12 @@ func (s *serviceEager[T]) source() (stacktrace.Frame, []stacktrace.Frame) {
 	s.invokationFramesMu.RUnlock()
 
 	return s.providerFrame, invokationFrames
+}
+
+func (s *serviceEager[T]) getRegistrationIndex() uint64 {
+	return s.regIndex
+}
+
+func (s *serviceEager[T]) setRegistrationIndex(index uint64) {
+	s.regIndex = index
 }

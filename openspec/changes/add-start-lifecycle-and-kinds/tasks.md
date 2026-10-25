@@ -15,9 +15,9 @@ Prerequisites: `fix-stacktrace-frame-filter`, `rename-module-doger` and `upgrade
 
 ## 2. Registration index
 
-- [ ] 2.1 RED: in `options_test.go` add `TestRegistrationIndex_Order` (rows: same-scope override keeps a=0, child-scope override gets a new index, clone continues the counter; mechanism of scenario "Registration order survives override and clone") `TestRegistrationIndex_ConcurrentUnique` (100 goroutines, distinct indexes) and `TestRegistrationIndex_CloneDuringRegistration` (registrations racing `Clone`, distinct indexes in the clone; a stress test, see design D3); verify `go test -race -run TestRegistrationIndex .` fails to compile only on the missing `getRegistrationIndex`.
-- [ ] 2.2 GREEN: implement design D1/D3 (`nextRegIndex` on `RootScope`; `regIndex` and `getRegistrationIndex()` on the four wrappers and both wrapper interfaces; assign in `provide`/`override`, keep it on same-scope override, copy in `clone`, continue the counter in `CloneWithOpts`, read after copying the wrappers); verify the 2.1 command passes with `-count=20` and `make test` is green.
-- [ ] 2.3 REFACTOR: *Extract Function* `assignRegistrationIndex(scope, name)` shared by `provide`/`override`; verify `make test` and `make lint` pass. No docs: the index is internal.
+- [x] 2.1 RED: in `options_test.go` add `TestRegistrationIndex_Order` (rows: same-scope override keeps a=0, child-scope override gets a new index, clone continues the counter; mechanism of scenario "Registration order survives override and clone") `TestRegistrationIndex_ConcurrentUnique` (100 goroutines, distinct indexes) and `TestRegistrationIndex_CloneDuringRegistration` (registrations racing `Clone`, distinct indexes in the clone; a stress test, see design D3); verify `go test -race -run TestRegistrationIndex .` fails to compile only on the missing `getRegistrationIndex`.
+- [x] 2.2 GREEN: implement design D1/D3 (`nextRegIndex` on `RootScope`; `regIndex` and `getRegistrationIndex()` on the four wrappers and both wrapper interfaces; assign in `provide`/`override`, keep it on same-scope override, copy in `clone`, continue the counter in `CloneWithOpts`, read after copying the wrappers); verify the 2.1 command passes with `-count=20` and `make test` is green.
+- [x] 2.3 REFACTOR: *Extract Function* `assignRegistrationIndex(scope, name)` shared by `provide`/`override`; verify `make test` and `make lint` pass. No docs: the index is internal.
 
 ## 3. ProvideOption and variadic registration signatures
 

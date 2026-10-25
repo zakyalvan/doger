@@ -61,6 +61,8 @@ type serviceWrapper[T any] interface {
 	shutdown(context.Context) error
 	clone(Injector) any
 	source() (stacktrace.Frame, []stacktrace.Frame)
+	getRegistrationIndex() uint64
+	setRegistrationIndex(uint64)
 }
 
 // serviceWrapperAny is a non-generic version of serviceWrapper[T] that provides access to
@@ -79,6 +81,8 @@ type serviceWrapperAny interface {
 	shutdown(context.Context) error
 	clone(Injector) any
 	source() (stacktrace.Frame, []stacktrace.Frame)
+	getRegistrationIndex() uint64
+	setRegistrationIndex(uint64)
 }
 
 // Interface definitions for specific service capabilities.

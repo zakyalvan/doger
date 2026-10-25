@@ -15,6 +15,7 @@ var (
 )
 
 type serviceTransient[T any] struct {
+	regIndex uint64 // registration order, unique per root container
 	name     string
 	typeName string
 
@@ -78,6 +79,7 @@ func (s *serviceTransient[T]) shutdown(ctx context.Context) error {
 func (s *serviceTransient[T]) clone(newScope Injector) any {
 	return &serviceTransient[T]{
 		name:     s.name,
+		regIndex: s.regIndex,
 		typeName: s.typeName,
 
 		provider: s.provider,
@@ -88,4 +90,12 @@ func (s *serviceTransient[T]) source() (stacktrace.Frame, []stacktrace.Frame) {
 	// @TODO: implement stacktrace ?
 	// It requires to store each instance of service, which is not good because of memory leaks.
 	return stacktrace.Frame{}, []stacktrace.Frame{}
+}
+
+func (s *serviceTransient[T]) getRegistrationIndex() uint64 {
+	return s.regIndex
+}
+
+func (s *serviceTransient[T]) setRegistrationIndex(index uint64) {
+	s.regIndex = index
 }
