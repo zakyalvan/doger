@@ -9,6 +9,10 @@
 #     because it cannot load code newer than the Go it was built with.
 #   - gopls: required by the gopls-lsp plugin; override with GOPLS_VERSION.
 #     Rebuilt whenever Go changes, for the same reason.
+#   - Claude Code plugins: a fresh container has the extraKnownMarketplaces
+#     and enabledPlugins of .claude/settings.json but not the installs; adds
+#     the missing marketplaces and installs the missing plugins in user
+#     scope, so .claude/settings.json is never rewritten.
 set -euo pipefail
 
 if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then
@@ -70,6 +74,18 @@ install_go_tool github.com/golangci/golangci-lint/v2 \
   github.com/golangci/golangci-lint/v2/cmd/golangci-lint "$GOLANGCI_LINT_VERSION"
 install_go_tool golang.org/x/tools/gopls golang.org/x/tools/gopls "$GOPLS_VERSION"
 
+SETTINGS="${CLAUDE_PROJECT_DIR:-$(pwd)}/.claude/settings.json"
+known_marketplaces="$(claude plugin marketplace list --json | jq -r '.[].name')"
+jq -r '.extraKnownMarketplaces // {} | to_entries[] | select(.value.source.source == "github") | "\(.key) \(.value.source.repo)"' "$SETTINGS" |
+  while read -r name repo; do
+    grep -qxF "$name" <<<"$known_marketplaces" || claude plugin marketplace add "$repo"
+  done
+installed_plugins="$(claude plugin list --json | jq -r '.[].id')"
+jq -r '.enabledPlugins // {} | to_entries[] | select(.value == true) | .key' "$SETTINGS" |
+  while read -r plugin; do
+    grep -qxF "$plugin" <<<"$installed_plugins" || claude plugin install "$plugin" --scope user
+  done
+
 case ":$PATH:" in
   *":$TOOLS_BIN:"*) ;;
   *) echo "export PATH=\"$TOOLS_BIN:\$PATH\"" >> "$CLAUDE_ENV_FILE" ;;
@@ -79,3 +95,4 @@ go version
 openspec --version
 "$TOOLS_BIN/golangci-lint" --version
 "$TOOLS_BIN/gopls" version
+claude plugin list
