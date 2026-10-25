@@ -39,6 +39,13 @@ func (s *RootScope) Start() error {
 // starts independently of its source; clones share eager instances, so an
 // eager Starter is started again by the clone.
 //
+// On the first failure (a build error, a Start error, or a panic in a Start
+// method, recovered as an error), Start stops and returns an error that names
+// the service and its scope and wraps the cause, so errors.Is and errors.As
+// reach it. Starters not reached yet are not started. Nothing is rolled
+// back: cleanup is the caller's job, typically by calling Shutdown, so
+// services must tolerate Shutdown without a prior Start.
+//
 // Only [RootScope] methods are container-level: the root's *Scope (the
 // injector a provider receives) and child scopes have no Start.
 func (s *RootScope) StartWithContext(ctx context.Context) error {
@@ -195,7 +202,7 @@ func buildCandidates(candidates []*startCandidate) error {
 	for _, candidate := range candidates {
 		instance, err := invokeAnyByName(candidate.scope, candidate.name)
 		if err != nil {
-			return err
+			return fmt.Errorf("DI: failed to build service `%s` in scope `%s`: %w", candidate.name, candidate.scope.Name(), err)
 		}
 		candidate.instance = instance
 	}
@@ -223,8 +230,12 @@ func startStarters(ctx context.Context, candidates []*startCandidate) error {
 			continue
 		}
 
+		if !instanceIsStarter(candidate.instance) {
+			return fmt.Errorf("DI: service `%s` was opted in with AsStarter but does not implement any Starter interface", candidate.name)
+		}
+
 		if err := startInstance(ctx, candidate.instance); err != nil {
-			return err
+			return wrapStartError(candidate.scope, candidate.name, err)
 		}
 	}
 
@@ -233,7 +244,13 @@ func startStarters(ctx context.Context, candidates []*startCandidate) error {
 
 // startInstance calls the Start method of the instance's Starter variant.
 // The type switch mirrors the one of the shutdown path.
-func startInstance(ctx context.Context, instance any) error {
+func startInstance(ctx context.Context, instance any) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = recoverAsError(r)
+		}
+	}()
+
 	switch instance := instance.(type) {
 	case StarterWithContextAndError:
 		return instance.Start(ctx)
@@ -246,4 +263,29 @@ func startInstance(ctx context.Context, instance any) error {
 	}
 
 	return nil
+}
+
+// instanceIsStarter reports whether instance implements a Starter variant.
+func instanceIsStarter(instance any) bool {
+	switch instance.(type) {
+	case StarterWithContextAndError, StarterWithError, StarterWithContext, Starter:
+		return true
+	}
+
+	return false
+}
+
+// wrapStartError names the service and scope whose Start failed.
+func wrapStartError(scope *Scope, name string, err error) error {
+	return fmt.Errorf("DI: failed to start service `%s` in scope `%s`: %w", name, scope.Name(), err)
+}
+
+// recoverAsError turns a recovered panic value into an error. An error value
+// is wrapped, so errors.Is and errors.As reach it.
+func recoverAsError(r any) error {
+	if err, ok := r.(error); ok {
+		return fmt.Errorf("DI: recovered panic: %w", err)
+	}
+
+	return fmt.Errorf("DI: recovered panic: %v", r)
 }

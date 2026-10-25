@@ -63,10 +63,10 @@ Prerequisites: `fix-stacktrace-frame-filter`, `rename-module-doger` and `upgrade
 
 ## 9. Start errors and panics
 
-- [ ] 9.1 RED: add `TestStart_StarterFailure` (3 rows of "A Starter failure stops the remaining Starters"), `TestStart_BuildFailure` (2 rows of "A build failure stops Start before any Starter"), `TestStart_AsStarterInstanceWithoutStart` and `TestStart_ShutdownAfterFailure`; verify `go test -race -run 'TestStart_(StarterFailure|BuildFailure|AsStarterInstanceWithoutStart|ShutdownAfterFailure)' .` fails on the error-wrapping and message assertions and on the unrecovered panic rows; `ShutdownAfterFailure` passes on arrival (existing shutdown), so show it fails with `serviceLazy.shutdown` temporarily returning early.
-- [ ] 9.2 GREEN: wrap build and start failures with the D7/D11 formats, recover in `startInstance`, return the spec error for a deferred `AsStarter` instance without a `Start` variant, stop at the first failure; verify the 9.1 command passes and `make test` is green.
-- [ ] 9.3 REFACTOR: *Extract Function* `wrapStartError(scope, name, err)` and `recoverAsError(r any) error`; verify `make test` and `make lint` pass.
-- [ ] 9.4 Document failure semantics (no rollback, caller-owned `Shutdown`, services must tolerate Shutdown without Start) in the `Start` godoc and the starter docs page; verify `go doc RootScope.Start` and `npm run build` in `docs/` pass.
+- [x] 9.1 RED: add `TestStart_StarterFailure` (3 rows of "A Starter failure stops the remaining Starters"), `TestStart_BuildFailure` (2 rows of "A build failure stops Start before any Starter"), `TestStart_AsStarterInstanceWithoutStart` and `TestStart_ShutdownAfterFailure`; verify `go test -race -run 'TestStart_(StarterFailure|BuildFailure|AsStarterInstanceWithoutStart|ShutdownAfterFailure)' .` fails on the error-wrapping and message assertions and on the unrecovered panic rows; `ShutdownAfterFailure` passes on arrival (existing shutdown), so show it fails with `serviceLazy.shutdown` temporarily returning early.
+- [x] 9.2 GREEN: wrap build and start failures with the D7/D11 formats, recover in `startInstance`, return the spec error for a deferred `AsStarter` instance without a `Start` variant, stop at the first failure; verify the 9.1 command passes and `make test` is green.
+- [x] 9.3 REFACTOR: *Extract Function* `wrapStartError(scope, name, err)` and `recoverAsError(r any) error`; verify `make test` and `make lint` pass.
+- [x] 9.4 Document failure semantics (no rollback, caller-owned `Shutdown`, services must tolerate Shutdown without Start) in the `Start` godoc and the starter docs page; verify `go doc RootScope.Start` and `npm run build` in `docs/` pass.
 
 ## 10. Context handling
 

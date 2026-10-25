@@ -98,6 +98,26 @@ Starters are started sequentially.
 
 A cycle that only exists once services are built, for example a [declared edge](../service-registration/declared-dependencies.md#declare-dependency) later closed by a provider's invocation, makes `Start` fail with an error matching `doger.ErrCircularDependency`, naming the chain, before any starter is started.
 
+## Errors {#errors}
+
+On the first failure, `Start` stops and returns an error that names the service and its scope and wraps the cause (`errors.Is` / `errors.As` work). A failure is:
+
+- a build error, including a missing or circular [declared dependency](../service-registration/declared-dependencies.md);
+- an error returned by a `Start` method;
+- a panic inside a `Start` method, recovered and returned as an error;
+- an `AsStarter()` service whose instance has no `Start` method.
+
+Starters not reached yet are not started, and **nothing is rolled back**. Cleanup is the caller's job:
+
+```go
+if err := root.Start(); err != nil {
+	_ = root.Shutdown() // shuts down every built service, started or not
+	return err
+}
+```
+
+Services must therefore tolerate `Shutdown` without a prior `Start`. A panic that escapes `Start` (for example from a hook) still marks the container as started, so a later `Shutdown()` never blocks on it.
+
 ## Start is one-shot {#one-shot}
 
 A container starts at most once:

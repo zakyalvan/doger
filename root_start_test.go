@@ -547,3 +547,173 @@ func TestStart_RejectsDeclaredCycle(t *testing.T) {
 	is.ErrorContains(err, "`job`")
 	is.Empty(rec.list())
 }
+
+// scriptedStarter records its start in rec, then panics with panicValue (if
+// set) or returns err.
+type scriptedStarter struct {
+	name       string
+	rec        *callRecorder
+	err        error
+	panicValue any
+}
+
+func (s *scriptedStarter) Start(context.Context) error {
+	if s.panicValue != nil {
+		panic(s.panicValue)
+	}
+	if s.err != nil {
+		return s.err
+	}
+	s.rec.record(s.name)
+	return nil
+}
+
+func (s *scriptedStarter) Shutdown() error {
+	s.rec.record("shutdown " + s.name)
+	return nil
+}
+
+// errorStarter has Start() error.
+type errorStarter struct{ err error }
+
+func (s *errorStarter) Start() error { return s.err }
+
+func TestStart_StarterFailure(t *testing.T) {
+	t.Parallel()
+	errBoom := errors.New("boom")
+
+	tests := []struct {
+		name    string
+		provide func(root *RootScope)
+		check   func(t *testing.T, err error)
+	}{
+		{
+			name: "start_returns_error",
+			provide: func(root *RootScope) {
+				ProvideNamed(root, "b", func(Injector) (*errorStarter, error) { return &errorStarter{err: errBoom}, nil })
+			},
+			check: func(t *testing.T, err error) { assert.ErrorIs(t, err, errBoom) },
+		},
+		{
+			name: "start_panics_with_string",
+			provide: func(root *RootScope) {
+				ProvideNamed(root, "b", func(Injector) (*scriptedStarter, error) { return &scriptedStarter{panicValue: "kaboom"}, nil })
+			},
+			check: func(t *testing.T, err error) { assert.ErrorContains(t, err, "kaboom") },
+		},
+		{
+			name: "start_panics_with_error",
+			provide: func(root *RootScope) {
+				ProvideNamed(root, "b", func(Injector) (*scriptedStarter, error) { return &scriptedStarter{panicValue: errBoom}, nil })
+			},
+			check: func(t *testing.T, err error) { assert.ErrorIs(t, err, errBoom) },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+			is := assert.New(t)
+
+			root := New()
+			rec := &callRecorder{}
+			builds := &callRecorder{}
+			ProvideNamed(root, "a", func(Injector) (*scriptedStarter, error) {
+				builds.record("a")
+				return &scriptedStarter{name: "a", rec: rec}, nil
+			})
+			tt.provide(root)
+			ProvideNamed(root, "c", func(Injector) (*scriptedStarter, error) {
+				builds.record("c")
+				return &scriptedStarter{name: "c", rec: rec}, nil
+			})
+
+			err := root.Start()
+
+			is.ErrorContains(err, "service `b`")
+			tt.check(t, err)
+			is.Equal([]string{"a"}, rec.list())
+			is.Equal([]string{"a", "c"}, builds.list())
+		})
+	}
+}
+
+func TestStart_BuildFailure(t *testing.T) {
+	t.Parallel()
+	errBuild := errors.New("build failed")
+
+	tests := []struct {
+		name  string
+		opts  []ProvideOption
+		fail  bool
+		cause error
+	}{
+		{name: "provider_error", fail: true, cause: errBuild},
+		{name: "missing_declared_dependency", opts: []ProvideOption{DependsOnNamed("missing")}, cause: ErrServiceNotFound},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+			is := assert.New(t)
+
+			root := New()
+			rec := &callRecorder{}
+			builds := &callRecorder{}
+			for _, name := range []string{"a", "b", "c"} {
+				var opts []ProvideOption
+				if name == "b" {
+					opts = tt.opts
+				}
+				ProvideNamed(root, name, func(Injector) (*scriptedStarter, error) {
+					if name == "b" && tt.fail {
+						return nil, errBuild
+					}
+					builds.record(name)
+					return &scriptedStarter{name: name, rec: rec}, nil
+				}, opts...)
+			}
+
+			err := root.Start()
+
+			is.ErrorContains(err, "service `b`")
+			is.ErrorIs(err, tt.cause)
+			is.Equal([]string{"a"}, builds.list())
+			is.Empty(rec.list())
+		})
+	}
+}
+
+func TestStart_AsStarterInstanceWithoutStart(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	ProvideNamed(root, "app.Lifecycle", func(Injector) (startLifecycle, error) { return &startNone{}, nil }, AsStarter())
+
+	err := root.Start()
+
+	assert.ErrorContains(t, err, "DI: service `app.Lifecycle` was opted in with AsStarter but does not implement any Starter interface")
+}
+
+func TestStart_ShutdownAfterFailure(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+	is := assert.New(t)
+	errBoom := errors.New("boom")
+
+	root := New()
+	rec := &callRecorder{}
+	ProvideNamed(root, "a", func(Injector) (*scriptedStarter, error) { return &scriptedStarter{name: "a", rec: rec}, nil })
+	ProvideNamed(root, "b", func(Injector) (*scriptedStarter, error) {
+		return &scriptedStarter{name: "b", rec: rec, err: errBoom}, nil
+	})
+	ProvideNamed(root, "c", func(Injector) (*scriptedStarter, error) { return &scriptedStarter{name: "c", rec: rec}, nil })
+
+	require.Error(t, root.Start())
+	root.Shutdown()
+
+	is.ElementsMatch([]string{"a", "shutdown a", "shutdown b", "shutdown c"}, rec.list())
+}
