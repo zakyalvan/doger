@@ -94,10 +94,10 @@ Rules:
 
 ## 13. Observer hook panics are recovered and re-raised (Part H)
 
-- [ ] 13.1 RED: add `TestContainerHooks_ObserverPanicDefault` (scenario "Default re-panics after the operation completes", 5 rows) and `TestContainerHooks_ObserverPanicOverride` (scenario "HookContainerPanic overrides the default", 2 rows); verify `go test -race -run 'TestContainerHooks_ObserverPanic' .` fails to compile only on the missing `HookContainerPanic` field
-- [ ] 13.2 GREEN: add `HookContainerPanic`, recover each observer hook call, keep the first panic and log later ones, and dispatch it last, after `finishStart`/`finishClose` and every hook ran, re-panicking when the field is nil (design D6); verify the 13.1 command passes and `make test` is green
-- [ ] 13.3 REFACTOR: *Extract Function* `callHookSafely(fn func()) (recovered any, panicked bool)` and `dispatchHookPanic(point, value)`; verify `make test` and `make lint` pass
-- [ ] 13.4 Add `ExampleInjectorOpts_hookContainerPanic` (log instead of re-panic), godoc on the field, and the panic section of the docs page; verify `go test -run ExampleInjectorOpts_hookContainerPanic .` passes and `npm --prefix docs run build` succeeds
+- [x] 13.1 RED: add `TestContainerHooks_ObserverPanicDefault` (scenario "Default re-panics after the operation completes", 5 rows) and `TestContainerHooks_ObserverPanicOverride` (scenario "HookContainerPanic overrides the default", 2 rows); verify `go test -race -run 'TestContainerHooks_ObserverPanic' .` fails to compile only on the missing `HookContainerPanic` field
+- [x] 13.2 GREEN: add `HookContainerPanic`, recover each observer hook call, keep the first panic and log later ones, and dispatch it last, after `finishStart`/`finishClose` and every hook ran, re-panicking when the field is nil (design D6); verify the 13.1 command passes and `make test` is green
+- [x] 13.3 REFACTOR: *Extract Function* `callHookSafely(fn func()) (recovered any, panicked bool)` and `dispatchHookPanic(point, value)`; verify `make test` and `make lint` pass
+- [x] 13.4 Add `ExampleInjectorOpts_hookContainerPanic` (log instead of re-panic), godoc on the field, and the panic section of the docs page; verify `go test -run ExampleInjectorOpts_hookContainerPanic .` passes and `npm --prefix docs run build` succeeds
 
 ## 14. Starting hook panics are vetoes (Part H)
 

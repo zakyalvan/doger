@@ -192,6 +192,16 @@ type InjectorOpts struct {
 	// copy of the first report.
 	HookContainerClosed []func(ctx context.Context, scope *RootScope, report *ShutdownReport)
 
+	// HookContainerPanic receives the first panic recovered from a Started,
+	// Ready, Failed, Closing or Closed hook, once the operation is complete:
+	// every hook of the list has run, and so has the rest of Start or
+	// Shutdown. hook names the point ("started", "ready", "failed",
+	// "closing" or "closed"); later panics of the same operation are logged
+	// with Logf. Start or Shutdown then returns its normal result.
+	// Default (nil): re-panic with the recovered value. Panics in Starting
+	// hooks are vetoes and never reach it.
+	HookContainerPanic func(scope *RootScope, hook string, recovered any)
+
 	// Logf is the logging function used by the DI container for internal logging.
 	// If not provided, no logging will occur. This function should handle the format
 	// string and arguments similar to fmt.Printf.
@@ -254,6 +264,7 @@ func (o *InjectorOpts) copy() *InjectorOpts {
 		HookContainerFailed:      append([]func(context.Context, *RootScope, error){}, o.HookContainerFailed...),
 		HookContainerClosing:     append([]func(context.Context, *RootScope){}, o.HookContainerClosing...),
 		HookContainerClosed:      append([]func(context.Context, *RootScope, *ShutdownReport){}, o.HookContainerClosed...),
+		HookContainerPanic:       o.HookContainerPanic,
 		Logf:                     o.Logf,
 		HealthCheckParallelism:   o.HealthCheckParallelism,
 		HealthCheckGlobalTimeout: o.HealthCheckGlobalTimeout,

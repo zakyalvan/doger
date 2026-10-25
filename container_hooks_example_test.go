@@ -111,3 +111,21 @@ func ExampleInjectorOpts_containerHooks() {
 	// db stopped
 	// closed, succeed: true
 }
+
+func ExampleInjectorOpts_hookContainerPanic() {
+	root := NewWithOpts(&InjectorOpts{
+		// Log observer hook panics instead of re-panicking.
+		HookContainerPanic: func(_ *RootScope, hook string, recovered any) {
+			fmt.Printf("%s hook panicked: %v\n", hook, recovered)
+		},
+	})
+	root.AddContainerReadyHook(func(context.Context, *RootScope) {
+		panic("readiness endpoint unavailable")
+	})
+
+	err := root.Start()
+	fmt.Println("start error:", err)
+	// Output:
+	// ready hook panicked: readiness endpoint unavailable
+	// start error: <nil>
+}

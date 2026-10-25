@@ -3,7 +3,9 @@ package doger
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -923,4 +925,170 @@ func TestContainerHooks_Clone(t *testing.T) {
 			assert.Equal(t, tt.count, started.Load())
 		})
 	}
+}
+
+func TestContainerHooks_ObserverPanicDefault(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+
+	tests := []struct {
+		name string
+		// register adds the panicking hook, the following recording hook and
+		// the row's other hooks; it returns the events expected to be
+		// recorded before the panic reached the caller.
+		register   func(root *RootScope, rec *callRecorder) []string
+		operation  func(root *RootScope)
+		laterError error
+	}{
+		{
+			name: "Started",
+			register: func(root *RootScope, rec *callRecorder) []string {
+				root.AddContainerStartedHook(func(context.Context, *RootScope) { panic("kaboom") })
+				root.AddContainerStartedHook(func(context.Context, *RootScope) { rec.record("next-started") })
+				root.AddContainerReadyHook(func(context.Context, *RootScope) { rec.record("ready") })
+				return []string{"next-started", "ready"}
+			},
+			operation:  func(root *RootScope) { _ = root.Start() },
+			laterError: ErrAlreadyStarted,
+		},
+		{
+			name: "Ready",
+			register: func(root *RootScope, rec *callRecorder) []string {
+				root.AddContainerReadyHook(func(context.Context, *RootScope) { panic("kaboom") })
+				root.AddContainerReadyHook(func(context.Context, *RootScope) { rec.record("next-ready") })
+				return []string{"next-ready"}
+			},
+			operation:  func(root *RootScope) { _ = root.Start() },
+			laterError: ErrAlreadyStarted,
+		},
+		{
+			name: "Failed",
+			register: func(root *RootScope, rec *callRecorder) []string {
+				ProvideNamedValue(root, "server", &errorStarter{err: errBoom})
+				root.AddContainerFailedHook(func(context.Context, *RootScope, error) { panic("kaboom") })
+				root.AddContainerFailedHook(func(context.Context, *RootScope, error) { rec.record("next-failed") })
+				return []string{"next-failed"}
+			},
+			operation:  func(root *RootScope) { _ = root.Start() },
+			laterError: ErrAlreadyStarted,
+		},
+		{
+			name: "Closing",
+			register: func(root *RootScope, rec *callRecorder) []string {
+				root.AddContainerClosingHook(func(context.Context, *RootScope) { panic("kaboom") })
+				root.AddContainerClosingHook(func(context.Context, *RootScope) { rec.record("next-closing") })
+				root.AddContainerClosedHook(func(context.Context, *RootScope, *ShutdownReport) { rec.record("closed") })
+				return []string{"next-closing", "db.Shutdown", "closed"}
+			},
+			operation:  func(root *RootScope) { root.Shutdown() },
+			laterError: ErrStartAfterShutdown,
+		},
+		{
+			name: "Closed",
+			register: func(root *RootScope, rec *callRecorder) []string {
+				root.AddContainerClosedHook(func(context.Context, *RootScope, *ShutdownReport) { panic("kaboom") })
+				root.AddContainerClosedHook(func(context.Context, *RootScope, *ShutdownReport) { rec.record("next-closed") })
+				return []string{"db.Shutdown", "next-closed"}
+			},
+			operation:  func(root *RootScope) { root.Shutdown() },
+			laterError: ErrStartAfterShutdown,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+			is := assert.New(t)
+
+			root := New()
+			rec := &callRecorder{}
+			provideBuiltShutdowner(t, root, rec, "db", nil)
+			completed := tt.register(root, rec)
+
+			var recovered any
+			func() {
+				defer func() { recovered = recover() }()
+				tt.operation(root)
+			}()
+
+			is.Equal("kaboom", recovered)
+			is.Equal(completed, rec.list())
+			is.ErrorIs(root.Start(), tt.laterError)
+		})
+	}
+}
+
+func TestContainerHooks_ObserverPanicOverride(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		register  func(root *RootScope)
+		operation func(t *testing.T, root *RootScope)
+		point     string
+	}{
+		{
+			name: "Started",
+			register: func(root *RootScope) {
+				root.AddContainerStartedHook(func(context.Context, *RootScope) { panic("kaboom") })
+				root.AddContainerStartedHook(func(context.Context, *RootScope) { panic("boom") })
+			},
+			operation: func(t *testing.T, root *RootScope) { t.Helper(); assert.NoError(t, root.Start()) },
+			point:     "started",
+		},
+		{
+			name: "Closing",
+			register: func(root *RootScope) {
+				root.AddContainerClosingHook(func(context.Context, *RootScope) { panic("kaboom") })
+				root.AddContainerClosingHook(func(context.Context, *RootScope) { panic("boom") })
+			},
+			operation: func(t *testing.T, root *RootScope) { t.Helper(); assert.True(t, root.Shutdown().Succeed) },
+			point:     "closing",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+			is := assert.New(t)
+
+			logs := &callRecorder{}
+			type call struct {
+				point string
+				value any
+			}
+			var calls []call
+			root := NewWithOpts(&InjectorOpts{
+				Logf: func(format string, args ...any) { logs.record(fmt.Sprintf(format, args...)) },
+				HookContainerPanic: func(_ *RootScope, hook string, recovered any) {
+					calls = append(calls, call{point: hook, value: recovered})
+				},
+			})
+			tt.register(root)
+
+			is.NotPanics(func() { tt.operation(t, root) })
+
+			is.Equal([]call{{point: tt.point, value: "kaboom"}}, calls)
+			is.True(slices.ContainsFunc(logs.list(), func(line string) bool { return strings.Contains(line, "boom") && !strings.Contains(line, "kaboom") }))
+		})
+	}
+}
+
+func TestContainerHooks_ClonePanicPolicy(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	var points []string
+	root := NewWithOpts(&InjectorOpts{
+		HookContainerPanic: func(_ *RootScope, hook string, _ any) { points = append(points, hook) },
+	})
+	root.AddContainerStartedHook(func(context.Context, *RootScope) { panic("kaboom") })
+
+	clone := root.Clone()
+
+	assert.NotPanics(t, func() { _ = clone.Start() })
+	assert.Equal(t, []string{"started"}, points)
 }

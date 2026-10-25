@@ -225,13 +225,18 @@ func (s *RootScope) ShutdownWithContext(ctx context.Context) *ShutdownReport {
 		return s.waitForClose(ctx, ticket.done)
 	}
 
-	report := s.shutdownAsWinner(ctx, ticket)
+	var first hookPanic
+	report := s.shutdownAsWinner(ctx, ticket, &first)
 
 	// pointClosed: closeDone is closed, so code here may call Shutdown().
 	for _, hook := range slices.Clone(s.opts.HookContainerClosed) {
 		if hook != nil {
-			hook(ctx, s, report)
+			s.callObserver(&first, "closed", func() { hook(ctx, s, report) })
 		}
+	}
+
+	if first.panicked {
+		s.dispatchHookPanic(first.point, first.value)
 	}
 
 	return report
@@ -251,7 +256,7 @@ func (s *RootScope) waitForClose(ctx context.Context, done <-chan struct{}) *Shu
 
 // shutdownAsWinner shuts the container down. Its deferred finishClose runs
 // even when this goroutine panics, so waiters are always released.
-func (s *RootScope) shutdownAsWinner(ctx context.Context, ticket closeTicket) (report *ShutdownReport) {
+func (s *RootScope) shutdownAsWinner(ctx context.Context, ticket closeTicket, first *hookPanic) (report *ShutdownReport) {
 	defer func() { s.finishClose(report) }()
 	defer func() {
 		// Only the winner touches the pool.
@@ -264,7 +269,7 @@ func (s *RootScope) shutdownAsWinner(ctx context.Context, ticket closeTicket) (r
 	startErr := waitForStart(ctx, ticket)
 
 	// pointClosing
-	s.runObserverHooks(ctx, s.opts.HookContainerClosing)
+	s.runObserverHooks(ctx, "closing", s.opts.HookContainerClosing, first)
 
 	report = s.self.ShutdownWithContext(ctx)
 	if startErr != nil {
