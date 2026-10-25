@@ -30,7 +30,7 @@ Specs: `specs/toolchain-support/spec.md`, `specs/provider-panic-handling/spec.md
 
 ## 4. CI (design D5)
 
-- [ ] 4.1 Confirm the CI Go versions set in #12: the `.github/workflows/test.yml` matrix is `["1.27", "stable"]`, and `lint.yml`, `doc.yml`, `security.yml` and `release.yml` use `go-version-file: go.work` (no edit expected; fix any drift); verify `go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 .github/workflows/*.yml` reports no errors.
+- [x] 4.1 Confirm the CI Go versions set in #12: the `.github/workflows/test.yml` matrix is `["1.27", "stable"]`, and `lint.yml`, `doc.yml`, `security.yml` and `release.yml` use `go-version-file: go.work` (no edit expected; fix any drift); verify `go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 .github/workflows/*.yml` reports no errors.
 - [ ] 4.2 In `.github/workflows/lint.yml`, give `golangci-lint-action` `version: v2.15.0` (keep `actions/setup-go` on `go-version-file: go.work`); verify actionlint reports no errors on `lint.yml`, and with a local golangci-lint whose `golangci-lint version` reports 2.15.0, `make lint` reports 0 issues.
 
 ## 5. Integration checks
