@@ -782,7 +782,6 @@ func TestInvoke_NotFoundNamesLibraryTypes(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			testWithTimeout(t, 100*time.Millisecond)
@@ -876,7 +875,6 @@ func TestInvoke_ProviderPanic(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			testWithTimeout(t, 100*time.Millisecond)

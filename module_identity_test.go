@@ -59,7 +59,6 @@ func TestModuleIdentity_RootModulePackages(t *testing.T) {
 	root := readModulePath(t, ".")
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			is := assert.New(t)
@@ -97,7 +96,6 @@ func TestModuleIdentity_HTTPAdapterModules(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			is := assert.New(t)
@@ -180,7 +178,6 @@ func TestModuleIdentity_WorkspaceModules(t *testing.T) {
 	assert.ElementsMatch(t, wantDirs, dirs, "go.work use entries")
 
 	for _, dir := range dirs {
-		dir := dir
 		t.Run(dir, func(t *testing.T) {
 			t.Parallel()
 			is := assert.New(t)
@@ -286,7 +283,6 @@ func TestCompat_StructTagKey(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			is := assert.New(t)
@@ -316,7 +312,6 @@ func TestCompat_ErrorSentinelMessages(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
