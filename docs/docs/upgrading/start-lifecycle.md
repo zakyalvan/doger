@@ -1,12 +1,12 @@
 ---
-title: Start lifecycle release
-description: Changes to check when upgrading to the doger release that adds the Start lifecycle
+title: Start lifecycle and lifecycle hooks releases
+description: Changes to check when upgrading to the doger releases that add the Start lifecycle, lifecycle hooks and collections
 sidebar_position: 2
 ---
 
-# Upgrading to the Start lifecycle release
+# Upgrading to the Start lifecycle and lifecycle hooks releases
 
-This release adds container start, registration options, component kinds and declared dependencies. Two changes can affect existing code.
+The Start lifecycle release adds container start, registration options, component kinds and declared dependencies. The lifecycle hooks release adds container and scope hooks, incremental start and collections. The changes below can affect existing code.
 
 ## Registration functions take options {#registration-options}
 
@@ -45,3 +45,14 @@ Behavior changes:
 - A `nil` context is treated as `context.Background()`; it used to panic once a built service had a `Shutdown` method.
 
 `Shutdown()` on child scopes is unchanged. See [Root shutdown runs once](../service-lifecycle/shutdowner.md#root-shutdown-runs-once).
+
+## An alias never shuts its target down {#alias-shutdown}
+
+An alias registered with `As`, `AsNamed`, `Bind` or `BindNamed` no longer shuts its target down. The target is shut down only through its own registration, exactly once. This fixes an eager target (`ProvideValue`) being shut down twice once its alias had been invoked.
+
+Behavior changes:
+
+- Shutting down a child scope no longer shuts down a parent-scope target through an alias registered in the child. The target keeps running until its own scope shuts down.
+- `ShutdownNamed` on an alias name removes the alias and no longer shuts its target down.
+
+Migration: shut the target down by its own name, or through its own scope.

@@ -140,18 +140,10 @@ func (s *serviceAlias[Initial, Alias]) isShutdowner() bool {
 	return service.isShutdowner()
 }
 
-func (s *serviceAlias[Initial, Alias]) shutdown(ctx context.Context) error {
-	serviceAny, _, ok := s.scope.serviceGetRec(s.targetName)
-	if !ok {
-		return nil
-	}
-
-	service, ok := serviceAny.(serviceWrapperShutdown)
-	if !ok {
-		return nil
-	}
-
-	return service.shutdown(ctx)
+// shutdown never shuts the target down: the target is shut down only through
+// its own registration, exactly once. Scope shutdown still removes the alias.
+func (s *serviceAlias[Initial, Alias]) shutdown(context.Context) error {
+	return nil
 }
 
 func (s *serviceAlias[Initial, Alias]) clone(newScope Injector) any {

@@ -11,15 +11,15 @@ Rules:
 
 ## 0. Prerequisites and baseline
 
-- [ ] 0.1 Confirm PR #4 is merged into `main` and `add-start-lifecycle-and-kinds` is archived (`openspec/specs/container-start`, `component-kinds`, `registration-options` and `dependency-declaration` exist), then branch from `main`; verify `openspec validate consolidate-pending-lifecycle-work --strict` passes with no "Archive would refuse" notes, and stop and report if PR #4 is not merged.
-- [ ] 0.2 Record the baseline in the scratchpad: `go test -run '^$' -bench . -benchmem -count 10 ./bench/` (bench-before) and the per-package test inventory (`go test -list '.*' ./...`); verify `make test`, `make lint` and per-module `go vet ./... && go test -race ./...` pass.
+- [x] 0.1 Confirm PR #4 is merged into `main` and `add-start-lifecycle-and-kinds` is archived (`openspec/specs/container-start`, `component-kinds`, `registration-options` and `dependency-declaration` exist), then branch from `main`; verify `openspec validate consolidate-pending-lifecycle-work --strict` passes with no "Archive would refuse" notes, and stop and report if PR #4 is not merged.
+- [x] 0.2 Record the baseline in the scratchpad: `go test -run '^$' -bench . -benchmem -count 10 ./bench/` (bench-before) and the per-package test inventory (`go test -list '.*' ./...`); verify `make test`, `make lint` and per-module `go vet ./... && go test -race ./...` pass.
 
 ## 1. An alias never shuts its target down (defect fix; design F1)
 
-- [ ] 1.1 RED: add `TestServiceAlias_ShutdownTargetOnce` (scenario "Target is shut down once", 6 rows), `TestServiceAlias_ShutdownTargetOnce_Stable` (scenario "Repeated runs are stable", 200 runs) and `TestServiceAlias_InvokeAfterTargetShutdown` to `service_alias_test.go`; verify `go test -race -run 'TestServiceAlias_(ShutdownTargetOnce|InvokeAfterTargetShutdown)' .` fails on the eager rows (2 calls) and the child-scope/ShutdownNamed rows (target shut by the alias); record any row that passes on arrival
-- [ ] 1.2 GREEN: make `serviceAlias.shutdown` return nil without delegating, keeping `isShutdowner` (design F1); verify the 1.1 command passes and `make test` is green
-- [ ] 1.3 REFACTOR: none needed, a one-method change; verify `make test` and `make lint` pass
-- [ ] 1.4 Document the alias shutdown rule in the `As`/`AsNamed`/`Bind`/`BindNamed` godoc, `docs/docs/service-registration/` alias docs, and an upgrading-page entry flagging the behavior change; verify `go doc As` shows it and the docs lint and build pass
+- [x] 1.1 RED: add `TestServiceAlias_ShutdownTargetOnce` (scenario "Target is shut down once", 6 rows), `TestServiceAlias_ShutdownTargetOnce_Stable` (scenario "Repeated runs are stable", 200 runs) and `TestServiceAlias_InvokeAfterTargetShutdown` to `service_alias_test.go`; verify `go test -race -run 'TestServiceAlias_(ShutdownTargetOnce|InvokeAfterTargetShutdown)' .` fails on the eager rows (2 calls) and the child-scope/ShutdownNamed rows (target shut by the alias); record any row that passes on arrival
+- [x] 1.2 GREEN: make `serviceAlias.shutdown` return nil without delegating, keeping `isShutdowner` (design F1); verify the 1.1 command passes and `make test` is green
+- [x] 1.3 REFACTOR: none needed, a one-method change; verify `make test` and `make lint` pass
+- [x] 1.4 Document the alias shutdown rule in the `As`/`AsNamed`/`Bind`/`BindNamed` godoc, `docs/docs/service-registration/` alias docs, and an upgrading-page entry flagging the behavior change; verify `go doc As` shows it and the docs lint and build pass
 
 ## 2. mergeShutdownReports reports success correctly (defect fix; design F2)
 

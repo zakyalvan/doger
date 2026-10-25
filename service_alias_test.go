@@ -3,11 +3,13 @@ package doger
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/kartaladev/doger/stacktrace"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNewServiceAlias(t *testing.T) {
@@ -439,7 +441,7 @@ func TestServiceAlias_shutdown(t *testing.T) {
 	service3, _ := i3.serviceGet("github.com/kartaladev/doger.ShutdownerWithContextAndError")
 	is.NoError(service3.(serviceWrapper[ShutdownerWithContextAndError]).shutdown(ctx))
 	_, _ = service3.(serviceWrapper[ShutdownerWithContextAndError]).getInstance(i3)
-	is.Error(service3.(serviceWrapper[ShutdownerWithContextAndError]).shutdown(ctx))
+	is.NoError(service3.(serviceWrapper[ShutdownerWithContextAndError]).shutdown(ctx)) // the target is never shut down through its alias
 
 	// service not found (wrong type)
 	i4 := New()
@@ -448,15 +450,15 @@ func TestServiceAlias_shutdown(t *testing.T) {
 	_, _ = service4.getInstanceAny(i4)
 	is.NoError(service4.shutdown(ctx))
 
-	// Test with context scenarios
+	// Context scenarios: the alias never shuts its target down, so its own
+	// shutdown succeeds whatever the context.
 	// Test with canceled context
 	canceledCtx, cancel := context.WithCancel(context.Background())
 	cancel()
 	service5Ctx := newServiceAlias[*lazyTestShutdownerOK, ShutdownerWithContextAndError]("github.com/kartaladev/doger.ShutdownerWithContextAndError", i2, "*github.com/kartaladev/doger.lazyTestShutdownerOK")
 	_, _ = service5Ctx.getInstanceAny(i2)
 	err := service5Ctx.shutdown(canceledCtx)
-	is.Error(err)
-	is.ErrorContains(err, "context canceled")
+	is.NoError(err)
 
 	// Test with timeout context
 	timeoutCtx, cancel2 := context.WithTimeout(context.Background(), 1*time.Nanosecond)
@@ -465,8 +467,7 @@ func TestServiceAlias_shutdown(t *testing.T) {
 	service6Ctx := newServiceAlias[*lazyTestShutdownerOK, ShutdownerWithContextAndError]("github.com/kartaladev/doger.ShutdownerWithContextAndError", i2, "*github.com/kartaladev/doger.lazyTestShutdownerOK")
 	_, _ = service6Ctx.getInstanceAny(i2)
 	err2 := service6Ctx.shutdown(timeoutCtx)
-	is.Error(err2)
-	is.ErrorContains(err2, "context deadline exceeded")
+	is.NoError(err2)
 
 	// Test with value context - verify context value is received
 	valueCtx := context.WithValue(context.Background(), ctxTestKey, "shutdown-value")
@@ -479,7 +480,7 @@ func TestServiceAlias_shutdown(t *testing.T) {
 	err3 := serviceWithContext.shutdown(valueCtx)
 	is.NoError(err3) // Should work normally when context value is correct
 
-	// Test with incorrect context value - verify context value is checked
+	// Test with incorrect context value - the target is not called, so the value is not checked
 	incorrectValueCtx := context.WithValue(context.Background(), ctxTestKey, "wrong-value")
 	i9 := New()
 	Provide(i9, func(i Injector) (*contextValueShutdownerAlias, error) {
@@ -488,8 +489,7 @@ func TestServiceAlias_shutdown(t *testing.T) {
 	serviceWithIncorrectContext := newServiceAlias[*contextValueShutdownerAlias, ShutdownerWithContextAndError]("github.com/kartaladev/doger.ShutdownerWithContextAndError", i9, "*github.com/kartaladev/doger.contextValueShutdownerAlias")
 	_, _ = serviceWithIncorrectContext.getInstanceAny(i9)
 	err6 := serviceWithIncorrectContext.shutdown(incorrectValueCtx)
-	is.Error(err6) // Should fail when context value is incorrect
-	is.ErrorContains(err6, "test-key not found or value is incorrect")
+	is.NoError(err6)
 
 	// Test with non-shutdownable service (should return nil even with canceled context)
 	i6 := New()
@@ -499,7 +499,7 @@ func TestServiceAlias_shutdown(t *testing.T) {
 	err4 := nonShutdownableService.shutdown(canceledCtx)
 	is.NoError(err4) // Non-shutdownable services return nil regardless of context
 
-	// Test with service that implements ShutdownerWithError (should return context error when context is canceled)
+	// Test with service that implements ShutdownerWithError (the target is not called, even with a canceled context)
 	i7 := New()
 	Provide(i7, func(i Injector) (*lazyTestShutdownerKO, error) {
 		return &lazyTestShutdownerKO{foobar: "foobar"}, nil
@@ -507,8 +507,7 @@ func TestServiceAlias_shutdown(t *testing.T) {
 	errorService := newServiceAlias[*lazyTestShutdownerKO, ShutdownerWithError]("github.com/kartaladev/doger.ShutdownerWithError", i7, "*github.com/kartaladev/doger.lazyTestShutdownerKO")
 	_, _ = errorService.getInstanceAny(i7)
 	err5 := errorService.shutdown(canceledCtx)
-	is.Error(err5)
-	is.ErrorContains(err5, "context canceled") // Should return context error when context is canceled
+	is.NoError(err5)
 
 	// service not found (wrong name)
 	i5 := New()
@@ -766,4 +765,153 @@ func TestServiceAlias_ContextValuePropagation(t *testing.T) {
 	// Test that alias properly delegates to target service
 	// The alias should not store context values itself, but pass them through
 	// to the underlying target service
+}
+
+// aliasShutdownProbe counts its Shutdown calls.
+type aliasShutdownProbe struct {
+	calls atomic.Int32
+}
+
+func (p *aliasShutdownProbe) Shutdown() error {
+	p.calls.Add(1)
+	return nil
+}
+
+type aliasShutdownIface interface {
+	Shutdown() error
+}
+
+func TestServiceAlias_ShutdownTargetOnce(t *testing.T) {
+	t.Parallel()
+
+	// register registers the target on root and returns its probe.
+	eagerValue := func(root *RootScope) *aliasShutdownProbe {
+		probe := &aliasShutdownProbe{}
+		ProvideValue(root, probe)
+		return probe
+	}
+	lazyBuilt := func(root *RootScope) *aliasShutdownProbe {
+		probe := &aliasShutdownProbe{}
+		Provide(root, func(Injector) (*aliasShutdownProbe, error) { return probe, nil })
+		return probe
+	}
+
+	tests := []struct {
+		name       string
+		register   func(*RootScope) *aliasShutdownProbe
+		childAlias bool
+		operation  func(t *testing.T, root *RootScope, child *Scope)
+		calls      int32
+	}{
+		{
+			name:      "eager value, alias in root, root.Shutdown",
+			register:  eagerValue,
+			operation: rootShutdownOK,
+			calls:     1,
+		},
+		{
+			name:      "lazy built, alias in root, root.Shutdown",
+			register:  lazyBuilt,
+			operation: rootShutdownOK,
+			calls:     1,
+		},
+		{
+			name:       "eager value, alias in child, child.Shutdown",
+			register:   eagerValue,
+			childAlias: true,
+			operation: func(t *testing.T, _ *RootScope, child *Scope) {
+				t.Helper()
+				report := child.Shutdown()
+				assert.True(t, report.Succeed, report.Error())
+			},
+			calls: 0,
+		},
+		{
+			name:       "eager value, alias in child, root.Shutdown",
+			register:   eagerValue,
+			childAlias: true,
+			operation:  rootShutdownOK,
+			calls:      1,
+		},
+		{
+			name:     "eager value, alias in root, ShutdownNamed on the alias",
+			register: eagerValue,
+			operation: func(t *testing.T, root *RootScope, _ *Scope) {
+				t.Helper()
+				assert.NoError(t, ShutdownNamed(root, NameOf[aliasShutdownIface]()))
+			},
+			calls: 0,
+		},
+		{
+			name:     "lazy built, alias in root, ShutdownNamed on the target",
+			register: lazyBuilt,
+			operation: func(t *testing.T, root *RootScope, _ *Scope) {
+				t.Helper()
+				assert.NoError(t, ShutdownNamed(root, NameOf[*aliasShutdownProbe]()))
+			},
+			calls: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+			must := require.New(t)
+
+			root := New()
+			probe := tt.register(root)
+			child := root.Scope("c")
+
+			aliasScope := Injector(root)
+			if tt.childAlias {
+				aliasScope = child
+			}
+			must.NoError(As[*aliasShutdownProbe, aliasShutdownIface](aliasScope))
+			_, err := Invoke[aliasShutdownIface](aliasScope)
+			must.NoError(err)
+
+			tt.operation(t, root, child)
+
+			assert.Equal(t, tt.calls, probe.calls.Load())
+		})
+	}
+}
+
+func rootShutdownOK(t *testing.T, root *RootScope, _ *Scope) {
+	t.Helper()
+	report := root.Shutdown()
+	assert.True(t, report.Succeed, report.Error())
+}
+
+func TestServiceAlias_ShutdownTargetOnce_Stable(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, 5*time.Second)
+	is := assert.New(t)
+
+	for range 200 {
+		root := New()
+		probe := &aliasShutdownProbe{}
+		ProvideValue(root, probe)
+		require.NoError(t, As[*aliasShutdownProbe, aliasShutdownIface](root))
+		_, err := Invoke[aliasShutdownIface](root)
+		require.NoError(t, err)
+
+		is.True(root.Shutdown().Succeed)
+		is.Equal(int32(1), probe.calls.Load())
+	}
+}
+
+func TestServiceAlias_InvokeAfterTargetShutdown(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+	must := require.New(t)
+
+	root := New()
+	Provide(root, func(Injector) (*aliasShutdownProbe, error) { return &aliasShutdownProbe{}, nil })
+	must.NoError(As[*aliasShutdownProbe, aliasShutdownIface](root))
+	must.NoError(ShutdownNamed(root, NameOf[*aliasShutdownProbe]()))
+
+	_, err := Invoke[aliasShutdownIface](root)
+	assert.ErrorIs(t, err, ErrServiceNotFound)
 }

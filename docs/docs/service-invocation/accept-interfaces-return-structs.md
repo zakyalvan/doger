@@ -121,6 +121,21 @@ metric.Inc()    // <- r.counter will be incremented
 
 **Play: https://go.dev/play/p/_wGjnRJfwV8**
 
+### Aliases and shutdown {#aliases-and-shutdown}
+
+An alias never shuts its target down. Shutting a scope down, or calling `doger.Shutdown`/`doger.ShutdownNamed` on the alias name, removes the alias only. The target is shut down through its own registration, exactly once, even when the alias was invoked or lives in a child scope:
+
+```go
+child := injector.Scope("request")
+doger.As[*RequestPerSecond, Metric](child)
+_ = doger.MustInvoke[Metric](child)
+
+child.Shutdown()    // removes the alias; *RequestPerSecond keeps running
+injector.Shutdown() // shuts *RequestPerSecond down, once
+```
+
+To stop the target early, shut it down by its own name: `doger.ShutdownNamed(injector, doger.NameOf[*RequestPerSecond]())`.
+
 :::danger
 
 Explicit aliasing can lead to brittle designs and should be used very carefully. You've been warned. 😁

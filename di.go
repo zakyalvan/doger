@@ -505,6 +505,10 @@ func MustInvokeStruct[T any](i Injector) T {
 //
 // Returns an error if the alias cannot be created (e.g., type incompatibility or missing service).
 //
+// Shutting the alias down (with its scope, or with Shutdown/ShutdownNamed on
+// the alias name) removes the alias but never shuts its target down: the
+// target is shut down only through its own registration, exactly once.
+//
 // Play: https://go.dev/play/p/T5zKBRZaZhj
 //
 // Example:
@@ -553,6 +557,10 @@ func MustAs[Initial any, Alias any](i Injector) {
 //   - alias: The name for the new alias service
 //
 // Returns an error if the alias cannot be created (e.g., type incompatibility or missing service).
+//
+// Shutting the alias down (with its scope, or with Shutdown/ShutdownNamed on
+// the alias name) removes the alias but never shuts its target down: the
+// target is shut down only through its own registration, exactly once.
 //
 // Play: https://go.dev/play/p/h1R5rxKizwR
 //
@@ -880,7 +888,8 @@ func TransientNamed[T any](serviceName string, p Provider[T], opts ...ProvideOpt
 //   - Alias: The type to bind to (must be implemented by Initial)
 //
 // Returns a function that creates the type alias when executed.
-// Panics if the binding cannot be created.
+// Panics if the binding cannot be created. Like [As], the alias never shuts
+// its target down.
 //
 // Play: https://go.dev/play/p/j69I52whJr2
 //
@@ -907,7 +916,8 @@ func Bind[Initial any, Alias any]() func(Injector) {
 //   - Alias: The type to bind to (must be implemented by Initial)
 //
 // Returns a function that creates the named type alias when executed.
-// Panics if the binding cannot be created.
+// Panics if the binding cannot be created. Like [AsNamed], the alias never
+// shuts its target down.
 //
 // Play: https://go.dev/play/p/m2gW7s9_qgq
 //
