@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"slices"
 )
 
 // kindID identifies a kind. NewKind allocates a new one, so two kinds with
@@ -112,7 +113,28 @@ func (k Kind[T, M]) Handle(root *RootScope, stage Stage, handler func(context.Co
 		root = DefaultRootScope
 	}
 
-	entry := kindEntry{
+	entry := k.newEntry(stage, handler)
+
+	root.kindsMu.Lock()
+	defer root.kindsMu.Unlock()
+
+	for i := range root.kinds {
+		if root.kinds[i].id == k.id {
+			root.kinds[i] = entry // keeps the slot: order of first Handle
+			return
+		}
+	}
+	if k.id == runnableKind.id {
+		// the implicit default handler occupies the first slot: keep it
+		root.kinds = slices.Insert(root.kinds, 0, entry)
+		return
+	}
+	root.kinds = append(root.kinds, entry)
+}
+
+// newEntry type-erases handler into a kind entry for stage.
+func (k Kind[T, M]) newEntry(stage Stage, handler func(context.Context, Component[T, M]) error) kindEntry {
+	return kindEntry{
 		id:    k.id,
 		stage: stage,
 		run: func(ctx context.Context, scope *Scope, name string, instance any, meta any) error {
@@ -125,17 +147,6 @@ func (k Kind[T, M]) Handle(root *RootScope, stage Stage, handler func(context.Co
 			return handler(ctx, Component[T, M]{Scope: scope, Name: name, Instance: typed, Meta: typedMeta})
 		},
 	}
-
-	root.kindsMu.Lock()
-	defer root.kindsMu.Unlock()
-
-	for i := range root.kinds {
-		if root.kinds[i].id == k.id {
-			root.kinds[i] = entry // keeps the slot: order of first Handle
-			return
-		}
-	}
-	root.kinds = append(root.kinds, entry)
 }
 
 // target returns the kind's target type T.

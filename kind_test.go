@@ -575,6 +575,48 @@ func TestRunnable_ReplaceHandler(t *testing.T) {
 	is.Equal([]string{"run a"}, events.list())
 }
 
+// TestRunnable_FirstSlot pins that the Runnable handler, default or
+// replaced, runs before the handlers of kinds handled later in the same stage.
+func TestRunnable_FirstSlot(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		replace  bool
+		expected []string
+	}{
+		{name: "default handler", replace: false, expected: []string{"run a", "other b"}},
+		{name: "handler replaced after another kind", replace: true, expected: []string{"replaced a", "other b"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+
+			root := New()
+			events := &callRecorder{}
+			other := NewKind[Runner, struct{}]("other")
+			provideRunner(root, events, "a", nil, AsRunnable())
+			provideRunner(root, events, "b", nil, other.With(struct{}{}))
+
+			other.Handle(root, StageAfterStart, func(_ context.Context, c Component[Runner, struct{}]) error {
+				events.record("other " + c.Name)
+				return nil
+			})
+			if tt.replace {
+				Runnable.Handle(root, StageAfterStart, func(_ context.Context, c Component[Runner, struct{}]) error {
+					events.record("replaced " + c.Name)
+					return nil
+				})
+			}
+
+			require.NoError(t, root.Start())
+			assert.Equal(t, tt.expected, events.list())
+		})
+	}
+}
+
 // TestRunnable_ReassignedVariable is not parallel: it reassigns Runnable.
 func TestRunnable_ReassignedVariable(t *testing.T) {
 	testWithTimeout(t, time.Second)

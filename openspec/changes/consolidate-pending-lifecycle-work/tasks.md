@@ -29,8 +29,8 @@ Rules:
 
 ## 3. The default Runnable handler is implicit (design F4)
 
-- [ ] 3.1 Characterization: run `TestRunnable_*` and `TestKind_*` and record `BenchmarkNew` allocs/op (13 since start-lifecycle); verify they pass and the number is recorded
-- [ ] 3.2 REFACTOR: *Substitute Algorithm*: remove the `runnableKind.Handle` call from `NewWithOpts`, and let `runStage` use a package-level `defaultRunnableEntry` in the first `StageAfterStart` slot when the container has no `runnableKind` entry (design F4); verify the 3.1 tests pass unchanged, `make test` and `make lint` pass, and `BenchmarkNew` shows 11 allocs/op
+- [x] 3.1 Characterization: run `TestRunnable_*` and `TestKind_*` and record `BenchmarkNew` allocs/op (13 since start-lifecycle); verify they pass and the number is recorded
+- [x] 3.2 REFACTOR: *Substitute Algorithm*: remove the `runnableKind.Handle` call from `NewWithOpts`, and let `runStage` use a package-level `defaultRunnableEntry` in the first `StageAfterStart` slot when the container has no `runnableKind` entry (design F4); verify the 3.1 tests pass unchanged, `make test` and `make lint` pass, and `BenchmarkNew` shows 11 allocs/op
 
 ## 4. healthCheckPool race investigation (design F5)
 

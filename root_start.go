@@ -413,6 +413,11 @@ func (s *RootScope) runStage(startCtx context.Context, stage Stage, candidates [
 	entries := slices.Clone(s.kinds)
 	s.kindsMu.Unlock()
 
+	if !slices.ContainsFunc(entries, func(e kindEntry) bool { return e.id == runnableKind.id }) {
+		// the built-in Runnable kind has an implicit default handler
+		entries = slices.Insert(entries, 0, defaultRunnableEntry)
+	}
+
 	for _, entry := range entries {
 		if entry.stage != stage {
 			continue
