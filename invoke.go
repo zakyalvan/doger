@@ -11,14 +11,14 @@ import (
 	typetostring "github.com/samber/go-type-to-string"
 )
 
-// invokeAnyByName retrieves and instantiates a service by name, returning it as interface{}.
+// invokeAnyByName retrieves and instantiates a service by name, returning it as any.
 // This function handles circular dependency detection, service resolution, and invocation hooks.
 //
 // Parameters:
 //   - i: The injector to search for the service
 //   - name: The name of the service to invoke
 //
-// Returns the service instance as interface{} and any error that occurred during invocation.
+// Returns the service instance as any and any error that occurred during invocation.
 //
 // This function is used internally by the DI container for service resolution and
 // supports virtual scopes for dependency tracking and circular dependency detection.

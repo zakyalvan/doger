@@ -51,7 +51,7 @@ func main() {
 	fmt.Println("Step 4: Registering Cache (independent service)")
 	doger.Provide(injector, func(i doger.Injector) (*Cache, error) {
 		return &Cache{
-			Data: make(map[string]interface{}),
+			Data: make(map[string]any),
 		}, nil
 	})
 

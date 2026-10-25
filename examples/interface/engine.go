@@ -2,7 +2,7 @@ package main
 
 import "github.com/kartaladev/doger"
 
-type Engine interface{}
+type Engine any
 
 type engineImplem struct{}
 

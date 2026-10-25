@@ -70,7 +70,7 @@ func TestInvokeAnyByName(t *testing.T) {
 	})
 	// Try to invoke as string when it's actually int
 	svc, err = invokeAnyByName(i, "type-mismatch")
-	is.NoError(err) // invokeAnyByName doesn't do type checking, it returns interface{}
+	is.NoError(err) // invokeAnyByName doesn't do type checking, it returns any
 	is.Equal(42, svc)
 
 	// Test provider error

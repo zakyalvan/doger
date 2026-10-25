@@ -7,8 +7,8 @@ type Database interface {
 
 // Cache interface for dependency injection.
 type Cache interface {
-	Get(key string) interface{}
-	Set(key string, value interface{})
+	Get(key string) any
+	Set(key string, value any)
 }
 
 // Logger interface for dependency injection.
