@@ -1,6 +1,6 @@
 module github.com/kartaladev/doger
 
-go 1.18
+go 1.27
 
 //
 // Dependencies are excluded from releases. Please check CI.

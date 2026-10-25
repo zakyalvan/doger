@@ -1,6 +1,6 @@
 module github.com/kartaladev/doger/http/fiber
 
-go 1.25
+go 1.27
 
 require github.com/gofiber/fiber/v2 v2.52.16
 
