@@ -32,8 +32,8 @@ func readModulePath(t *testing.T, dir string) string {
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		if strings.HasPrefix(line, "module ") {
-			return strings.Trim(strings.TrimSpace(strings.TrimPrefix(line, "module ")), `"`)
+		if after, ok := strings.CutPrefix(line, "module "); ok {
+			return strings.Trim(strings.TrimSpace(after), `"`)
 		}
 	}
 	require.NoError(t, scanner.Err())
