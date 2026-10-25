@@ -724,26 +724,43 @@ func (s *Scope) serviceForEachRec(cb func(name string, scope *Scope, service any
 // Returns an error if the health check fails, or nil if the service is healthy
 // or doesn't implement the Healthchecker interface.
 func (s *Scope) serviceHealthCheck(ctx context.Context, name string) error {
+	check, err := s.serviceHealthCheckFunc(name)
+	if err != nil || check == nil {
+		return err
+	}
+
+	// If the healthchecker does not support context.Timeout, the error will be triggered by raceWithTimeout().
+	return raceWithTimeout(ctx, check)
+}
+
+// serviceHealthCheckFunc returns the health check of a service in the current
+// scope, or nil when the service is not a health checker at this moment (a
+// value without a check, a lazy service not built yet, a transient service).
+// A timeout error is never triggered for such a service. It returns an error
+// when the service is not found.
+func (s *Scope) serviceHealthCheckFunc(name string) (func(context.Context) error, error) {
 	s.mu.RLock()
 
 	serviceAny, ok := s.services[name]
 	if !ok {
 		s.mu.RUnlock()
-		return serviceNotFound(s, ErrServiceNotFound, []string{name})
+		return nil, serviceNotFound(s, ErrServiceNotFound, []string{name})
 	}
 
 	s.mu.RUnlock()
 
-	service, ok := serviceAny.(serviceWrapperHealthcheck)
+	service, ok := serviceAny.(interface {
+		serviceWrapperIsHealthchecker
+		serviceWrapperHealthcheck
+	})
 	if ok {
 		s.logf("requested health check for service %s", name)
 
-		// A timeout error is not triggered when the service is not a healthchecker.
-		// If the healthchecker does not support context.Timeout, the error will be triggered by raceWithTimeout().
-		return raceWithTimeout(
-			ctx,
-			service.healthcheck,
-		)
+		if !service.isHealthchecker() {
+			return nil, nil
+		}
+
+		return service.healthcheck, nil
 	}
 
 	// Should never happen.

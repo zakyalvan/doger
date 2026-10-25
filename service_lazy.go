@@ -135,14 +135,14 @@ func (s *serviceLazy[T]) healthcheck(ctx context.Context) error {
 
 	switch instance := any(s.instance).(type) {
 	case HealthcheckerWithContext:
-		if ctx.Err() != nil {
-			return ctx.Err()
+		if err := contextDone(ctx); err != nil {
+			return err
 		}
 
 		return instance.HealthCheck(ctx)
 	case Healthchecker:
-		if ctx.Err() != nil {
-			return ctx.Err()
+		if err := contextDone(ctx); err != nil {
+			return err
 		}
 
 		return instance.HealthCheck()

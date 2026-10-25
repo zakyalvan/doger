@@ -62,7 +62,7 @@ See proposal.md (Why, Defect) for the motivation, and `specs/health-check-timeou
 
 **D1. "Deadline wins" in one helper.**
 - One unexported function `healthCheckResult(ctx, err) error`, plus a non-blocking `contextDone(ctx) error` (D2), decides every result:
-  - if the context is done when the result is observed, return the timeout error built by `timeoutError(ctx)`;
+  - if the context is done when the result is observed, return the timeout error built by `timeoutError(ctx.Err())`;
   - otherwise return the check's own `err` (nil or an error).
 - It is applied:
   - in `raceWithTimeout`, after the result arrives, and on the deadline-free direct call;
@@ -75,7 +75,7 @@ See proposal.md (Why, Defect) for the motivation, and `specs/health-check-timeou
 - `contextDone(ctx)` uses `select { case <-ctx.Done(): return ctx.Err(); default: return nil }`. `Err()` is called only after `Done` is closed, which is safe for clockwork fake contexts as well.
 - The `serviceEager`/`serviceLazy.healthcheck` pre-checks (`if ctx.Err() != nil`) switch to it. Otherwise every fake-clock health check would hang. They keep returning the bare context error (Context: wrapper-level tests).
 
-**D3. `timeoutError(ctx)` normalizes the cause.**
+**D3. `timeoutError(cause)` normalizes the cause.** It takes the cause rather than the context, so D8 can pass `context.DeadlineExceeded` for a context not yet marked done.
 - It returns `fmt.Errorf("%w: %w", ErrHealthCheckTimeout, cause)`, where `cause` is `context.DeadlineExceeded` whenever `errors.Is(ctx.Err(), context.DeadlineExceeded)`, else `ctx.Err()`.
 - Result: the message is the same on any clock (`DI: health check timeout: context deadline exceeded`), and `errors.Is` matches both the sentinel and the standard context error.
 - `errors.Is(err, clockwork.ErrFakeClockDeadlineExceeded)` does not match. No consumer can depend on that yet.

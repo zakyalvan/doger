@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"reflect"
@@ -203,12 +204,21 @@ func (p *jobPool[R]) stop() {
 	})
 }
 
+// raceWithTimeout runs a health check. When ctx has a deadline, it returns as
+// soon as ctx is done, without waiting for the check; otherwise it waits.
 func raceWithTimeout(ctx context.Context, fn func(context.Context) error) error {
 	_, ok := ctx.Deadline()
 	if !ok {
-		return fn(ctx)
+		return healthCheckResult(ctx, fn(ctx))
 	}
 
+	return awaitHealthCheck(ctx, fn)
+}
+
+// awaitHealthCheck runs a health check in its own goroutine and returns its
+// result, or a timeout error as soon as ctx is done. A check that ignores ctx
+// keeps running after a timeout.
+func awaitHealthCheck(ctx context.Context, fn func(context.Context) error) error {
 	err := make(chan error, 1)
 	go func() {
 		err <- fn(ctx)
@@ -216,9 +226,43 @@ func raceWithTimeout(ctx context.Context, fn func(context.Context) error) error 
 
 	select {
 	case e := <-err:
-		return e
+		return healthCheckResult(ctx, e)
 	case <-ctx.Done():
-		return fmt.Errorf("%w: %s", ErrHealthCheckTimeout, ctx.Err()) //nolint:errorlint
+		return timeoutError(ctx.Err())
+	}
+}
+
+// healthCheckResult decides an observed health-check result: once ctx is
+// done the check counts as timed out, whatever it returned; before that, the
+// check keeps its own result.
+func healthCheckResult(ctx context.Context, err error) error {
+	if cause := contextDone(ctx); cause != nil {
+		return timeoutError(cause)
+	}
+
+	return err
+}
+
+// timeoutError returns an error matching both ErrHealthCheckTimeout and
+// cause. A deadline cause is normalized to context.DeadlineExceeded, so the
+// message reads the same whichever clock set the deadline.
+func timeoutError(cause error) error {
+	if errors.Is(cause, context.DeadlineExceeded) {
+		cause = context.DeadlineExceeded
+	}
+
+	return fmt.Errorf("%w: %w", ErrHealthCheckTimeout, cause)
+}
+
+// contextDone returns ctx.Err() once ctx is done, and nil while it is live.
+// It never calls Err() on a live context, which blocks on a clockwork
+// fake-clock context.
+func contextDone(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		return nil
 	}
 }
 

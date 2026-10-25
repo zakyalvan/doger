@@ -2,7 +2,6 @@ package doger
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
@@ -223,19 +222,16 @@ func (s *RootScope) queueServiceHealthcheck(ctx context.Context, scope *Scope, s
 
 		go func() {
 			defer cancel()
+			defer close(err)
 
-			select {
-			case e := <-func() chan error {
-				c := make(chan error, 1)
-				go func() { c <- scope.serviceHealthCheck(ctx, serviceName) }()
-				return c
-			}():
+			check, e := scope.serviceHealthCheckFunc(serviceName)
+			if e != nil || check == nil {
 				err <- e
-				close(err)
-			case <-ctx.Done():
-				err <- fmt.Errorf("%w: %s", ErrHealthCheckTimeout, ctx.Err()) //nolint:errorlint
-				close(err)
+				return
 			}
+
+			// returns as soon as ctx is done, even without a deadline
+			err <- awaitHealthCheck(ctx, check)
 		}()
 
 		return err

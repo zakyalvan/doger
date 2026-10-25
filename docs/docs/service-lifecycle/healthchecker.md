@@ -115,3 +115,21 @@ status := i.HealthCheckWithContext(ctx)
 //     "*github.com/samber/example.MyPostgreSQLConnection": "DI: health check timeout: context deadline exceeded",
 // }
 ```
+
+## Timeouts and ended contexts {#timeouts-and-ended-contexts}
+
+The result of a health check does not depend on goroutine scheduling:
+
+- When the service has a health check and its context is done (cancelled, or past a deadline set by you or by the timeout options) by the time the result is observed, the result is the timeout error, whatever the check returned. This holds for single-service checks and for `injector.HealthCheck*`.
+- The timeout error matches `doger.ErrHealthCheckTimeout` and the context error with `errors.Is`. Its message is `DI: health check timeout: context canceled` or `DI: health check timeout: context deadline exceeded`.
+- A check that returns before its context ends keeps its own result.
+- A service without a health check (a value without a `HealthCheck` method, a lazy service not invoked yet, a transient service) always reports `nil`, even on an ended context.
+
+```go
+ctx, cancel := context.WithCancel(context.Background())
+cancel()
+
+err := doger.HealthCheckNamedWithContext(ctx, i, "db")
+errors.Is(err, doger.ErrHealthCheckTimeout) // true
+errors.Is(err, context.Canceled)            // true
+```
