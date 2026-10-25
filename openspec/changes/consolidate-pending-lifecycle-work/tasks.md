@@ -88,9 +88,9 @@ Rules:
 
 ## 12. Registration order, nil hooks and Clone (Part H)
 
-- [ ] 12.1 RED: add `TestContainerHooks_RegistrationOrder` (scenario "Registration order"), `TestContainerHooks_NilIgnored` (scenario "Nil hooks are ignored", 6 rows) and `TestContainerHooks_Clone` (scenario "Clone copies hooks but not state", 2 rows); verify `go test -race -run 'TestContainerHooks_(RegistrationOrder|NilIgnored|Clone)' .` fails on NilIgnored (nil call panics) and on the `Clone()` row (count 1); RegistrationOrder and the `CloneWithOpts` row pass on arrival, so record that and show they can fail by temporarily reversing the iteration and by copying hooks in `CloneWithOpts` (not committed)
-- [ ] 12.2 GREEN: skip nil entries in both runners, make `Add*(nil)` a no-op, and copy the six slices plus `HookContainerPanic` in `InjectorOpts.copy()` (design D4); verify the 12.1 command passes and `make test` is green
-- [ ] 12.3 REFACTOR: *Extract Function* for the six near-identical `Add*` bodies only if lint flags duplication, otherwise none needed (mirrors the existing `Add*Hook` style); verify `make test` and `make lint` pass
+- [x] 12.1 RED: add `TestContainerHooks_RegistrationOrder` (scenario "Registration order"), `TestContainerHooks_NilIgnored` (scenario "Nil hooks are ignored", 6 rows) and `TestContainerHooks_Clone` (scenario "Clone copies hooks but not state", 2 rows); verify `go test -race -run 'TestContainerHooks_(RegistrationOrder|NilIgnored|Clone)' .` fails on NilIgnored (nil call panics) and on the `Clone()` row (count 1); RegistrationOrder and the `CloneWithOpts` row pass on arrival, so record that and show they can fail by temporarily reversing the iteration and by copying hooks in `CloneWithOpts` (not committed)
+- [x] 12.2 GREEN: skip nil entries in both runners, make `Add*(nil)` a no-op, and copy the six slices plus `HookContainerPanic` in `InjectorOpts.copy()` (design D4); verify the 12.1 command passes and `make test` is green
+- [x] 12.3 REFACTOR: *Extract Function* for the six near-identical `Add*` bodies only if lint flags duplication, otherwise none needed (mirrors the existing `Add*Hook` style); verify `make test` and `make lint` pass
 
 ## 13. Observer hook panics are recovered and re-raised (Part H)
 

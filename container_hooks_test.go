@@ -780,3 +780,147 @@ func TestContainerHooks_NilContext(t *testing.T) {
 		})
 	}
 }
+
+func TestContainerHooks_RegistrationOrder(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	rec := &callRecorder{}
+	recordAs := func(name string) func(context.Context, *RootScope) {
+		return func(context.Context, *RootScope) { rec.record(name) }
+	}
+	root := NewWithOpts(&InjectorOpts{
+		HookContainerStarted: []func(context.Context, *RootScope){recordAs("opt-1"), recordAs("opt-2")},
+	})
+	root.AddContainerStartedHook(recordAs("add-1"))
+	root.AddContainerStartedHook(recordAs("add-2"))
+
+	require.NoError(t, root.Start())
+	assert.Equal(t, []string{"opt-1", "opt-2", "add-1", "add-2"}, rec.list())
+}
+
+func TestContainerHooks_NilIgnored(t *testing.T) {
+	t.Parallel()
+
+	start := func(root *RootScope) { _ = root.Start() }
+	shutdown := func(root *RootScope) { root.Shutdown() }
+
+	tests := []struct {
+		name      string
+		build     func(ran *atomic.Int32) (*InjectorOpts, func(*RootScope))
+		operation func(*RootScope)
+	}{
+		{
+			name: "HookContainerStarting",
+			build: func(ran *atomic.Int32) (*InjectorOpts, func(*RootScope)) {
+				return &InjectorOpts{HookContainerStarting: []func(context.Context, *RootScope) error{
+					nil, func(context.Context, *RootScope) error { ran.Add(1); return nil },
+				}}, func(root *RootScope) {
+					root.AddContainerStartingHook(nil)
+				}
+			},
+			operation: start,
+		},
+		{
+			name: "HookContainerStarted",
+			build: func(ran *atomic.Int32) (*InjectorOpts, func(*RootScope)) {
+				return &InjectorOpts{HookContainerStarted: []func(context.Context, *RootScope){
+					nil, func(context.Context, *RootScope) { ran.Add(1) },
+				}}, func(root *RootScope) {
+					root.AddContainerStartedHook(nil)
+				}
+			},
+			operation: start,
+		},
+		{
+			name: "HookContainerReady",
+			build: func(ran *atomic.Int32) (*InjectorOpts, func(*RootScope)) {
+				return &InjectorOpts{HookContainerReady: []func(context.Context, *RootScope){
+					nil, func(context.Context, *RootScope) { ran.Add(1) },
+				}}, func(root *RootScope) {
+					root.AddContainerReadyHook(nil)
+				}
+			},
+			operation: start,
+		},
+		{
+			name: "HookContainerFailed",
+			build: func(ran *atomic.Int32) (*InjectorOpts, func(*RootScope)) {
+				return &InjectorOpts{HookContainerFailed: []func(context.Context, *RootScope, error){
+					nil, func(context.Context, *RootScope, error) { ran.Add(1) },
+				}}, func(root *RootScope) {
+					root.AddContainerFailedHook(nil)
+					root.AddContainerStartingHook(func(context.Context, *RootScope) error { return errors.New("boom") })
+				}
+			},
+			operation: start,
+		},
+		{
+			name: "HookContainerClosing",
+			build: func(ran *atomic.Int32) (*InjectorOpts, func(*RootScope)) {
+				return &InjectorOpts{HookContainerClosing: []func(context.Context, *RootScope){
+					nil, func(context.Context, *RootScope) { ran.Add(1) },
+				}}, func(root *RootScope) {
+					root.AddContainerClosingHook(nil)
+				}
+			},
+			operation: shutdown,
+		},
+		{
+			name: "HookContainerClosed",
+			build: func(ran *atomic.Int32) (*InjectorOpts, func(*RootScope)) {
+				return &InjectorOpts{HookContainerClosed: []func(context.Context, *RootScope, *ShutdownReport){
+					nil, func(context.Context, *RootScope, *ShutdownReport) { ran.Add(1) },
+				}}, func(root *RootScope) {
+					root.AddContainerClosedHook(nil)
+				}
+			},
+			operation: shutdown,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+
+			var ran atomic.Int32
+			opts, setup := tt.build(&ran)
+			root := NewWithOpts(opts)
+			setup(root)
+
+			assert.NotPanics(t, func() { tt.operation(root) })
+			assert.Equal(t, int32(1), ran.Load())
+		})
+	}
+}
+
+func TestContainerHooks_Clone(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		clone func(*RootScope) *RootScope
+		count int32
+	}{
+		{name: "Clone()", clone: (*RootScope).Clone, count: 2},
+		{name: "CloneWithOpts(&InjectorOpts{})", clone: func(root *RootScope) *RootScope { return root.CloneWithOpts(&InjectorOpts{}) }, count: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+
+			root := New()
+			var started atomic.Int32
+			root.AddContainerStartedHook(func(context.Context, *RootScope) { started.Add(1) })
+			require.NoError(t, root.Start())
+
+			clone := tt.clone(root)
+
+			require.NoError(t, clone.Start())
+			assert.Equal(t, tt.count, started.Load())
+		})
+	}
+}

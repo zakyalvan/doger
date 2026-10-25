@@ -229,7 +229,9 @@ func (s *RootScope) ShutdownWithContext(ctx context.Context) *ShutdownReport {
 
 	// pointClosed: closeDone is closed, so code here may call Shutdown().
 	for _, hook := range slices.Clone(s.opts.HookContainerClosed) {
-		hook(ctx, s, report)
+		if hook != nil {
+			hook(ctx, s, report)
+		}
 	}
 
 	return report
@@ -516,18 +518,27 @@ func (s *RootScope) AddAfterStartHook(hook func(*Scope, string, error)) {
 // would wait for the running Start, which waits for the hook. See
 // [InjectorOpts.HookContainerStarting].
 func (s *RootScope) AddContainerStartingHook(hook func(context.Context, *RootScope) error) {
+	if hook == nil {
+		return
+	}
 	s.opts.HookContainerStarting = append(s.opts.HookContainerStarting, hook)
 }
 
 // AddContainerStartedHook adds a hook that will be called by the first Start
 // once its pipeline succeeded. See [InjectorOpts.HookContainerStarted].
 func (s *RootScope) AddContainerStartedHook(hook func(context.Context, *RootScope)) {
+	if hook == nil {
+		return
+	}
 	s.opts.HookContainerStarted = append(s.opts.HookContainerStarted, hook)
 }
 
 // AddContainerReadyHook adds a hook that will be called by the first Start
 // after every Started hook returned. See [InjectorOpts.HookContainerReady].
 func (s *RootScope) AddContainerReadyHook(hook func(context.Context, *RootScope)) {
+	if hook == nil {
+		return
+	}
 	s.opts.HookContainerReady = append(s.opts.HookContainerReady, hook)
 }
 
@@ -535,6 +546,9 @@ func (s *RootScope) AddContainerReadyHook(hook func(context.Context, *RootScope)
 // when it fails, with the error Start returns. See
 // [InjectorOpts.HookContainerFailed].
 func (s *RootScope) AddContainerFailedHook(hook func(context.Context, *RootScope, error)) {
+	if hook == nil {
+		return
+	}
 	s.opts.HookContainerFailed = append(s.opts.HookContainerFailed, hook)
 }
 
@@ -545,6 +559,9 @@ func (s *RootScope) AddContainerFailedHook(hook func(context.Context, *RootScope
 // would wait for the running Shutdown, which waits for the hook. See
 // [InjectorOpts.HookContainerClosing].
 func (s *RootScope) AddContainerClosingHook(hook func(context.Context, *RootScope)) {
+	if hook == nil {
+		return
+	}
 	s.opts.HookContainerClosing = append(s.opts.HookContainerClosing, hook)
 }
 
@@ -552,6 +569,9 @@ func (s *RootScope) AddContainerClosingHook(hook func(context.Context, *RootScop
 // Shutdown once every service is shut down, with its report. See
 // [InjectorOpts.HookContainerClosed].
 func (s *RootScope) AddContainerClosedHook(hook func(context.Context, *RootScope, *ShutdownReport)) {
+	if hook == nil {
+		return
+	}
 	s.opts.HookContainerClosed = append(s.opts.HookContainerClosed, hook)
 }
 

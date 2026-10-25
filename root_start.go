@@ -97,7 +97,9 @@ func (s *RootScope) StartWithContext(ctx context.Context) error {
 func (s *RootScope) dispatchAfterStart(ctx context.Context, err error) {
 	if err != nil {
 		for _, hook := range slices.Clone(s.opts.HookContainerFailed) {
-			hook(ctx, s, err)
+			if hook != nil {
+				hook(ctx, s, err)
+			}
 		}
 		return
 	}
@@ -107,10 +109,13 @@ func (s *RootScope) dispatchAfterStart(ctx context.Context, err error) {
 	s.runObserverHooks(ctx, s.opts.HookContainerReady)
 }
 
-// runObserverHooks runs container hooks in order, on a copy of the list.
+// runObserverHooks runs container hooks in order, on a copy of the list,
+// skipping nil entries.
 func (s *RootScope) runObserverHooks(ctx context.Context, hooks []func(context.Context, *RootScope)) {
 	for _, hook := range slices.Clone(hooks) {
-		hook(ctx, s)
+		if hook != nil {
+			hook(ctx, s)
+		}
 	}
 }
 
@@ -234,6 +239,9 @@ func (s *RootScope) runStartPipeline(startCtx context.Context) error {
 // error is a veto: the remaining hooks do not run and Start fails with it.
 func (s *RootScope) runStartingHooks(startCtx context.Context) error {
 	for _, hook := range slices.Clone(s.opts.HookContainerStarting) {
+		if hook == nil {
+			continue
+		}
 		if err := hook(startCtx, s); err != nil {
 			return fmt.Errorf("DI: container start aborted: %w", err)
 		}
