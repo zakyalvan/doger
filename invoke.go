@@ -23,6 +23,12 @@ import (
 // This function is used internally by the DI container for service resolution and
 // supports virtual scopes for dependency tracking and circular dependency detection.
 func invokeAnyByName(i Injector, name string) (any, error) {
+	return invokeAnyByNameAs(i, name, DependencySourceInvoked)
+}
+
+// invokeAnyByNameAs is invokeAnyByName recording the dependency edge, when
+// invoked from a provider, with the given source.
+func invokeAnyByNameAs(i Injector, name string, source DependencySource) (any, error) {
 	var invokerChain []string
 
 	injector := getInjectorOrDefault(i)
@@ -44,7 +50,7 @@ func invokeAnyByName(i Injector, name string) (any, error) {
 	}
 
 	if isVirtualScope {
-		vScope.addDependency(injector, name, serviceScope)
+		vScope.addDependency(injector, name, serviceScope, source)
 	}
 
 	service, ok := serviceAny.(serviceWrapperAny)
@@ -100,7 +106,7 @@ func invokeByName[T any](i Injector, name string) (T, error) {
 	}
 
 	if isVirtualScope {
-		vScope.addDependency(injector, name, serviceScope)
+		vScope.addDependency(injector, name, serviceScope, DependencySourceInvoked)
 	}
 
 	service, ok := serviceAny.(serviceWrapper[T])
@@ -188,7 +194,7 @@ func invokeByGenericType[T any](i Injector) (T, error) {
 		// We chose to register the real service name in invocation chain, because using the
 		// interface name would break cycle detection.
 
-		vScope.addDependency(injector, serviceRealName, serviceScope)
+		vScope.addDependency(injector, serviceRealName, serviceScope, DependencySourceInvoked)
 	}
 
 	serviceScope.onServiceInvoke(serviceRealName)

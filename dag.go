@@ -1,6 +1,7 @@
 package doger
 
 import (
+	"fmt"
 	"sync"
 )
 
@@ -34,6 +35,42 @@ type ServiceDescription struct {
 	Service   string
 }
 
+// DependencySource says how a dependency edge was recorded. When an edge
+// was recorded several ways, the first of invoked, depends-on and declared
+// is kept.
+type DependencySource int
+
+const (
+	// DependencySourceInvoked is an edge recorded when a provider invoked
+	// the service. It is the zero value.
+	DependencySourceInvoked DependencySource = iota
+	// DependencySourceDependsOn is an edge from a DependsOn or
+	// DependsOnNamed registration option.
+	DependencySourceDependsOn
+	// DependencySourceDeclared is an edge recorded by DeclareDependency.
+	DependencySourceDeclared
+)
+
+// String returns "invoked", "depends-on" or "declared", and
+// "DependencySource(n)" for an unknown value.
+func (s DependencySource) String() string {
+	switch s {
+	case DependencySourceInvoked:
+		return "invoked"
+	case DependencySourceDependsOn:
+		return "depends-on"
+	case DependencySourceDeclared:
+		return "declared"
+	default:
+		return fmt.Sprintf("DependencySource(%d)", int(s))
+	}
+}
+
+// MarshalText encodes the source as its String form, so JSON shows it by name.
+func (s DependencySource) MarshalText() ([]byte, error) {
+	return []byte(s.String()), nil
+}
+
 // newDAG creates a new DAG (Directed Acyclic Graph) with initialized dependencies and dependents maps.
 // This function initializes a new dependency graph for tracking service relationships.
 //
@@ -41,8 +78,8 @@ type ServiceDescription struct {
 func newDAG() *DAG {
 	return &DAG{
 		mu:           sync.RWMutex{},
-		dependencies: map[ServiceDescription]map[ServiceDescription]struct{}{},
-		dependents:   map[ServiceDescription]map[ServiceDescription]struct{}{},
+		dependencies: map[ServiceDescription]map[ServiceDescription]DependencySource{},
+		dependents:   map[ServiceDescription]map[ServiceDescription]DependencySource{},
 	}
 }
 
@@ -60,8 +97,8 @@ func newDAG() *DAG {
 //   - dependents: Map of services to their dependents
 type DAG struct {
 	mu           sync.RWMutex
-	dependencies map[ServiceDescription]map[ServiceDescription]struct{}
-	dependents   map[ServiceDescription]map[ServiceDescription]struct{}
+	dependencies map[ServiceDescription]map[ServiceDescription]DependencySource
+	dependents   map[ServiceDescription]map[ServiceDescription]DependencySource
 }
 
 // addDependency adds a dependency relationship from one service to another in the DAG.
@@ -77,24 +114,39 @@ type DAG struct {
 //   - toServiceName: The name of the dependency service
 //
 // This function is thread-safe and updates both the dependencies and dependents maps.
-func (d *DAG) addDependency(fromScopeID, fromScopeName, fromServiceName, toScopeID, toScopeName, toServiceName string) {
+// An edge recorded again keeps its strongest source: invoked, then
+// depends-on, then declared.
+func (d *DAG) addDependency(fromScopeID, fromScopeName, fromServiceName, toScopeID, toScopeName, toServiceName string, source DependencySource) {
 	from := newServiceDescription(fromScopeID, fromScopeName, fromServiceName)
 	to := newServiceDescription(toScopeID, toScopeName, toServiceName)
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
+	if current, ok := d.dependencies[from][to]; ok {
+		source = min(source, current)
+	}
+
 	// from -> to
 	if _, ok := d.dependencies[from]; !ok {
-		d.dependencies[from] = map[ServiceDescription]struct{}{}
+		d.dependencies[from] = map[ServiceDescription]DependencySource{}
 	}
-	d.dependencies[from][to] = struct{}{}
+	d.dependencies[from][to] = source
 
 	// from <- to
 	if _, ok := d.dependents[to]; !ok {
-		d.dependents[to] = map[ServiceDescription]struct{}{}
+		d.dependents[to] = map[ServiceDescription]DependencySource{}
 	}
-	d.dependents[to][from] = struct{}{}
+	d.dependents[to][from] = source
+}
+
+// edgeSource returns the source of the edge from -> to, and whether it exists.
+func (d *DAG) edgeSource(from, to ServiceDescription) (DependencySource, bool) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	source, ok := d.dependencies[from][to]
+	return source, ok
 }
 
 // removeService removes a dependency relationship between services in the DAG.

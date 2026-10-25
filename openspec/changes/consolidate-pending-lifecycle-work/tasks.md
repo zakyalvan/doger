@@ -134,10 +134,10 @@ Rules:
 
 ## 19. Explained edges report their source (dependency-declaration; design Q3)
 
-- [ ] 19.1 RED: add `TestExplain_EdgeSource` (scenario "Source per edge", 2 rows), `TestExplain_EdgeSourceDependents` and `TestExplain_EdgeSourceCompat` (scenario "Output without declared edges is unchanged") to `dependency_test.go`; verify `go test -race -run TestExplain_EdgeSource .` fails to compile only on `ExplainServiceDependencyOutput.Source` and the `DependencySource*` constants
-- [ ] 19.2 GREEN: store a `DependencySource` per DAG edge with invoked > depends-on > declared precedence, record it at the three call sites (`invokeAnyByName`, `resolveDeclaredDependencies` via `invokeAnyByNameAs`, `DeclareDependency`), and expose it with `String`/`MarshalText` and the `String()` suffix (design Q3); verify the 19.1 command passes, `di_explain_test.go` passes unchanged and `make test` is green
-- [ ] 19.3 REFACTOR: *Introduce Parameter Object* if `addDependency` has more than seven parameters (`edge{from, to, source}`), otherwise none needed; verify `make test`, `make lint` and `go test -race -run TestDAG .` pass
-- [ ] 19.4 Add `ExampleExplainNamedService_source` and the source note on the declared-dependencies page; verify the example and the docs lint and build pass
+- [x] 19.1 RED: add `TestExplain_EdgeSource` (scenario "Source per edge", 2 rows), `TestExplain_EdgeSourceDependents` and `TestExplain_EdgeSourceCompat` (scenario "Output without declared edges is unchanged") to `dependency_test.go`; verify `go test -race -run TestExplain_EdgeSource .` fails to compile only on `ExplainServiceDependencyOutput.Source` and the `DependencySource*` constants
+- [x] 19.2 GREEN: store a `DependencySource` per DAG edge with invoked > depends-on > declared precedence, record it at the three call sites (`invokeAnyByName`, `resolveDeclaredDependencies` via `invokeAnyByNameAs`, `DeclareDependency`), and expose it with `String`/`MarshalText` and the `String()` suffix (design Q3); verify the 19.1 command passes, `di_explain_test.go` passes unchanged and `make test` is green
+- [x] 19.3 REFACTOR: *Introduce Parameter Object* if `addDependency` has more than seven parameters (`edge{from, to, source}`), otherwise none needed; verify `make test`, `make lint` and `go test -race -run TestDAG .` pass
+- [x] 19.4 Add `ExampleExplainNamedService_source` and the source note on the declared-dependencies page; verify the example and the docs lint and build pass
 
 ## 20. InvokeAs behavior is unchanged (characterization baseline) (Part K)
 

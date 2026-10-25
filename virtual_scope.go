@@ -127,18 +127,19 @@ func (s *virtualScope) detectCircularDependency(name string) error {
 //   - injector: The injector containing the services
 //   - name: The name of the service being invoked (dependency)
 //   - serviceScope: The scope containing the service being invoked
+//   - source: How the edge was recorded
 //
 // The dependency is recorded as: current service -> invoked service
 // This ensures that during shutdown, dependencies are shut down before the services
 // that depend on them.
-func (s *virtualScope) addDependency(injector Injector, name string, serviceScope *Scope) {
+func (s *virtualScope) addDependency(injector Injector, name string, serviceScope *Scope, source DependencySource) {
 	last, ok := s.getLastInvokerName()
 	if !ok {
 		// This should never happen, but we'll handle it gracefully
 		return
 	}
 
-	injector.RootScope().dag.addDependency(injector.ID(), injector.Name(), last, serviceScope.ID(), serviceScope.Name(), name)
+	injector.RootScope().dag.addDependency(injector.ID(), injector.Name(), last, serviceScope.ID(), serviceScope.Name(), name, source)
 }
 
 // getLastInvokerName retrieves the last invoker name from the invoker chain in the virtualScope.

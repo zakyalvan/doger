@@ -155,7 +155,7 @@ func resolveDeclaredDependencies(i Injector, opts *serviceOptions) error {
 	}
 
 	for _, dependency := range opts.dependsOn {
-		if _, err := invokeAnyByName(i, dependency); err != nil {
+		if _, err := invokeAnyByNameAs(i, dependency, DependencySourceDependsOn); err != nil {
 			return err
 		}
 	}

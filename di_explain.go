@@ -42,7 +42,7 @@ Dependents:
 `
 
 // @TODO: add service type icon (lazy, eager, transient).
-const explainServiceDependencyTemplate = `* {{.Service}} from scope {{.ScopeName}}{{.Recursive}}`
+const explainServiceDependencyTemplate = `* {{.Service}}{{.Source}} from scope {{.ScopeName}}{{.Recursive}}`
 
 // ExplainServiceOutput contains detailed information about a service for debugging and analysis.
 // This struct provides comprehensive information about a service's location, type, dependencies,
@@ -110,11 +110,14 @@ func (sd *ExplainServiceOutput) String() string {
 //   - ScopeName: The human-readable name of the scope containing the related service
 //   - Service: The name of the related service
 //   - Recursive: Nested dependency relationships (for transitive dependencies)
+//   - Source: How the edge was recorded: invoked by a provider, a DependsOn
+//     option, or DeclareDependency
 type ExplainServiceDependencyOutput struct {
 	ScopeID   string                           `json:"scope_id"`
 	ScopeName string                           `json:"scope_name"`
 	Service   string                           `json:"service"`
 	Recursive []ExplainServiceDependencyOutput `json:"recursive"`
+	Source    DependencySource                 `json:"source"`
 }
 
 // String returns a formatted string representation of the dependency relationship.
@@ -139,12 +142,18 @@ func (sdd *ExplainServiceDependencyOutput) String() string {
 		recursive = "\n" + recursive
 	}
 
+	source := ""
+	if sdd.Source != DependencySourceInvoked {
+		source = " (" + sdd.Source.String() + ")"
+	}
+
 	return fromTemplate(
 		explainServiceDependencyTemplate,
 		map[string]string{
 			"ScopeID":   sdd.ScopeID,
 			"ScopeName": sdd.ScopeName,
 			"Service":   sdd.Service,
+			"Source":    source,
 			"Recursive": recursive,
 		},
 	)
@@ -261,12 +270,19 @@ func newExplainServiceDependencies(i Injector, desc ServiceDescription, mode str
 	return mAp(deps, func(item ServiceDescription, _ int) ExplainServiceDependencyOutput {
 		recursive := newExplainServiceDependencies(i, item, mode)
 
+		from, to := desc, item
+		if mode == "dependents" {
+			from, to = item, desc
+		}
+		source, _ := i.RootScope().dag.edgeSource(from, to)
+
 		// @TODO: differentiate status of lazy services (built, not built). Such as: "😴 (✅)"
 		return ExplainServiceDependencyOutput{
 			ScopeID:   item.ScopeID,
 			ScopeName: item.ScopeName,
 			Service:   item.Service,
 			Recursive: recursive,
+			Source:    source,
 		}
 	})
 }
