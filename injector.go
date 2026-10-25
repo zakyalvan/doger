@@ -165,6 +165,12 @@ type InjectorOpts struct {
 	// registered with AsStarter. By default, every non-transient service whose
 	// registered type implements a Starter variant is started too.
 	DisableStarterAutoDetection bool
+
+	// EnableRunnerAutoDetection makes Start run, as a Runnable, every
+	// non-transient service whose registered type implements Runner. By
+	// default, runners must opt in with AsRunnable, because Run is too
+	// common a method name to auto-detect. Custom kinds always need opt-in.
+	EnableRunnerAutoDetection bool
 }
 
 func (o *InjectorOpts) copy() *InjectorOpts {
@@ -184,6 +190,7 @@ func (o *InjectorOpts) copy() *InjectorOpts {
 		StructTagKey:             o.StructTagKey,
 
 		DisableStarterAutoDetection: o.DisableStarterAutoDetection,
+		EnableRunnerAutoDetection:   o.EnableRunnerAutoDetection,
 	}
 }
 

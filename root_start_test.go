@@ -847,6 +847,33 @@ func (s *blockingStarter) Shutdown() error {
 	return nil
 }
 
+// blockingRunner signals entered when Run begins, then runs behavior.
+type blockingRunner struct {
+	entered   chan struct{}
+	behavior  func(ctx context.Context) error
+	shutdowns atomic.Int32
+}
+
+func (r *blockingRunner) Run(ctx context.Context) error {
+	close(r.entered)
+	return r.behavior(ctx)
+}
+
+func (r *blockingRunner) Shutdown() error {
+	r.shutdowns.Add(1)
+	return nil
+}
+
+// countingRunner counts its Run calls.
+type countingRunner struct {
+	runs atomic.Int32
+}
+
+func (r *countingRunner) Run(context.Context) error {
+	r.runs.Add(1)
+	return nil
+}
+
 func TestStart_ShutdownCancels(t *testing.T) {
 	t.Parallel()
 
@@ -859,7 +886,19 @@ func TestStart_ShutdownCancels(t *testing.T) {
 		shutdownTimeout             time.Duration // 0: context.Background()
 		wantSucceed                 bool
 		wantAShutdowns              int32
+		runner                      bool // "a" and "z" are lazy Runners instead of Starters
 	}{
+		{
+			name: "runner_honours_ctx",
+			behavior: func(<-chan struct{}) func(ctx context.Context) error {
+				return func(ctx context.Context) error {
+					<-ctx.Done()
+					return ctx.Err()
+				}
+			},
+			runner:      true,
+			wantSucceed: true, wantAShutdowns: 1,
+		},
 		{
 			name: "starter_honours_ctx",
 			behavior: func(<-chan struct{}) func(ctx context.Context) error {
@@ -903,13 +942,24 @@ func TestStart_ShutdownCancels(t *testing.T) {
 
 				root := New()
 				release := make(chan struct{})
-				a := &blockingStarter{entered: make(chan struct{}), behavior: tt.behavior(release)}
-				ProvideNamed(root, "a", func(Injector) (*blockingStarter, error) { return a, nil })
-				z := provideCounted(root, "z", &startWithCtxErr{})
+				entered := make(chan struct{})
+				var aShutdowns, zCalls func() int32
+				if tt.runner {
+					a := &blockingRunner{entered: entered, behavior: tt.behavior(release)}
+					ProvideNamed(root, "a", func(Injector) (*blockingRunner, error) { return a, nil }, AsRunnable())
+					z := &countingRunner{}
+					ProvideNamed(root, "z", func(Injector) (*countingRunner, error) { return z, nil }, AsRunnable())
+					aShutdowns, zCalls = a.shutdowns.Load, z.runs.Load
+				} else {
+					a := &blockingStarter{entered: entered, behavior: tt.behavior(release)}
+					ProvideNamed(root, "a", func(Injector) (*blockingStarter, error) { return a, nil })
+					z := provideCounted(root, "z", &startWithCtxErr{})
+					aShutdowns, zCalls = a.shutdowns.Load, z.starts.Load
+				}
 
 				started := make(chan error, 1)
 				go func() { started <- root.Start() }()
-				<-a.entered
+				<-entered
 
 				helperDone := make(chan struct{})
 				if tt.releaseWhileShutdownBlocked {
@@ -954,8 +1004,8 @@ func TestStart_ShutdownCancels(t *testing.T) {
 				}
 
 				is.ErrorIs(<-started, ErrStartAfterShutdown)
-				is.Equal(tt.wantAShutdowns, a.shutdowns.Load())
-				is.Equal(int32(0), z.starts.Load())
+				is.Equal(tt.wantAShutdowns, aShutdowns())
+				is.Equal(int32(0), zCalls())
 			})
 		})
 	}

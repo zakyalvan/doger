@@ -66,3 +66,46 @@ func ExampleNewKind() {
 	// stop cron
 	// stop cleanup
 }
+
+type exampleMigrator struct{}
+
+func (*exampleMigrator) Run(context.Context) error {
+	fmt.Println("migrations applied")
+	return nil
+}
+
+func ExampleAsRunnable() {
+	root := New()
+
+	Provide(root, func(i Injector) (*exampleHTTPServer, error) { return &exampleHTTPServer{}, nil })
+	// Runs once, after every Starter has started.
+	Provide(root, func(i Injector) (*exampleMigrator, error) { return &exampleMigrator{}, nil }, AsRunnable())
+
+	if err := root.Start(); err != nil {
+		fmt.Println(err)
+	}
+
+	// Output:
+	// http started
+	// migrations applied
+}
+
+func ExampleKind_Handle() {
+	root := New()
+	Provide(root, func(i Injector) (*exampleMigrator, error) { return &exampleMigrator{}, nil }, AsRunnable())
+
+	// Replace the default Runnable handler for this container: log each
+	// runner before running it.
+	Runnable.Handle(root, StageAfterStart, func(ctx context.Context, c Component[Runner, struct{}]) error {
+		fmt.Println("running", c.Name)
+		return c.Instance.Run(ctx)
+	})
+
+	if err := root.Start(); err != nil {
+		fmt.Println(err)
+	}
+
+	// Output:
+	// running *github.com/kartaladev/doger.exampleMigrator
+	// migrations applied
+}

@@ -104,10 +104,10 @@ Prerequisites: `fix-stacktrace-frame-filter`, `rename-module-doger` and `upgrade
 
 ## 15. Built-in Runnable kind
 
-- [ ] 15.1 RED: add `TestRunnable_RunsAfterStarters`, `TestRunnable_Failure`, `TestRunnable_AutoDetection` (5 rows of "Runner auto-detection"), `TestRunnable_ReplaceHandler`, `TestRunnable_ReassignedVariable`, the Runner row of `TestStart_ShutdownCancels`, and the runnable rows of `TestProvideOptions_Registration` (row 5), `_Constructors`, `_Repeated` and `_Invalid` (job, cfg); verify `go test -race -run 'TestRunnable_|TestStart_ShutdownCancels|TestProvideOptions_' .` fails to compile only on `Runner`, `Runnable`, `AsRunnable` and `EnableRunnerAutoDetection`.
-- [ ] 15.2 GREEN: implement design D10 (`runnableKind`, exported `Runnable` copy, `AsRunnable`, default inline `StageAfterStart` handler registered in `NewWithOpts`, `EnableRunnerAutoDetection` implicit binding without duplicates and excluding transients and aliases); verify the 15.1 command passes, goleak is clean, and `make test` is green.
-- [ ] 15.3 REFACTOR: none needed, `Runnable` reuses `Kind` unchanged; verify `make test` and `make lint` pass.
-- [ ] 15.4 Add `ExampleAsRunnable` and `ExampleKind_Handle` (replacing the Runnable handler), godoc for `Runner` (one-shot) and `Runnable` (do not reassign), and the Runnable section of the component-kinds page; verify `go test -run 'Example(AsRunnable|Kind_Handle)' .` and `npm run build` in `docs/` pass.
+- [x] 15.1 RED: add `TestRunnable_RunsAfterStarters`, `TestRunnable_Failure`, `TestRunnable_AutoDetection` (5 rows of "Runner auto-detection"), `TestRunnable_ReplaceHandler`, `TestRunnable_ReassignedVariable`, the Runner row of `TestStart_ShutdownCancels`, and the runnable rows of `TestProvideOptions_Registration` (row 5), `_Constructors`, `_Repeated` and `_Invalid` (job, cfg); verify `go test -race -run 'TestRunnable_|TestStart_ShutdownCancels|TestProvideOptions_' .` fails to compile only on `Runner`, `Runnable`, `AsRunnable` and `EnableRunnerAutoDetection`.
+- [x] 15.2 GREEN: implement design D10 (`runnableKind`, exported `Runnable` copy, `AsRunnable`, default inline `StageAfterStart` handler registered in `NewWithOpts`, `EnableRunnerAutoDetection` implicit binding without duplicates and excluding transients and aliases); verify the 15.1 command passes, goleak is clean, and `make test` is green.
+- [x] 15.3 REFACTOR: none needed, `Runnable` reuses `Kind` unchanged; verify `make test` and `make lint` pass.
+- [x] 15.4 Add `ExampleAsRunnable` and `ExampleKind_Handle` (replacing the Runnable handler), godoc for `Runner` (one-shot) and `Runnable` (do not reassign), and the Runnable section of the component-kinds page; verify `go test -run 'Example(AsRunnable|Kind_Handle)' .` and `npm run build` in `docs/` pass.
 
 ## 16. Integration checks
 

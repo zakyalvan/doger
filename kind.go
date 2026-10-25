@@ -138,6 +138,11 @@ func (k Kind[T, M]) Handle(root *RootScope, stage Stage, handler func(context.Co
 	root.kinds = append(root.kinds, entry)
 }
 
+// target returns the kind's target type T.
+func (k Kind[T, M]) target() reflect.Type {
+	return reflect.TypeFor[T]()
+}
+
 func (k Kind[T, M]) mustBeCreated() {
 	if k.id == nil {
 		panic(fmt.Errorf("DI: kind not created with NewKind"))

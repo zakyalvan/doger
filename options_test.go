@@ -253,6 +253,15 @@ func TestProvideOptions_Registration(t *testing.T) {
 			want:     optIns{starter: true},
 		},
 		{
+			name: "lazy_package_as_runnable",
+			register: func(root *RootScope) {
+				Lazy(func(Injector) (*CleanupJob, error) { return &CleanupJob{}, nil }, AsRunnable())(root)
+			},
+			service:  NameOf[*CleanupJob](),
+			instance: func(_ *testing.T, root *RootScope) (any, error) { return Invoke[*CleanupJob](root) },
+			want:     optIns{kinds: []kindOptIn{{name: "runnable", meta: struct{}{}}}},
+		},
+		{
 			name:     "eager_named_depends_on",
 			register: func(root *RootScope) { EagerNamed("cfg", &optConfig{}, DependsOnNamed("db"))(root) },
 			service:  "cfg",
@@ -342,6 +351,7 @@ func TestProvideOptions_Constructors(t *testing.T) {
 		{name: "as_starter", option: AsStarter(), want: optIns{starter: true}},
 		{name: "depends_on", option: DependsOn[*optDB](), want: optIns{dependsOn: []string{NameOf[*optDB]()}}},
 		{name: "depends_on_named", option: DependsOnNamed("primary-db"), want: optIns{dependsOn: []string{"primary-db"}}},
+		{name: "as_runnable", option: AsRunnable(), want: optIns{kinds: []kindOptIn{{name: "runnable", meta: struct{}{}}}}},
 		{
 			name:   "scheduled",
 			option: NewKind[Job, Spec]("scheduled").With(Spec{Every: time.Minute}),
@@ -374,6 +384,11 @@ func TestProvideOptions_Repeated(t *testing.T) {
 		{name: "depends_on_accumulates", opts: []ProvideOption{DependsOnNamed("a"), DependsOnNamed("b")}, want: optIns{dependsOn: []string{"a", "b"}}},
 		{name: "depends_on_collapses_duplicates", opts: []ProvideOption{DependsOnNamed("a"), DependsOnNamed("a")}, want: optIns{dependsOn: []string{"a"}}},
 		{name: "as_starter_twice", opts: []ProvideOption{AsStarter(), AsStarter()}, want: optIns{starter: true}},
+		{
+			name:     "as_runnable_twice",
+			opts:     []ProvideOption{AsRunnable(), AsRunnable()},
+			panicMsg: "DI: kind `runnable` applied twice to service `worker`",
+		},
 		{
 			name:     "same_kind_twice",
 			opts:     []ProvideOption{scheduled.With(Spec{Every: time.Minute}), scheduled.With(Spec{Every: 2 * time.Minute})},
@@ -455,6 +470,22 @@ func TestProvideOptions_Invalid(t *testing.T) {
 				ProvideNamed(root, "plain", func(Injector) (*optConfig, error) { return &optConfig{}, nil }, scheduled.With(Spec{}))
 			},
 			panicMsg: "DI: service `plain` is not assignable to `doger.Job` required by kind `scheduled`",
+		},
+		{
+			name:    "transient_as_runnable",
+			service: "job",
+			register: func(root *RootScope) {
+				ProvideNamedTransient(root, "job", func(Injector) (*CleanupJob, error) { return &CleanupJob{}, nil }, AsRunnable())
+			},
+			panicMsg: "DI: transient service `job` cannot be handled by kind `runnable`",
+		},
+		{
+			name:    "concrete_not_runner",
+			service: "cfg",
+			register: func(root *RootScope) {
+				ProvideNamed(root, "cfg", func(Injector) (*optConfig, error) { return &optConfig{}, nil }, AsRunnable())
+			},
+			panicMsg: "DI: service `cfg` is not assignable to `doger.Runner` required by kind `runnable`",
 		},
 		{
 			name:    "interface_kind_is_deferred",

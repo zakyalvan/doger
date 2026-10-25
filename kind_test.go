@@ -422,3 +422,171 @@ func TestKind_DeclareDependencyInHandler(t *testing.T) {
 		"shutdown scheduler", "shutdown job",
 	}, events.list())
 }
+
+// runRecorder is a Runner recording its runs in rec and returning err.
+type runRecorder struct {
+	name string
+	rec  *callRecorder
+	err  error
+}
+
+func (r *runRecorder) Run(context.Context) error {
+	r.rec.record("run " + r.name)
+	return r.err
+}
+
+// provideRunner registers lazy runner name in root.
+func provideRunner(root *RootScope, rec *callRecorder, name string, err error, opts ...ProvideOption) {
+	ProvideNamed(root, name, func(Injector) (*runRecorder, error) {
+		return &runRecorder{name: name, rec: rec, err: err}, nil
+	}, opts...)
+}
+
+func TestRunnable_RunsAfterStarters(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	events := &callRecorder{}
+	ProvideNamed(root, "server", func(Injector) (*kindServer, error) { return &kindServer{rec: events}, nil })
+	provideRunner(root, events, "migrate", nil, AsRunnable())
+	provideRunner(root, events, "warmup", nil, AsRunnable())
+
+	require.NoError(t, root.Start())
+	assert.Equal(t, []string{"start server", "run migrate", "run warmup"}, events.list())
+}
+
+func TestRunnable_Failure(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+	is := assert.New(t)
+	errMigrate := errors.New("migrate failed")
+
+	root := New()
+	events := &callRecorder{}
+	provideRunner(root, events, "a", errMigrate, AsRunnable())
+	provideRunner(root, events, "b", nil, AsRunnable())
+
+	err := root.Start()
+
+	is.ErrorIs(err, errMigrate)
+	is.ErrorContains(err, "kind `runnable`")
+	is.ErrorContains(err, "service `a`")
+	is.Equal([]string{"run a"}, events.list())
+}
+
+func TestRunnable_AutoDetection(t *testing.T) {
+	t.Parallel()
+
+	newJob := func(rec *callRecorder) func(Injector) (*runRecorder, error) {
+		return func(Injector) (*runRecorder, error) { return &runRecorder{name: "job", rec: rec}, nil }
+	}
+
+	tests := []struct {
+		name     string
+		enabled  bool
+		register func(t *testing.T, root *RootScope, rec *callRecorder)
+		runs     int
+	}{
+		{
+			name: "disabled_no_options", enabled: false,
+			register: func(_ *testing.T, root *RootScope, rec *callRecorder) { ProvideNamed(root, "job", newJob(rec)) },
+			runs:     0,
+		},
+		{
+			name: "enabled_no_options", enabled: true,
+			register: func(_ *testing.T, root *RootScope, rec *callRecorder) { ProvideNamed(root, "job", newJob(rec)) },
+			runs:     1,
+		},
+		{
+			name: "enabled_with_as_runnable", enabled: true,
+			register: func(_ *testing.T, root *RootScope, rec *callRecorder) {
+				ProvideNamed(root, "job", newJob(rec), AsRunnable())
+			},
+			runs: 1,
+		},
+		{
+			name: "enabled_transient", enabled: true,
+			register: func(_ *testing.T, root *RootScope, rec *callRecorder) {
+				ProvideNamedTransient(root, "job", newJob(rec))
+			},
+			runs: 0,
+		},
+		{
+			name: "enabled_with_alias", enabled: true,
+			register: func(t *testing.T, root *RootScope, rec *callRecorder) {
+				Provide(root, newJob(rec))
+				require.NoError(t, As[*runRecorder, Runner](root))
+			},
+			runs: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+
+			root := NewWithOpts(&InjectorOpts{EnableRunnerAutoDetection: tt.enabled})
+			rec := &callRecorder{}
+			tt.register(t, root, rec)
+
+			require.NoError(t, root.Start())
+			assert.Len(t, rec.list(), tt.runs)
+		})
+	}
+}
+
+func TestRunnable_ReplaceHandler(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+	is := assert.New(t)
+
+	root := New()
+	events := &callRecorder{}
+	release := make(chan struct{})
+	finished := make(chan struct{})
+	ProvideNamed(root, "a", func(Injector) (*runRecorder, error) {
+		return &runRecorder{name: "a", rec: events}, nil
+	}, AsRunnable())
+
+	var wg sync.WaitGroup
+	t.Cleanup(wg.Wait)
+	Runnable.Handle(root, StageAfterStart, func(_ context.Context, c Component[Runner, struct{}]) error {
+		wg.Go(func() {
+			defer close(finished)
+			<-release
+			_ = c.Instance.Run(context.Background())
+		})
+		return nil
+	})
+
+	require.NoError(t, root.Start())
+
+	select {
+	case <-finished:
+		is.Fail("Start returned after the runner finished")
+	default:
+	}
+	is.Empty(events.list(), "the default handler did not run")
+
+	close(release)
+	<-finished
+	is.Equal([]string{"run a"}, events.list())
+}
+
+// TestRunnable_ReassignedVariable is not parallel: it reassigns Runnable.
+func TestRunnable_ReassignedVariable(t *testing.T) {
+	testWithTimeout(t, time.Second)
+
+	previous := Runnable
+	Runnable = NewKind[Runner, struct{}]("other")
+	t.Cleanup(func() { Runnable = previous })
+
+	root := New()
+	events := &callRecorder{}
+	provideRunner(root, events, "job", nil, AsRunnable())
+
+	require.NoError(t, root.Start())
+	assert.Equal(t, []string{"run job"}, events.list())
+}

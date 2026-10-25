@@ -249,6 +249,11 @@ func (s *RootScope) newStartCandidate(scope *Scope, name string, depth int, serv
 	if opts != nil {
 		kinds = opts.kinds
 	}
+	if s.opts.EnableRunnerAutoDetection && typeCanCastToType(service.getReflectType(), runnableKind.target()) &&
+		!slices.ContainsFunc(kinds, func(b kindBinding) bool { return b.id == runnableKind.id }) {
+		// implicit binding, so a runner opted in explicitly still runs once
+		kinds = append(slices.Clone(kinds), kindBinding{id: runnableKind.id, meta: struct{}{}, target: runnableKind.target()})
+	}
 	if !starter && len(kinds) == 0 {
 		return nil
 	}

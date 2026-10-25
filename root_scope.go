@@ -106,6 +106,9 @@ func NewWithOpts(opts *InjectorOpts, packages ...func(Injector)) *RootScope {
 	}
 	root.self.rootScope = root
 
+	// The built-in Runnable kind is an ordinary kind with a default handler.
+	runnableKind.Handle(root, StageAfterStart, runRunner)
+
 	if opts.HealthCheckParallelism > 0 {
 		root.healthCheckPool = newJobPool[error](opts.HealthCheckParallelism)
 		root.healthCheckPool.start()

@@ -68,3 +68,46 @@ Edges declared with `DeclareDependency` during `StageBeforeStart` order the star
 - The handler receives the Start-time context, cancelled when `Start` returns or when `Shutdown` begins.
 - `Handle` panics on a zero `Kind` (not created with `NewKind`), an unknown stage, or a `nil` handler.
 - Clones get only the default handlers; re-register custom handlers on a clone.
+
+## The built-in Runnable kind {#runnable}
+
+doger ships one kind, built on the same mechanism: `doger.Runnable`, a `Kind[doger.Runner, struct{}]`.
+
+```go
+type Runner interface {
+	Run(ctx context.Context) error
+}
+
+doger.Provide(injector, NewMigrator, doger.AsRunnable()) // shorthand for Runnable.With(struct{}{})
+```
+
+By default every container has a `StageAfterStart` handler for it: once every starter is up, it calls `Run` once per runner, in dependency then registration order, with the Start-time context, and stops at the first error.
+
+A runner is **one-shot**: `Run` must return. Long-running work belongs in a [starter](./starter.md) that spawns its own goroutine, plus a `Shutdown` method that stops it. A runner that honours its context returns when `Shutdown` cancels `Start`.
+
+### Auto-detection {#runner-auto-detection}
+
+`Run` is too common a method name to detect by default, so runners opt in with `AsRunnable()`. To run every non-transient service whose registered type implements `Runner`:
+
+```go
+root := doger.NewWithOpts(&doger.InjectorOpts{EnableRunnerAutoDetection: true})
+```
+
+A service opted in explicitly still runs once, and aliases are never run.
+
+### Replacing the handler {#replace-runnable-handler}
+
+```go
+doger.Runnable.Handle(root, doger.StageAfterStart, func(ctx context.Context, c doger.Component[doger.Runner, struct{}]) error {
+	log.Println("running", c.Name)
+	return c.Instance.Run(ctx)
+})
+```
+
+The replacement applies to that container only. A handler that spawns goroutines owns their lifetime.
+
+:::caution
+
+Do not reassign the `doger.Runnable` variable. `AsRunnable()` and the default handler keep using the original kind, so a reassigned variable would no longer match them.
+
+:::
