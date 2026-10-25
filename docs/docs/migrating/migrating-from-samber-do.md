@@ -109,3 +109,5 @@ if errors.Is(err, context.Canceled) {
 - The struct injection tag key is still `do` (`do:""`), and you can still override it with `InjectorOpts.StructTagKey`.
 - The messages of `ErrServiceNotFound`, `ErrServiceNotMatch`, `ErrCircularDependency` and `ErrHealthCheckTimeout` keep their `DI: ` prefix, and still match with `errors.Is`.
 - Every other exported identifier, signature, option and default.
+
+doger also adds one option, `InjectorOpts.Clock`. It defaults to the real clock, so you do not need to set it. See [Clock](../container/options.md#clock).

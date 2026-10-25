@@ -399,7 +399,7 @@ func main() {
 2. **Better error messages** - More detailed error information
 3. **Service lifecycle management** - Built-in shutdown and health checks
 4. **Scoped services** - Full support for request-scoped services
-5. **No external dependencies** - Pure Go implementation
+5. **Minimal dependencies** - Pure Go, with two small libraries (`go-type-to-string`, `clockwork`)
 6. **Better testing support** - Easier to mock and test
 
 ## Common Pitfalls {#common-pitfalls}

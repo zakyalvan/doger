@@ -28,7 +28,7 @@ doger is a fork of [samber/do](https://github.com/samber/do) by Samuel Berthe. C
 
 :::
 
-Dependency injection (DI) in Go is the practice of supplying a component with the services it depends on, instead of letting it construct them itself — making code easier to test, swap, and reason about. `doger` is a DI toolkit for Go that implements this pattern using **Go generics** (Go 1.27+) instead of reflection, giving you a type-safe API with **no code generation** and **zero external dependencies**.
+Dependency injection (DI) in Go is the practice of supplying a component with the services it depends on, instead of letting it construct them itself — making code easier to test, swap, and reason about. `doger` is a DI toolkit for Go that implements this pattern using **Go generics** (Go 1.27+) instead of reflection, giving you a type-safe API with **no code generation** and **minimal dependencies**.
 
 <img
 src={require('@site/static/img/cover.webp').default}
@@ -96,7 +96,7 @@ Upstream's short name `do` is the sum of `DI` and `Go`. `doger` keeps it as its 
 - **🧪 Debugging & introspection**
   - Explain APIs: [scope tree](./troubleshooting/scope-tree.md) and [service dependencies](./troubleshooting/service-dependencies.md)
   - [Web UI](./troubleshooting/web-ui.md) & HTTP middleware (std, Gin, Fiber, Echo, Chi)
-- **🌈 Lightweight, no dependencies**
+- **🌈 Lightweight, minimal dependencies**
 - **🔅 No code generation**
 - **😷 Type‑safe API**
 

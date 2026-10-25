@@ -6,7 +6,7 @@ sidebar_position: 1
 
 # doger vs uber/fx
 
-**Verdict**: pick `uber/fx` if you're building a large, modular application that benefits from its batteries-included lifecycle framework and are comfortable with runtime reflection and its dependency footprint (`dig`, `zap`, `multierr`). Pick `doger` if you want compile-time-checked dependency resolution through generics, built-in health checks, and zero external dependencies, without giving up lifecycle management.
+**Verdict**: pick `uber/fx` if you're building a large, modular application that benefits from its batteries-included lifecycle framework and are comfortable with runtime reflection and its dependency footprint (`dig`, `zap`, `multierr`). Pick `doger` if you want compile-time-checked dependency resolution through generics, built-in health checks, and minimal dependencies (`go-type-to-string` and `clockwork`), without giving up lifecycle management.
 
 ## At a glance {#at-a-glance}
 
