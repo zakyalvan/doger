@@ -195,3 +195,152 @@ func TestContainerHooks_EmptyContainer(t *testing.T) {
 	require.NoError(t, root.Start())
 	assert.Equal(t, []string{"starting-hook", "started-hook", "ready-hook"}, rec.list())
 }
+
+// failingRunner is a Runner returning err.
+type failingRunner struct{ err error }
+
+func (r *failingRunner) Run(context.Context) error { return r.err }
+
+// failingJob is a component of the kinds used by failure-point tests.
+type failingJob struct{}
+
+func TestContainerFailedHook_FailurePoint(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+
+	tests := []struct {
+		name  string
+		setup func(root *RootScope) // registers the failing piece
+		veto  error                 // returned by the Starting hook
+		ctx   func() context.Context
+		cause error
+	}{
+		{name: "Starting hook veto", veto: errBoom, cause: errBoom},
+		{
+			name: "context already cancelled",
+			ctx: func() context.Context {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return ctx
+			},
+			cause: context.Canceled,
+		},
+		{
+			name: "provider of a Starter service",
+			setup: func(root *RootScope) {
+				ProvideNamed(root, "server", func(Injector) (*startWithErr, error) { return nil, errBoom })
+			},
+			cause: errBoom,
+		},
+		{
+			name: "StageBeforeStart kind handler",
+			setup: func(root *RootScope) {
+				k := NewKind[*failingJob, struct{}]("k")
+				ProvideNamedValue(root, "job", &failingJob{}, k.With(struct{}{}))
+				k.Handle(root, StageBeforeStart, func(context.Context, Component[*failingJob, struct{}]) error { return errBoom })
+			},
+			cause: errBoom,
+		},
+		{
+			name: "Start method of a Starter",
+			setup: func(root *RootScope) {
+				ProvideNamedValue(root, "server", &errorStarter{err: errBoom})
+			},
+			cause: errBoom,
+		},
+		{
+			name: "Run method of a Runnable",
+			setup: func(root *RootScope) {
+				ProvideNamedValue(root, "migrate", &failingRunner{err: errBoom}, AsRunnable())
+			},
+			cause: errBoom,
+		},
+		{
+			name: "StageAfterStart kind handler",
+			setup: func(root *RootScope) {
+				k := NewKind[*failingJob, struct{}]("k")
+				ProvideNamedValue(root, "job", &failingJob{}, k.With(struct{}{}))
+				k.Handle(root, StageAfterStart, func(context.Context, Component[*failingJob, struct{}]) error { return errBoom })
+			},
+			cause: errBoom,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+			is := assert.New(t)
+
+			root := New()
+			rec := &callRecorder{}
+			root.AddContainerStartingHook(func(context.Context, *RootScope) error {
+				rec.record("starting")
+				return tt.veto
+			})
+			root.AddContainerStartedHook(func(context.Context, *RootScope) { rec.record("started") })
+			root.AddContainerReadyHook(func(context.Context, *RootScope) { rec.record("ready") })
+			var failedErr error
+			root.AddContainerFailedHook(func(_ context.Context, _ *RootScope, err error) {
+				rec.record("failed")
+				failedErr = err
+			})
+			if tt.setup != nil {
+				tt.setup(root)
+			}
+			ctx := context.Background()
+			if tt.ctx != nil {
+				ctx = tt.ctx()
+			}
+
+			err := root.StartWithContext(ctx)
+
+			is.ErrorIs(err, tt.cause)
+			is.Same(err, failedErr, "the Failed hook received the error Start returned")
+			is.Equal([]string{"starting", "failed"}, rec.list())
+		})
+	}
+}
+
+func TestContainerFailedHook_GuardErrors(t *testing.T) {
+	t.Parallel()
+
+	errVeto := errors.New("veto")
+
+	tests := []struct {
+		name    string
+		veto    error
+		prepare func(root *RootScope)
+		wantErr error
+	}{
+		{name: "started", prepare: func(root *RootScope) { _ = root.Start() }, wantErr: ErrAlreadyStarted},
+		{name: "failed after a Starting veto", veto: errVeto, prepare: func(root *RootScope) { _ = root.Start() }, wantErr: ErrAlreadyStarted},
+		{name: "shut down", prepare: func(root *RootScope) { _ = root.Shutdown() }, wantErr: ErrStartAfterShutdown},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+			is := assert.New(t)
+
+			root := New()
+			var starting, failed atomic.Int32
+			root.AddContainerStartingHook(func(context.Context, *RootScope) error {
+				starting.Add(1)
+				return tt.veto
+			})
+			root.AddContainerFailedHook(func(context.Context, *RootScope, error) { failed.Add(1) })
+			tt.prepare(root)
+			starting.Store(0)
+			failed.Store(0)
+
+			err := root.Start()
+
+			is.ErrorIs(err, tt.wantErr)
+			is.Equal(int32(0), starting.Load())
+			is.Equal(int32(0), failed.Load())
+		})
+	}
+}

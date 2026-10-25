@@ -87,13 +87,24 @@ func (s *RootScope) StartWithContext(ctx context.Context) error {
 	err = s.runStart(startCtx)
 
 	// pointAfterStart: startDone is closed, so code here may call Shutdown().
-	if err == nil {
-		s.runObserverHooks(ctx, s.opts.HookContainerStarted)
-		s.markReady()
-		s.runObserverHooks(ctx, s.opts.HookContainerReady)
-	}
+	s.dispatchAfterStart(ctx, err)
 
 	return err
+}
+
+// dispatchAfterStart fires the pointAfterStart hooks from Start's local
+// outcome: Started, then Ready, on success; Failed with err otherwise.
+func (s *RootScope) dispatchAfterStart(ctx context.Context, err error) {
+	if err != nil {
+		for _, hook := range slices.Clone(s.opts.HookContainerFailed) {
+			hook(ctx, s, err)
+		}
+		return
+	}
+
+	s.runObserverHooks(ctx, s.opts.HookContainerStarted)
+	s.markReady()
+	s.runObserverHooks(ctx, s.opts.HookContainerReady)
 }
 
 // runObserverHooks runs container hooks in order, on a copy of the list.

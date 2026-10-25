@@ -51,3 +51,26 @@ func ExampleRootScope_AddContainerReadyHook() {
 	// migration ran
 	// ready: report healthy to the orchestrator
 }
+
+type exampleBrokenServer struct{}
+
+func (*exampleBrokenServer) Start() error { return errors.New("port in use") }
+
+func ExampleRootScope_AddContainerFailedHook() {
+	root := New()
+	ProvideValue(root, &exampleDB{})
+	ProvideNamedValue(root, "http", &exampleBrokenServer{})
+
+	// Start rolls nothing back: clean up what did start. Failed hooks run
+	// after Start released, so they may call Shutdown.
+	root.AddContainerFailedHook(func(_ context.Context, root *RootScope, err error) {
+		fmt.Println("start failed:", err)
+		root.Shutdown()
+	})
+
+	_ = root.Start()
+	// Output:
+	// db started
+	// start failed: DI: failed to start service `http` in scope `[root]`: port in use
+	// db stopped
+}

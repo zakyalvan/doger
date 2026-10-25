@@ -54,10 +54,10 @@ Rules:
 
 ## 7. Failed hooks observe a failed start (Part H)
 
-- [ ] 7.1 RED: add `TestContainerFailedHook_FailurePoint` (scenario "Failure point decides which hooks run", 7 rows) and `TestContainerFailedHook_GuardErrors` (scenario "One-shot guard errors do not fire Failed", 3 rows); verify `go test -race -run 'TestContainerFailedHook_' .` fails on assertions (Failed hook not called); GuardErrors may pass on arrival via the start-lifecycle guard, so record that and show it can fail by temporarily calling Failed hooks before the guard (not committed)
-- [ ] 7.2 GREEN: at `pointAfterStart` on `startFailed`, fire Failed hooks with the exact error `Start` returns, then return it (D5); verify the 7.1 command passes and `make test` is green
-- [ ] 7.3 REFACTOR: *Consolidate Duplicate Conditional Fragments* so every exit of `StartWithContext` goes through one `pointAfterStart` dispatch of Started/Ready or Failed; verify `make test` and `make lint` pass
-- [ ] 7.4 Add `ExampleRootScope_AddContainerFailedHook` (logs the error and calls `root.Shutdown()`) and godoc on the Failed field and adder; verify `go test -run ExampleRootScope_AddContainerFailedHook .` passes
+- [x] 7.1 RED: add `TestContainerFailedHook_FailurePoint` (scenario "Failure point decides which hooks run", 7 rows) and `TestContainerFailedHook_GuardErrors` (scenario "One-shot guard errors do not fire Failed", 3 rows); verify `go test -race -run 'TestContainerFailedHook_' .` fails on assertions (Failed hook not called); GuardErrors may pass on arrival via the start-lifecycle guard, so record that and show it can fail by temporarily calling Failed hooks before the guard (not committed)
+- [x] 7.2 GREEN: at `pointAfterStart` on `startFailed`, fire Failed hooks with the exact error `Start` returns, then return it (D5); verify the 7.1 command passes and `make test` is green
+- [x] 7.3 REFACTOR: *Consolidate Duplicate Conditional Fragments* so every exit of `StartWithContext` goes through one `pointAfterStart` dispatch of Started/Ready or Failed; verify `make test` and `make lint` pass
+- [x] 7.4 Add `ExampleRootScope_AddContainerFailedHook` (logs the error and calls `root.Shutdown()`) and godoc on the Failed field and adder; verify `go test -run ExampleRootScope_AddContainerFailedHook .` passes
 
 ## 8. Closing and Closed hooks bracket the root shutdown (Part H)
 
