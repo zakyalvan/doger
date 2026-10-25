@@ -111,10 +111,10 @@ Prerequisites: `fix-stacktrace-frame-filter`, `rename-module-doger` and `upgrade
 
 ## 16. Integration checks
 
-- [ ] 16.1 Compare benchmarks: rerun the 0.1 command into `<scratch>/bench-after.txt` and run `benchstat bench-before.txt bench-after.txt`; verify the invoke and provide benchmarks show `~` (otherwise stop and investigate).
-- [ ] 16.2 Run the full suite: `make test`, `make lint`, and `go vet ./... && go test -race ./...` in every `go.work` module; verify all pass.
-- [ ] 16.3 Check traceability against design.md's Test Strategy table; verify `go test -race -run '<every test name in the table>' -v .` lists each test and subtest as PASS.
-- [ ] 16.4 Validate the plan; verify `openspec validate add-start-lifecycle-and-kinds --strict` passes.
+- [x] 16.1 Compare benchmarks: rerun the 0.1 command into `<scratch>/bench-after.txt` and run `benchstat bench-before.txt bench-after.txt`; verify the invoke and provide benchmarks show `~` (otherwise stop and investigate).
+- [x] 16.2 Run the full suite: `make test`, `make lint`, and `go vet ./... && go test -race ./...` in every `go.work` module; verify all pass.
+- [x] 16.3 Check traceability against design.md's Test Strategy table; verify `go test -race -run '<every test name in the table>' -v .` lists each test and subtest as PASS.
+- [x] 16.4 Validate the plan; verify `openspec validate add-start-lifecycle-and-kinds --strict` passes.
 
 ## Workflow follow-up
 
