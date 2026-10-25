@@ -3,6 +3,8 @@ package doger
 import (
 	"context"
 	"errors"
+	"slices"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -592,4 +594,138 @@ func TestContainerHooks_HookCallsShutdownWithDeadline(t *testing.T) {
 			})
 		})
 	}
+}
+
+func TestContainerHooks_ShutdownDuringStart(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		// setup registers the row's pieces; shutdown runs root Shutdown at the
+		// row's point and returns once it was launched or returned.
+		setup    func(root *RootScope, rec *callRecorder) (shutdown func())
+		wantErr  error
+		counts   map[string]int // started, ready, failed
+		ordering func(t *testing.T, events []string)
+	}{
+		{
+			name: "Start finishes first",
+			setup: func(root *RootScope, rec *callRecorder) func() {
+				entered := make(chan struct{})
+				shutdownReturned := make(chan struct{})
+				root.AddContainerStartedHook(func(context.Context, *RootScope) {
+					close(entered)
+					<-shutdownReturned
+				})
+				return func() {
+					<-entered
+					root.Shutdown()
+					close(shutdownReturned)
+				}
+			},
+			counts: map[string]int{"started-hook": 1, "ready-hook": 1, "failed-hook": 0},
+			ordering: func(t *testing.T, events []string) {
+				t.Helper()
+				assert.Equal(t, []string{"started-hook", "closing-hook", "closed-hook", "ready-hook"}, events)
+			},
+		},
+		{
+			name: "Shutdown cancels Start",
+			setup: func(root *RootScope, rec *callRecorder) func() {
+				entered := make(chan struct{})
+				ProvideNamedValue(root, "a", &ctxStarter{fn: func(ctx context.Context) error {
+					close(entered)
+					<-ctx.Done()
+					rec.record("a.Start returned")
+					return ctx.Err()
+				}})
+				return func() {
+					<-entered
+					root.Shutdown()
+				}
+			},
+			wantErr: ErrStartAfterShutdown,
+			counts:  map[string]int{"started-hook": 0, "ready-hook": 0, "failed-hook": 1},
+			ordering: func(t *testing.T, events []string) {
+				t.Helper()
+				assert.Less(t, indexOf(events, "a.Start returned"), indexOf(events, "closing-hook"))
+			},
+		},
+		{
+			name: "Shutdown in the last step",
+			setup: func(root *RootScope, rec *callRecorder) func() {
+				k := NewKind[*failingJob, struct{}]("last")
+				ProvideNamedValue(root, "job", &failingJob{}, k.With(struct{}{}))
+				var wg sync.WaitGroup
+				k.Handle(root, StageAfterStart, func(context.Context, Component[*failingJob, struct{}]) error {
+					wg.Go(func() { root.Shutdown() })
+					synctest.Wait() // Shutdown is blocked, waiting for this Start
+					rec.record("handler returned")
+					return nil
+				})
+				return wg.Wait
+			},
+			wantErr: ErrStartAfterShutdown,
+			counts:  map[string]int{"started-hook": 0, "ready-hook": 0, "failed-hook": 1},
+			ordering: func(t *testing.T, events []string) {
+				t.Helper()
+				assert.Less(t, indexOf(events, "handler returned"), indexOf(events, "closing-hook"))
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			synctest.Test(t, func(t *testing.T) {
+				is := assert.New(t)
+
+				root := New()
+				rec := &callRecorder{}
+				provideBuiltShutdowner(t, root, &callRecorder{}, "db", nil)
+				root.AddContainerStartedHook(func(context.Context, *RootScope) { rec.record("started-hook") })
+				root.AddContainerReadyHook(func(context.Context, *RootScope) { rec.record("ready-hook") })
+				root.AddContainerFailedHook(func(context.Context, *RootScope, error) { rec.record("failed-hook") })
+				root.AddContainerClosingHook(func(context.Context, *RootScope) { rec.record("closing-hook") })
+				root.AddContainerClosedHook(func(context.Context, *RootScope, *ShutdownReport) { rec.record("closed-hook") })
+				shutdown := tt.setup(root, rec)
+
+				startErr := make(chan error, 1)
+				go func() { startErr <- root.Start() }()
+				shutdown()
+				err := <-startErr
+				synctest.Wait()
+
+				if tt.wantErr == nil {
+					is.NoError(err)
+				} else {
+					is.ErrorIs(err, tt.wantErr)
+				}
+				events := rec.list()
+				for hook, count := range tt.counts {
+					is.Equal(count, countOf(events, hook), hook)
+				}
+				is.Equal(1, countOf(events, "closing-hook"))
+				is.Equal(1, countOf(events, "closed-hook"))
+				tt.ordering(t, events)
+			})
+		})
+	}
+}
+
+// indexOf returns the index of event in events, or -1.
+func indexOf(events []string, event string) int {
+	return slices.Index(events, event)
+}
+
+// countOf counts event in events.
+func countOf(events []string, event string) int {
+	n := 0
+	for _, e := range events {
+		if e == event {
+			n++
+		}
+	}
+	return n
 }

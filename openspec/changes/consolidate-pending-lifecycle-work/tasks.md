@@ -75,10 +75,10 @@ Rules:
 
 ## 10. Shutdown during an in-flight Start (Part H)
 
-- [ ] 10.1 RED: add `TestContainerHooks_ShutdownDuringStart` (scenario "Shutdown races a running Start", 3 rows, `synctest.Test`); verify `go test -race -count=5 -run TestContainerHooks_ShutdownDuringStart .`; the rows may pass on arrival through D7's abort checks, so record that and show they can fail by temporarily firing Started at `pointAfterStart` regardless of the outcome (not committed)
-- [ ] 10.2 GREEN: no production change expected, since start-lifecycle's `finishStart` already turns a late Shutdown into `startFailed` (design D2); if 10.1 failed, fix the hook dispatch at `pointAfterStart` only; verify the 10.1 command passes and `make test` is green
-- [ ] 10.3 REFACTOR: none needed, no production code was added in this group; verify `make test` and `make lint` pass
-- [ ] 10.4 Add the ordering rules of design D3 to the field godoc and the docs page (Closing runs after an in-flight Start returned; Closing/Closed may run before or during Started/Ready/Failed; waiters may return before Closed runs); verify `go doc doger.InjectorOpts` shows them and `npm --prefix docs run build` succeeds
+- [x] 10.1 RED: add `TestContainerHooks_ShutdownDuringStart` (scenario "Shutdown races a running Start", 3 rows, `synctest.Test`); verify `go test -race -count=5 -run TestContainerHooks_ShutdownDuringStart .`; the rows may pass on arrival through D7's abort checks, so record that and show they can fail by temporarily firing Started at `pointAfterStart` regardless of the outcome (not committed)
+- [x] 10.2 GREEN: no production change expected, since start-lifecycle's `finishStart` already turns a late Shutdown into `startFailed` (design D2); if 10.1 failed, fix the hook dispatch at `pointAfterStart` only; verify the 10.1 command passes and `make test` is green
+- [x] 10.3 REFACTOR: none needed, no production code was added in this group; verify `make test` and `make lint` pass
+- [x] 10.4 Add the ordering rules of design D3 to the field godoc and the docs page (Closing runs after an in-flight Start returned; Closing/Closed may run before or during Started/Ready/Failed; waiters may return before Closed runs); verify `go doc doger.InjectorOpts` shows them and `npm --prefix docs run build` succeeds
 
 ## 11. Hook contexts (Part H)
 

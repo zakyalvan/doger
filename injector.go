@@ -175,6 +175,13 @@ type InjectorOpts struct {
 	// A Closing hook must not call root Shutdown synchronously without a
 	// deadline: that call waits for the running Shutdown, which waits for the
 	// hook. With a deadline, it returns a failed report when it expires.
+	//
+	// Ordering with Start: a Shutdown that begins while Start runs cancels
+	// it and fires Closing only after Start's pipeline returned, or after the
+	// Shutdown context ended. Once the pipeline has returned, Closing and
+	// Closed may run before or while the Started, Ready or Failed hooks run on
+	// the Start goroutine: hooks sharing state across these points must
+	// synchronize it.
 	HookContainerClosing []func(ctx context.Context, scope *RootScope)
 
 	// HookContainerClosed is called by the first root Shutdown once every

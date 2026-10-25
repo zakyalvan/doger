@@ -135,3 +135,16 @@ Starting and Closing hooks run while `Start` or `Shutdown` is still running. A r
 - from a Closing hook, the nested `Shutdown` returns a failed report when the deadline expires, while the outer `Shutdown` completes normally.
 
 Prefer returning an error from a Starting hook to veto `Start`.
+
+## Shutdown during Start {#shutdown-during-start}
+
+A root `Shutdown` that begins while the start pipeline runs cancels `Start` with cause `ErrStartAfterShutdown` and fires Closing only **after** the pipeline returned, or after its own context ended. `Start` then skips Started and Ready and runs Failed with an error matching `ErrStartAfterShutdown`, even if the pipeline returned nil.
+
+Once the pipeline has returned, the hooks run on two goroutines:
+
+- Started, Ready and Failed run on the goroutine that called `Start`;
+- Closing and Closed run on the goroutine that called `Shutdown`.
+
+So Closing and Closed may run **before or while** Started, Ready or Failed run. For example, a `Shutdown` that begins while a Started hook is running records `started-hook, closing-hook, closed-hook, ready-hook`. Hooks that share state across these points must synchronize it.
+
+Concurrent `Shutdown` callers that wait for the first one are released once services are shut down, so they may return before the Closed hooks have run.
