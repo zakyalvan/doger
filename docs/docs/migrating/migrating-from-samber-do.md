@@ -6,7 +6,7 @@ sidebar_position: 1
 
 # Migrating from samber/do
 
-doger is a fork of [samber/do](https://github.com/samber/do) by Samuel Berthe. Its API matches `samber/do` v2: every exported identifier, signature, option and default is unchanged. What changes is the module path, the package names, and the service names the container infers from types declared in the library.
+doger is a fork of [samber/do](https://github.com/samber/do) by Samuel Berthe. Its API matches `samber/do` v2: every exported identifier, signature, option and default is unchanged. What changes is the module path, the package names, the service names the container infers from types declared in the library, and the minimum Go version.
 
 ## Module path and package name {#module-path-and-package-name}
 
@@ -62,6 +62,31 @@ Service names inferred from types embed the import path. For types declared in t
 These names appear in `doger.NameOf`, in service lists, in explain output and in error messages. Never hard-code them: compute them with `doger.NameOf[T]()`, or register such services under explicit names with `ProvideNamed*` and invoke them with `InvokeNamed`.
 
 Names of your own types and explicitly named services do not change.
+
+## Go 1.27 and panic(nil) {#go-1-27-and-panic-nil}
+
+doger requires Go 1.27 or later. With the go command's default `GOTOOLCHAIN=auto`, building a module that requires doger downloads Go 1.27 automatically; with `GOTOOLCHAIN=local`, an older toolchain refuses the build.
+
+Requiring doger raises your module's `go` line to 1.27, and GODEBUG defaults follow that line. If it was below 1.21, this turns on `panicnil=0`, which changes what an invocation returns when a provider panics with `nil`: it used to return the zero value and a `nil` error; it now returns the zero value and an error matching `*runtime.PanicNilError`. If your `go` line was already 1.21 or later, you already get this error. Other panic values are unchanged.
+
+```go
+doger.Provide(injector, func(i doger.Injector) (*Database, error) {
+	panic(nil)
+})
+
+_, err := doger.Invoke[*Database](injector)
+
+var panicNilErr *runtime.PanicNilError
+errors.As(err, &panicNilErr) // true
+```
+
+To restore the old `(zero, nil)` result, run the program with `GODEBUG=panicnil=1`, or add the directive to your main package:
+
+```go
+//go:debug panicnil=1
+
+package main
+```
 
 ## What stays the same {#what-stays-the-same}
 

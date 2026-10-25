@@ -49,7 +49,6 @@ func TestExplainService_ProviderFrame(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			is := assert.New(t)
@@ -72,7 +71,7 @@ func TestExplainService_ProviderFrame(t *testing.T) {
 
 // invokedLine returns the "Invoked:" line of an ExplainServiceOutput string.
 func invokedLine(s string) string {
-	for _, line := range strings.Split(s, "\n") {
+	for line := range strings.SplitSeq(s, "\n") {
 		if strings.HasPrefix(line, "Invoked:") {
 			return line
 		}

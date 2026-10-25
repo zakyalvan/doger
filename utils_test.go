@@ -231,14 +231,14 @@ func TestUtilsTypeCanCastToGeneric(t *testing.T) {
 	is.False(typeCanCastToGeneric[iTest1](reflect.TypeOf(iTest1(nil)))) // no concrete type, only interface
 
 	// nil with type
-	is.True(typeCanCastToGeneric[*test1](reflect.TypeOf((*test1)(nil))))
-	is.True(typeCanCastToGeneric[iTest1](reflect.TypeOf((*test1)(nil))))
+	is.True(typeCanCastToGeneric[*test1](reflect.TypeFor[*test1]()))
+	is.True(typeCanCastToGeneric[iTest1](reflect.TypeFor[*test1]()))
 
-	is.True(typeCanCastToGeneric[*test1](reflect.TypeOf(&test1{})))
-	is.True(typeCanCastToGeneric[iTest1](reflect.TypeOf(&test1{})))
-	is.True(typeCanCastToGeneric[iTest2](reflect.TypeOf(&test1{})))
+	is.True(typeCanCastToGeneric[*test1](reflect.TypeFor[*test1]()))
+	is.True(typeCanCastToGeneric[iTest1](reflect.TypeFor[*test1]()))
+	is.True(typeCanCastToGeneric[iTest2](reflect.TypeFor[*test1]()))
 	is.True(typeCanCastToGeneric[iTest2](reflect.TypeOf(iTest1(&test1{}))))
 	is.False(typeCanCastToGeneric[test1](reflect.TypeOf(iTest1(&test1{}))))
-	is.False(typeCanCastToGeneric[*test2](reflect.TypeOf(&test1{})))
-	is.False(typeCanCastToGeneric[iTest1](reflect.TypeOf(&lazyTestHeathcheckerOK{})))
+	is.False(typeCanCastToGeneric[*test2](reflect.TypeFor[*test1]()))
+	is.False(typeCanCastToGeneric[iTest1](reflect.TypeFor[*lazyTestHeathcheckerOK]()))
 }

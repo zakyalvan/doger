@@ -16,6 +16,6 @@ var DatabasePackage = doger.Package(
 		}, nil
 	}),
 	doger.Eager(&Cache{
-		Data: make(map[string]interface{}),
+		Data: make(map[string]any),
 	}),
 )

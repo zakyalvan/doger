@@ -45,14 +45,14 @@ export default function structuredDataPlugin(
         '@id': `${siteUrl}/#software`,
         name: 'doger',
         description:
-          'A dependency injection toolkit for Go based on 1.18+ generics, offering a type-safe API without reflection or code generation.',
+          'A dependency injection toolkit for Go based on Go generics (Go 1.27+), offering a type-safe API without reflection or code generation.',
         codeRepository: 'https://github.com/kartaladev/doger',
         isBasedOn: 'https://github.com/samber/do',
         programmingLanguage: {
           '@type': 'ComputerLanguage',
           name: 'Go',
         },
-        runtimePlatform: 'Go 1.18+',
+        runtimePlatform: 'Go 1.27+',
         license: 'https://github.com/kartaladev/doger/blob/main/LICENSE',
         author: {'@id': `${siteUrl}/#person-samber`},
         applicationCategory: 'DeveloperApplication',

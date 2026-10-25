@@ -3,6 +3,7 @@ package doger
 import (
 	"context"
 	"fmt"
+	"maps"
 	"sync"
 	"time"
 )
@@ -402,12 +403,9 @@ func (s *Scope) shutdownChildrenInParallel(ctx context.Context) *ShutdownReport 
 
 	var wg sync.WaitGroup
 	for index, child := range children {
-		wg.Add(1)
-
-		go func(c *Scope, i int) {
-			reports[i] = c.ShutdownWithContext(ctx)
-			wg.Done()
-		}(child, index)
+		wg.Go(func() {
+			reports[index] = child.ShutdownWithContext(ctx)
+		})
 	}
 	wg.Wait()
 
@@ -486,13 +484,12 @@ func (s *Scope) shutdownServicesWithoutDependenciesInParallel(ctx context.Contex
 	perServiceTimes := map[ServiceDescription]time.Duration{}
 
 	var wg sync.WaitGroup
-	wg.Add(len(serviceNames))
 
 	for _, name := range serviceNames {
-		go func(n string) {
-			desc := newServiceDescription(s.id, s.name, n)
+		wg.Go(func() {
+			desc := newServiceDescription(s.id, s.name, name)
 			start := time.Now()
-			e := s.serviceShutdown(ctx, n)
+			e := s.serviceShutdown(ctx, name)
 			dt := time.Since(start)
 
 			mu.Lock()
@@ -502,9 +499,7 @@ func (s *Scope) shutdownServicesWithoutDependenciesInParallel(ctx context.Contex
 			}
 			perServiceTimes[desc] = dt
 			mu.Unlock()
-
-			wg.Done()
-		}(name)
+		})
 	}
 
 	wg.Wait()
@@ -533,12 +528,8 @@ func (s *Scope) clone(root *RootScope, parent *Scope) *Scope {
 	s.mu.RLock()
 	services := make(map[string]any, len(s.services))
 	childScopes := make(map[string]*Scope, len(s.childScopes))
-	for name, serviceAny := range s.services {
-		services[name] = serviceAny
-	}
-	for name, childScope := range s.childScopes {
-		childScopes[name] = childScope
-	}
+	maps.Copy(services, s.services)
+	maps.Copy(childScopes, s.childScopes)
 	s.mu.RUnlock()
 
 	for name, serviceAny := range services {

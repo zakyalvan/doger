@@ -18,7 +18,7 @@ import Head from '@docusaurus/Head';
           name: 'Does doger use reflection?',
           acceptedAnswer: {
             '@type': 'Answer',
-            text: 'No. doger resolves and injects services using Go 1.18+ generics, so type checks happen at compile time. The only exception is doger.InvokeStruct, an opt-in helper that uses reflection to populate struct fields tagged with `do:""`.',
+            text: 'No. doger resolves and injects services using Go generics (Go 1.27+), so type checks happen at compile time. The only exception is doger.InvokeStruct, an opt-in helper that uses reflection to populate struct fields tagged with `do:""`.',
           },
         },
         {
@@ -34,7 +34,7 @@ import Head from '@docusaurus/Head';
           name: 'Can I use doger without generics?',
           acceptedAnswer: {
             '@type': 'Answer',
-            text: 'No, doger requires Go 1.18 or later because its entire API — Provide, Invoke, Override, As — is built on generic type parameters. There is no reflection-based fallback for older Go versions.',
+            text: 'No, doger requires Go 1.27 or later because its entire API — Provide, Invoke, Override, As — is built on generic type parameters. There is no reflection-based fallback for older Go versions.',
           },
         },
         {
@@ -88,7 +88,7 @@ Answers to common questions about `doger`. For terminology, see the [glossary](.
 
 ## Does doger use reflection? {#does-samberdo-use-reflection}
 
-No. `doger` resolves and injects services using Go 1.18+ generics, so type checks happen at compile time. The only exception is [`doger.InvokeStruct`](./service-invocation/service-invocation.md#auto-magically-load-a-service), an opt-in helper that uses reflection to populate struct fields tagged with `` `do:""` ``.
+No. `doger` resolves and injects services using Go generics (Go 1.27+), so type checks happen at compile time. The only exception is [`doger.InvokeStruct`](./service-invocation/service-invocation.md#auto-magically-load-a-service), an opt-in helper that uses reflection to populate struct fields tagged with `` `do:""` ``.
 
 ## How is doger different from uber/fx? {#how-is-samberdo-different-from-uberfx}
 
@@ -96,7 +96,7 @@ No. `doger` resolves and injects services using Go 1.18+ generics, so type check
 
 ## Can I use doger without generics? {#can-i-use-samberdo-without-generics}
 
-No, `doger` requires Go 1.18 or later because its entire API — `Provide`, `Invoke`, `Override`, `As` — is built on generic type parameters. There is no reflection-based fallback for older Go versions.
+No, `doger` requires Go 1.27 or later because its entire API — `Provide`, `Invoke`, `Override`, `As` — is built on generic type parameters. There is no reflection-based fallback for older Go versions.
 
 ## How do I mock a service in tests? {#how-do-i-mock-a-service-in-tests}
 

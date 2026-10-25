@@ -12,7 +12,7 @@ sidebar_position: 2
 
 |                          | `doger`                                           | `google/wire`                                          |
 | ------------------------ | ------------------------------------------------- | ------------------------------------------------------ |
-| **Mechanism**            | Go 1.18+ generics, resolved at runtime            | Code generation (`wire` CLI), resolved at compile time |
+| **Mechanism**            | Go generics (Go 1.27+), resolved at runtime       | Code generation (`wire` CLI), resolved at compile time |
 | **Build step required**  | No                                                | Yes — regenerate `wire_gen.go` on every graph change   |
 | **Type safety**          | Compile-time (via generics)                       | Compile-time (generated code is plain Go)              |
 | **Runtime flexibility**  | Full — conditional registration, override, scopes | None — the graph is fixed at generation time           |

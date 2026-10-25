@@ -288,7 +288,7 @@ func TestCascadingMemoryLeaks(t *testing.T) {
 	// Create many services that can fail
 	const numServices = 100
 
-	for i := 0; i < numServices; i++ {
+	for i := range numServices {
 		serviceName := fmt.Sprintf("service-%d", i)
 		serviceIndex := i
 		doger.ProvideNamed(root, serviceName, func(i doger.Injector) (string, error) {
@@ -303,7 +303,7 @@ func TestCascadingMemoryLeaks(t *testing.T) {
 	failureCount := 0
 	successCount := 0
 
-	for i := 0; i < numServices; i++ {
+	for i := range numServices {
 		serviceName := fmt.Sprintf("service-%d", i)
 		_, err := doger.InvokeNamed[string](root, serviceName)
 		if err != nil {

@@ -119,7 +119,7 @@ export default function Home(): JSX.Element {
   return (
     <Layout
       title="⚙️ Type-Safe DI for Go"
-      description="doger is a type-safe dependency injection toolkit for Go, built on 1.18+ generics instead of reflection. A drop-in replacement for uber/dig."
+      description="doger is a type-safe dependency injection toolkit for Go, built on Go generics (Go 1.27+) instead of reflection. A drop-in replacement for uber/dig."
     >
       <HomepageHeader />
       <main>

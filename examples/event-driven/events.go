@@ -7,7 +7,7 @@ import (
 // Event represents a generic event.
 type Event struct {
 	Type      string
-	Data      interface{}
+	Data      any
 	Timestamp time.Time
 }
 

@@ -1,12 +1,14 @@
 package doger
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
 	"io"
 	"reflect"
+	"slices"
 	"sync"
 )
 
@@ -106,9 +108,7 @@ func filter[V any](collection []V, predicate func(item V, index int) bool) []V {
 }
 
 func reverseSlice[S ~[]E, E any](s S) {
-	for i, j := 0, len(s)-1; i < j; i, j = i+1, j-1 {
-		s[i], s[j] = s[j], s[i]
-	}
+	slices.Reverse(s)
 }
 
 func orderedUniq[V comparable](in []V) []V {
@@ -126,24 +126,11 @@ func orderedUniq[V comparable](in []V) []V {
 }
 
 func contains[T comparable](list []T, elem T) bool {
-	for _, v := range list {
-		if v == elem {
-			return true
-		}
-	}
-
-	return false
+	return slices.Contains(list, elem)
 }
 
-func coalesce[T comparable](v ...T) (result T) {
-	for _, e := range v {
-		if e != result {
-			result = e
-			break
-		}
-	}
-
-	return result
+func coalesce[T comparable](v ...T) T {
+	return cmp.Or(v...)
 }
 
 // https://gist.github.com/rkravchik/d9733e1d2d626188eb91df751471d739
@@ -245,7 +232,7 @@ func genericCanCastToGeneric[From any, To any]() bool {
 
 	if anyFrom == nil { // check for interface by reflect
 		typeFrom := reflect.TypeOf(&from).Elem()
-		typeTo := reflect.TypeOf((*To)(nil)).Elem()
+		typeTo := reflect.TypeFor[To]()
 
 		toInterface := typeTo.Kind() == reflect.Interface
 
@@ -257,7 +244,7 @@ func genericCanCastToGeneric[From any, To any]() bool {
 }
 
 func typeCanCastToGeneric[To any](fromType reflect.Type) bool {
-	toType := reflect.TypeOf((*To)(nil)).Elem()
+	toType := reflect.TypeFor[To]()
 	return typeCanCastToType(fromType, toType)
 }
 

@@ -3,6 +3,7 @@ package doger
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 	"time"
 )
@@ -75,9 +76,7 @@ func mergeShutdownReports(reports ...*ShutdownReport) *ShutdownReport {
 		}
 
 		// Merge per-service times
-		for k, v := range r.ServiceShutdownTime {
-			out.ServiceShutdownTime[k] = v
-		}
+		maps.Copy(out.ServiceShutdownTime, r.ServiceShutdownTime)
 
 		out.ShutdownTime += r.ShutdownTime
 	}

@@ -2,18 +2,18 @@
 # doger - Dependency Injection
 
 [![tag](https://img.shields.io/github/tag/kartaladev/doger.svg)](https://github.com/kartaladev/doger/releases)
-![Go Version](https://img.shields.io/badge/Go-%3E%3D%201.18-%23007d9c)
+![Go Version](https://img.shields.io/badge/Go-%3E%3D%201.27-%23007d9c)
 [![GoDoc](https://godoc.org/github.com/kartaladev/doger?status.svg)](https://pkg.go.dev/github.com/kartaladev/doger)
 ![Build Status](https://github.com/kartaladev/doger/actions/workflows/test.yml/badge.svg)
 [![Go report](https://goreportcard.com/badge/github.com/kartaladev/doger)](https://goreportcard.com/report/github.com/kartaladev/doger)
 [![Coverage](https://img.shields.io/codecov/c/github/kartaladev/doger)](https://codecov.io/gh/kartaladev/doger)
 [![License](https://img.shields.io/github/license/kartaladev/doger)](./LICENSE)
 
-**⚙️ A dependency injection toolkit based on Go 1.18+ Generics.**
+**⚙️ A dependency injection toolkit based on Go generics (Go 1.27+).**
 
 > doger is a fork of [samber/do](https://github.com/samber/do) by Samuel Berthe. Coming from `samber/do`? See [Migrating from samber/do](https://kartaladev.github.io/doger/docs/migrating/migrating-from-samber-do).
 
-This library implements the Dependency Injection design pattern. It may replace the fantastic `uber/dig` package. `doger` uses Go 1.18+ generics and therefore offers a type‑safe API.
+This library implements the Dependency Injection design pattern. It may replace the fantastic `uber/dig` package. `doger` uses Go generics (Go 1.27+) and therefore offers a type‑safe API.
 
 ![image](https://github.com/user-attachments/assets/81b91fa7-cdb4-4094-94ba-a0179abc6bf7)
 

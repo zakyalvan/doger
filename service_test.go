@@ -156,13 +156,13 @@ func TestDoServiceCanCastToType(t *testing.T) {
 	svc1 := newServiceLazy("foobar", func(i Injector) (*lazyTestHeathcheckerOK, error) {
 		return &lazyTestHeathcheckerOK{foobar: "foobar"}, nil
 	})
-	is.True(serviceCanCastToType(svc1, reflect.TypeOf((**lazyTestHeathcheckerOK)(nil)).Elem()))
-	is.True(serviceCanCastToType(svc1, reflect.TypeOf((*Healthchecker)(nil)).Elem()))
-	is.False(serviceCanCastToType(svc1, reflect.TypeOf((*Shutdowner)(nil)).Elem()))
-	is.False(serviceCanCastToType(svc1, reflect.TypeOf((**lazyTestHeathcheckerKO)(nil)).Elem()))
+	is.True(serviceCanCastToType(svc1, reflect.TypeFor[*lazyTestHeathcheckerOK]()))
+	is.True(serviceCanCastToType(svc1, reflect.TypeFor[Healthchecker]()))
+	is.False(serviceCanCastToType(svc1, reflect.TypeFor[Shutdowner]()))
+	is.False(serviceCanCastToType(svc1, reflect.TypeFor[*lazyTestHeathcheckerKO]()))
 
 	svc2 := newServiceLazy("foobar", func(i Injector) (iTestHeathchecker, error) {
 		return &lazyTestHeathcheckerOK{}, nil
 	})
-	is.True(serviceCanCastToType(svc2, reflect.TypeOf((*Healthchecker)(nil)).Elem()))
+	is.True(serviceCanCastToType(svc2, reflect.TypeFor[Healthchecker]()))
 }

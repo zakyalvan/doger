@@ -48,6 +48,8 @@ See proposal.md for the motivation, and `specs/toolchain-support/spec.md` and `s
 | `mapsloop` | 3 | `errors.go:79`, `scope.go:537,540` |
 | `slicescontains` | 1 | `utils.go:129` |
 
+Apply found more than this trial (it predates test files added by `fix-stacktrace-frame-filter` and `rename-module-doger`): `reflecttypefor` 21 (also `service_*.go`, `stacktrace/stacktrace.go`, `main_test.go`, `module_identity_test.go`), plus `forvar` 18, `stringscutprefix` 1 and `stringsseq` 1, all in test files. Those three were applied as extra steps in D4, by decision during apply.
+
 **`interface{}`.** 16 code occurrences, all in `examples/*`. There are 3 comment occurrences: `invoke.go:14,21` and `invoke_test.go:69`.
 
 **Directive-sensitive semantics.** Raising the `go` directive changes the language semantics of this module's code. In workspace mode, the `go.work` line sets the GODEBUG defaults of this repository's own test binaries.
@@ -76,7 +78,7 @@ See proposal.md for the motivation, and `specs/toolchain-support/spec.md` and `s
 
 **D1. Bump the directives with `go mod edit -go=1.27` in every module, and `go work edit -go=1.27`.**
 - No `toolchain` line is added. The trial confirmed that neither command nor `go mod tidy` adds one.
-- `go mod tidy` then adds `go.sum` entries. The trial ran on the tree before #12 (24 modules gained 81 lines, e.g. `go.uber.org/goleak v1.2.1/go.mod h1:…` in `http/gin/go.sum`), so expect different counts now. Additions are expected and committed; removals or version changes are not.
+- `go mod tidy` then adds `go.sum` entries. The trial ran on the tree before #12 (24 modules gained 81 lines, e.g. `go.uber.org/goleak v1.2.1/go.mod h1:…` in `http/gin/go.sum`), so expect different counts now. Additions are expected and committed; removals or version changes are not. On apply, tidy also moved direct requirements out of the indirect `require` block in 9 `go.mod` files (the go ≥ 1.17 layout); the set of (path, version, indirect) requirements stayed identical.
 - *Alternative:* `go 1.27.0` with a `toolchain` pin. Rejected: churn without benefit for a library.
 
 **D2. Helpers: *Substitute Algorithm* inside the existing unexported helpers.**
@@ -100,9 +102,10 @@ See proposal.md for the motivation, and `specs/toolchain-support/spec.md` and `s
   4. `rangeint` (the analyzer only rewrites loops whose variable and bound are not modified in the body);
   5. `waitgroupgo` (the 3 test sites);
   6. `any`, run in every module. The 3 `interface{}` comments are hand-edited.
+  - Added during apply, each its own step before step 6: `forvar` (redundant `x := x` copies), `stringscutprefix` and `stringsseq`, all in test files.
 - These rewrites in test files change loop headers, `reflect` calls and goroutine start-up. They change no test input or assertion value.
 - **Disabled: `atomictypes`**, as `linters.settings.modernize.disable: [atomictypes]` in `.golangci.yml`. Reason: its fixes change test fixture field types (`int32` → `atomic.Int32`) and rewrite assertion expressions. That is not a mechanical rewrite, and it brings no benefit to consumers (only tests are affected).
-- Trial evidence: with `atomictypes` disabled and the six analyzers applied, `golangci-lint run` reports `0 issues`, and `go test -race ./...` passes.
+- Trial evidence: with `atomictypes` disabled and the analyzers applied, `golangci-lint run` reports `0 issues`, and `go test -race ./...` passes.
 - `.golangci.yml` also gets `run.go: "1.27"`.
 - *Alternative:* disable every new finding and modernize later. Rejected: it leaves the floor bump without its payoff, and the lint config drifting from the code.
 
@@ -155,7 +158,7 @@ Every `#### Scenario:` maps to one Go test. `Examples:` rows are named subtests.
 | Check | How | Kind |
 |---|---|---|
 | Suite green right after the bump, before any refactor | `make test`, `go test -race -count=5 -run HealthCheck .`, per-module `go vet ./... && go test -race ./...` | unit / race / goleak |
-| Test inventory | Before and after: `go test -list '.*' ./...` per module, by directory. Only additions: the four tests above. No deletions | regression |
+| Test inventory | Before and after: `go test -list '.*' ./...` per module, by directory. Only additions: the three tests above. No deletions | regression |
 | Each modernizer step | `make test`, plus `golangci-lint run --enable-only modernize` showing no findings for that analyzer | race / lint |
 | Final lint | `make lint` reports 0 issues | lint |
 | Modules tidy | `go mod tidy` diff is only the `go` line plus `go.sum` additions | tooling |

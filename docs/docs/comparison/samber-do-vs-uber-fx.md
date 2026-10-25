@@ -12,7 +12,7 @@ sidebar_position: 1
 
 |                           | `doger`                                                    | `uber/fx`                                                                       |
 | ------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| **Resolution mechanism**  | Go 1.18+ generics                                          | Reflection (via `uber/dig`)                                                     |
+| **Resolution mechanism**  | Go generics (Go 1.27+)                                     | Reflection (via `uber/dig`)                                                     |
 | **Type safety**           | Compile-time                                               | Runtime                                                                         |
 | **External dependencies** | None                                                       | `dig`, `zap`, `multierr`                                                        |
 | **Lifecycle hooks**       | `HookBeforeRegistration`, `HookAfterInvocation`, etc.      | `fx.Lifecycle` (`OnStart`/`OnStop`)                                             |

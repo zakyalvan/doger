@@ -4286,7 +4286,7 @@ The `doger` library is built with modern Go practices and designed for performan
 
 ### System Requirements
 
-- **Go Version**: Requires Go 1.18+ (for generics support)
+- **Go Version**: Requires Go 1.27+
 - **Operating Systems**: Supports all platforms that Go supports (Linux, macOS, Windows, etc.)
 - **Architectures**: Supports all architectures that Go supports (x86, x64, ARM, etc.)
 - **Memory**: Minimal memory footprint, typically under 1MB for the library itself
@@ -4324,7 +4324,7 @@ The `doger` library is built with modern Go practices and designed for performan
 
 ### Compatibility
 
-- **Go Versions**: Compatible with Go 1.18 and later
+- **Go Versions**: Compatible with Go 1.27 and later
 - **Backward Compatibility**: Maintains backward compatibility within major versions
 - **API Stability**: Stable API with clear deprecation policies
 - **Migration Path**: Clear migration paths for breaking changes

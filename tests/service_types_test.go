@@ -115,7 +115,7 @@ func TestMixedServiceTypesConcurrentAccess(t *testing.T) {
 	transientResults := make([]string, numGoroutines)
 	errors := make([]error, numGoroutines)
 
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
@@ -146,7 +146,7 @@ func TestMixedServiceTypesConcurrentAccess(t *testing.T) {
 	wg.Wait()
 
 	// All operations should succeed with consistent results
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		is.NoError(errors[i])
 		is.Equal("eager-shared-value", eagerResults[i])
 		is.Equal("lazy-shared-value", lazyResults[i])
@@ -267,7 +267,7 @@ func TestMixedServiceTypesPerformance(t *testing.T) {
 
 	// Eager service should be fastest (no initialization cost)
 	start := time.Now()
-	for i := 0; i < numInvocations; i++ {
+	for range numInvocations {
 		_, err := doger.InvokeNamed[string](root, "eager-perf")
 		is.NoError(err)
 	}
@@ -275,7 +275,7 @@ func TestMixedServiceTypesPerformance(t *testing.T) {
 
 	// Lazy service should be slower on first invocation, then fast
 	start = time.Now()
-	for i := 0; i < numInvocations; i++ {
+	for range numInvocations {
 		_, err := doger.InvokeNamed[string](root, "lazy-perf")
 		is.NoError(err)
 	}
@@ -283,7 +283,7 @@ func TestMixedServiceTypesPerformance(t *testing.T) {
 
 	// Transient service should be slowest (creation cost on every invocation)
 	start = time.Now()
-	for i := 0; i < numInvocations; i++ {
+	for range numInvocations {
 		_, err := doger.InvokeNamed[string](root, "transient-perf")
 		is.NoError(err)
 	}
@@ -316,19 +316,19 @@ func TestMixedServiceTypesMemoryUsage(t *testing.T) {
 	const numInvocations = 100
 
 	// Eager service - memory allocated once
-	for i := 0; i < numInvocations; i++ {
+	for range numInvocations {
 		_, err := doger.InvokeNamed[[]byte](root, "eager-memory")
 		is.NoError(err)
 	}
 
 	// Lazy service - memory allocated once, then reused
-	for i := 0; i < numInvocations; i++ {
+	for range numInvocations {
 		_, err := doger.InvokeNamed[[]byte](root, "lazy-memory")
 		is.NoError(err)
 	}
 
 	// Transient service - memory allocated on every invocation
-	for i := 0; i < numInvocations; i++ {
+	for range numInvocations {
 		_, err := doger.InvokeNamed[[]byte](root, "transient-memory")
 		is.NoError(err)
 	}

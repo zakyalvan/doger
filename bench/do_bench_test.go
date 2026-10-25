@@ -115,7 +115,7 @@ func BenchmarkInvokeAlias(b *testing.B) {
 
 func BenchmarkInvokeAs(b *testing.B) {
 	injector := doger.New()
-	for j := 0; j < 19; j++ {
+	for j := range 19 {
 		doger.ProvideNamedValue(injector, fmt.Sprintf("bench-filler-%d", j), &benchSvcA{})
 	}
 	doger.Provide(injector, func(i doger.Injector) (*benchSvcImpl, error) {
@@ -181,7 +181,7 @@ func BenchmarkProviderChainTransient(b *testing.B) {
 
 func BenchmarkProvide(b *testing.B) {
 	names := make([]string, 100)
-	for j := 0; j < 100; j++ {
+	for j := range 100 {
 		names[j] = fmt.Sprintf("bench-svc-%d", j)
 	}
 
@@ -189,7 +189,7 @@ func BenchmarkProvide(b *testing.B) {
 	b.ResetTimer()
 	for n := 0; n < b.N; n++ {
 		injector := doger.New()
-		for j := 0; j < 100; j++ {
+		for j := range 100 {
 			doger.ProvideNamedValue(injector, names[j], &benchSvcA{})
 		}
 	}
@@ -209,7 +209,7 @@ func BenchmarkNew(b *testing.B) {
 
 func BenchmarkHealthCheck(b *testing.B) {
 	injector := doger.New()
-	for j := 0; j < 50; j++ {
+	for j := range 50 {
 		name := fmt.Sprintf("bench-hc-%d", j)
 		doger.ProvideNamed(injector, name, func(i doger.Injector) (*benchHealthchecker, error) {
 			return &benchHealthchecker{}, nil
@@ -257,8 +257,8 @@ func BenchmarkShutdown(b *testing.B) {
 func BenchmarkListProvidedServices(b *testing.B) {
 	injector := doger.New()
 	var scope doger.Injector = injector
-	for level := 0; level < 3; level++ {
-		for j := 0; j < 10; j++ {
+	for level := range 3 {
+		for j := range 10 {
 			doger.ProvideNamedValue(scope, fmt.Sprintf("bench-svc-%d-%d", level, j), &benchSvcA{})
 		}
 		scope = scope.Scope(fmt.Sprintf("level-%d", level+1))

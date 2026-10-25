@@ -86,7 +86,6 @@ func TestIndexHTML_Branding(t *testing.T) {
 	require.NoError(t, err)
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.label, func(t *testing.T) {
 			t.Parallel()
 
@@ -108,7 +107,6 @@ func TestIndexHTML_BasePathLinks(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			is := assert.New(t)
@@ -188,7 +186,6 @@ func TestPagesHTML_Title(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.page, func(t *testing.T) {
 			t.Parallel()
 
@@ -211,7 +208,6 @@ func TestPagesHTML_UpstreamAttributionOnly(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.page, func(t *testing.T) {
 			t.Parallel()
 

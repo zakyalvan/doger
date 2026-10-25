@@ -91,7 +91,7 @@ func TestComplexConcurrentAccess(t *testing.T) {
 	results := make([]string, numGoroutines)
 	errors := make([]error, numGoroutines)
 
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
@@ -104,7 +104,7 @@ func TestComplexConcurrentAccess(t *testing.T) {
 	wg.Wait()
 
 	// All invocations should succeed with the same result
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		is.NoError(errors[i])
 		is.Equal("dependent-concurrent-value", results[i])
 	}
@@ -225,7 +225,7 @@ func TestComplexMemoryManagement(t *testing.T) {
 	// Create many services to test memory management
 	const numServices = 500
 
-	for i := 0; i < numServices; i++ {
+	for i := range numServices {
 		serviceName := fmt.Sprintf("service-%d", i)
 		serviceIndex := i // Capture the loop variable
 		doger.ProvideNamed(root, serviceName, func(i doger.Injector) (string, error) {
@@ -235,7 +235,7 @@ func TestComplexMemoryManagement(t *testing.T) {
 
 	// Invoke random services to test memory management
 	const numInvocations = 100
-	for i := 0; i < numInvocations; i++ {
+	for i := range numInvocations {
 		serviceIndex := i % numServices
 		serviceName := fmt.Sprintf("service-%d", serviceIndex)
 		result, err := doger.InvokeNamed[string](root, serviceName)

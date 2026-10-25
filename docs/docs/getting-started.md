@@ -13,7 +13,7 @@ Discover **doger in less than 5 minutes**.
 
 ## What you'll need {#what-youll-need}
 
-Compatible with [Go](https://go.dev/doc/install/) 1.18 or later.
+Compatible with [Go](https://go.dev/doc/install/) 1.27 or later.
 
 This library has no dependencies except the Go std lib.
 

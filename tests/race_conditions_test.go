@@ -35,7 +35,7 @@ func TestRaceConditionServiceInitialization(t *testing.T) {
 	results := make([]*raceTestService, numGoroutines)
 	errors := make([]error, numGoroutines)
 
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
@@ -48,7 +48,7 @@ func TestRaceConditionServiceInitialization(t *testing.T) {
 	wg.Wait()
 
 	// All invocations should succeed
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		is.NoError(errors[i])
 		is.NotNil(results[i])
 	}
@@ -108,7 +108,7 @@ func TestRaceConditionScopeCreation(t *testing.T) {
 	var wg sync.WaitGroup
 	scopeErrors := make([]error, numScopes)
 
-	for i := 0; i < numScopes; i++ {
+	for i := range numScopes {
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
@@ -145,7 +145,7 @@ func TestRaceConditionScopeCreation(t *testing.T) {
 	wg.Wait()
 
 	// All operations should succeed
-	for i := 0; i < numScopes; i++ {
+	for i := range numScopes {
 		is.NoError(scopeErrors[i])
 	}
 }
@@ -168,7 +168,7 @@ func TestRaceConditionHealthCheckInvocation(t *testing.T) {
 	invokeErrors := make([]error, numOperations)
 	healthResults := make([]map[string]error, numOperations)
 
-	for i := 0; i < numOperations; i++ {
+	for i := range numOperations {
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
@@ -219,7 +219,7 @@ func TestRaceConditionShutdownInvocation(t *testing.T) {
 	invokeErrors := make([]error, numOperations)
 	report := make([]*doger.ShutdownReport, numOperations)
 
-	for i := 0; i < numOperations; i++ {
+	for i := range numOperations {
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
@@ -261,7 +261,7 @@ func TestRaceConditionSlowServiceInvocation(t *testing.T) {
 	results := make([]string, numGoroutines)
 	errors := make([]error, numGoroutines)
 
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
@@ -277,7 +277,7 @@ func TestRaceConditionSlowServiceInvocation(t *testing.T) {
 
 	// All invocations should succeed with the same result
 	successCount := 0
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		if errors[i] == nil {
 			successCount++
 			is.Equal("slow-value", results[i])
@@ -307,7 +307,7 @@ func TestRaceConditionServiceAliasCreation(t *testing.T) {
 	invokeResults := make([]string, numOperations)
 	invokeErrors := make([]error, numOperations)
 
-	for i := 0; i < numOperations; i++ {
+	for i := range numOperations {
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()

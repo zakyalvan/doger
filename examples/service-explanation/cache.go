@@ -2,13 +2,13 @@ package main
 
 // Cache represents a cache service.
 type Cache struct {
-	Data map[string]interface{}
+	Data map[string]any
 }
 
-func (c *Cache) Get(key string) interface{} {
+func (c *Cache) Get(key string) any {
 	return c.Data[key]
 }
 
-func (c *Cache) Set(key string, value interface{}) {
+func (c *Cache) Set(key string, value any) {
 	c.Data[key] = value
 }

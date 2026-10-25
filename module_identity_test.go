@@ -32,8 +32,8 @@ func readModulePath(t *testing.T, dir string) string {
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		if strings.HasPrefix(line, "module ") {
-			return strings.Trim(strings.TrimSpace(strings.TrimPrefix(line, "module ")), `"`)
+		if after, ok := strings.CutPrefix(line, "module "); ok {
+			return strings.Trim(strings.TrimSpace(after), `"`)
 		}
 	}
 	require.NoError(t, scanner.Err())
@@ -59,7 +59,6 @@ func TestModuleIdentity_RootModulePackages(t *testing.T) {
 	root := readModulePath(t, ".")
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			is := assert.New(t)
@@ -70,7 +69,7 @@ func TestModuleIdentity_RootModulePackages(t *testing.T) {
 			}
 			is.Equal(tt.importPath, importPath)
 			if tt.dir == "." {
-				is.Equal(tt.importPath, reflect.TypeOf((*RootScope)(nil)).Elem().PkgPath())
+				is.Equal(tt.importPath, reflect.TypeFor[RootScope]().PkgPath())
 			}
 
 			pkg, err := build.ImportDir(tt.dir, 0)
@@ -97,7 +96,6 @@ func TestModuleIdentity_HTTPAdapterModules(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			is := assert.New(t)
@@ -180,7 +178,6 @@ func TestModuleIdentity_WorkspaceModules(t *testing.T) {
 	assert.ElementsMatch(t, wantDirs, dirs, "go.work use entries")
 
 	for _, dir := range dirs {
-		dir := dir
 		t.Run(dir, func(t *testing.T) {
 			t.Parallel()
 			is := assert.New(t)
@@ -286,7 +283,6 @@ func TestCompat_StructTagKey(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			is := assert.New(t)
@@ -316,7 +312,6 @@ func TestCompat_ErrorSentinelMessages(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 

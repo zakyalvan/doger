@@ -135,7 +135,7 @@ func TestDAGConcurrentAccess(t *testing.T) {
 	errors1 := make([]error, numGoroutines)
 	errors2 := make([]error, numGoroutines)
 
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
@@ -151,7 +151,7 @@ func TestDAGConcurrentAccess(t *testing.T) {
 	wg.Wait()
 
 	// All invocations should succeed with consistent results
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		is.NoError(errors1[i])
 		is.NoError(errors2[i])
 		is.Equal("dependent-1-shared-value", results1[i])
@@ -355,7 +355,7 @@ func TestDAGMemoryLeak(t *testing.T) {
 
 	// Invoke the service many times to test for memory leaks
 	const numInvocations = 1000
-	for i := 0; i < numInvocations; i++ {
+	for range numInvocations {
 		result, err := doger.InvokeNamed[string](root, "memory-test-service")
 		is.NoError(err)
 		is.Equal("test-value", result)

@@ -1,8 +1,12 @@
 package doger
 
 import (
+	"errors"
 	"fmt"
+	"os"
+	"os/exec"
 	"reflect"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -66,7 +70,7 @@ func TestInvokeAnyByName(t *testing.T) {
 	})
 	// Try to invoke as string when it's actually int
 	svc, err = invokeAnyByName(i, "type-mismatch")
-	is.NoError(err) // invokeAnyByName doesn't do type checking, it returns interface{}
+	is.NoError(err) // invokeAnyByName doesn't do type checking, it returns any
 	is.Equal(42, svc)
 
 	// Test provider error
@@ -422,7 +426,7 @@ func TestInvokeByName_race(t *testing.T) {
 
 	var wg sync.WaitGroup
 	wg.Add(5)
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		go func(j int) {
 			_, err1 := invokeByName[int](injector, NameOf[int]())
 			_, err2 := invokeByName[*lazyTest](child, NameOf[*lazyTest]())
@@ -454,7 +458,7 @@ func TestInvokeByGenericType_race(t *testing.T) {
 
 	var wg sync.WaitGroup
 	wg.Add(5)
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		go func(j int) {
 			_, err1 := invokeByGenericType[int](injector)
 			_, err2 := invokeByGenericType[*lazyTest](child)
@@ -778,7 +782,6 @@ func TestInvoke_NotFoundNamesLibraryTypes(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			testWithTimeout(t, 100*time.Millisecond)
@@ -835,4 +838,86 @@ func TestHandleProviderPanic(t *testing.T) {
 		is.Equal(assert.AnError, err)
 		is.Equal(0, svc)
 	})
+}
+
+func TestInvoke_ProviderPanic(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+
+	// provide registers a provider of the given kind that panics with value,
+	// and returns the matching public invocation.
+	provide := map[string]func(i Injector, value any) func() (int, error){
+		"lazy": func(i Injector, value any) func() (int, error) {
+			Provide(i, func(Injector) (int, error) { panic(value) })
+			return func() (int, error) { return Invoke[int](i) }
+		},
+		"transient": func(i Injector, value any) func() (int, error) {
+			ProvideNamedTransient(i, "svc", func(Injector) (int, error) { panic(value) })
+			return func() (int, error) { return InvokeNamed[int](i, "svc") }
+		},
+	}
+
+	tests := []struct {
+		name    string
+		kind    string
+		value   any
+		message string
+		isNil   bool
+		isBoom  bool
+	}{
+		{name: "lazy_nil", kind: "lazy", value: nil, message: "runtime error: panic called with nil argument", isNil: true},
+		{name: "transient_nil", kind: "transient", value: nil, message: "runtime error: panic called with nil argument", isNil: true},
+		{name: "lazy_error", kind: "lazy", value: errBoom, message: "boom", isBoom: true},
+		{name: "transient_error", kind: "transient", value: errBoom, message: "boom", isBoom: true},
+		{name: "lazy_string", kind: "lazy", value: "s", message: "DI: s"},
+		{name: "lazy_int", kind: "lazy", value: 42, message: "DI: 42"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, 100*time.Millisecond)
+			is := assert.New(t)
+
+			invoke := provide[tt.kind](New(), tt.value)
+
+			svc, err := invoke()
+			is.Equal(0, svc)
+			is.EqualError(err, tt.message)
+
+			var panicNilErr *runtime.PanicNilError
+			is.Equal(tt.isNil, errors.As(err, &panicNilErr), "errors.As *runtime.PanicNilError")
+			is.Equal(tt.isBoom, errors.Is(err, errBoom), "errors.Is boom")
+		})
+	}
+}
+
+// panicNilChildEnv marks the re-executed test binary of
+// TestInvoke_ProviderPanicNil_GODEBUGOverride.
+const panicNilChildEnv = "DOGER_TEST_PANICNIL_CHILD"
+
+func TestInvoke_ProviderPanicNil_GODEBUGOverride(t *testing.T) {
+	if os.Getenv(panicNilChildEnv) == "1" {
+		// child: runs with GODEBUG=panicnil=1
+		is := assert.New(t)
+
+		i := New()
+		Provide(i, func(Injector) (int, error) { panic(nil) })
+
+		svc, err := Invoke[int](i)
+		is.Equal(0, svc)
+		is.NoError(err)
+		return
+	}
+
+	t.Parallel()
+	testWithTimeout(t, 10*time.Second)
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestInvoke_ProviderPanicNil_GODEBUGOverride$", "-test.v", "-test.count=1")
+	cmd.Env = append(os.Environ(), "GODEBUG=panicnil=1", panicNilChildEnv+"=1")
+	out, err := cmd.CombinedOutput()
+
+	assert.NoError(t, err, "child output:\n%s", out)
+	assert.Contains(t, string(out), "--- PASS: TestInvoke_ProviderPanicNil_GODEBUGOverride")
 }
