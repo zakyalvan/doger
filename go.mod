@@ -7,6 +7,7 @@ go 1.27
 //
 
 require (
+	github.com/jonboulle/clockwork v0.5.0
 	github.com/samber/go-type-to-string v1.8.0
 	github.com/stretchr/testify v1.12.1
 	go.uber.org/goleak v1.3.0

@@ -77,8 +77,35 @@ injector := doger.NewWithOpts(&doger.InjectorOpts{
     HealthCheckParallelism:   100,
     HealthCheckGlobalTimeout: 1 * time.Second,
     HealthCheckTimeout:       100 * time.Millisecond,
+
+    Clock: nil, // nil: the real clock
 })
 ```
+
+### Clock {#clock}
+
+`InjectorOpts.Clock` is the container's time source, a [`clockwork.Clock`](https://pkg.go.dev/github.com/jonboulle/clockwork#Clock). The container reads time only from it: the `HealthCheckTimeout` and `HealthCheckGlobalTimeout` deadlines, lazy service build times (`ServiceBuildTime` in explain output), and `ShutdownReport.ShutdownTime`/`ServiceShutdownTime`.
+
+- **Default:** `nil`, which means the real clock (`clockwork.NewRealClock()`).
+- **Override:** pass a fake clock to control time in tests, for example to reach a health-check timeout without waiting for it.
+- Child scopes and `Clone()` use the root scope's clock. `CloneWithOpts(opts)` uses `opts.Clock`.
+
+```go
+import "github.com/jonboulle/clockwork"
+
+clock := clockwork.NewFakeClock()
+injector := doger.NewWithOpts(&doger.InjectorOpts{
+    Clock:              clock,
+    HealthCheckTimeout: 5 * time.Second,
+})
+
+// ... start injector.HealthCheck() in a goroutine, then:
+clock.Advance(5 * time.Second) // a check still running now times out
+```
+
+:::caution
+With a fake clock, a context the container creates for a health check blocks on `ctx.Err()` until it is done (clockwork behavior). In a `HealthCheck(ctx)` method, wait on `<-ctx.Done()` instead of polling `ctx.Err()`.
+:::
 
 ### Add hooks at runtime {#add-hooks-at-runtime}
 
