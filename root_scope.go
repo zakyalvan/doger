@@ -2,10 +2,15 @@ package doger
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/signal"
+	"slices"
+	"sync"
 	"syscall"
+	"time"
 )
 
 // DefaultRootScopeName is the default name for the root scope.
@@ -125,7 +130,23 @@ type RootScope struct {
 	opts            *InjectorOpts   // Configuration options
 	dag             *DAG            // Dependency graph for service relationships
 	healthCheckPool *jobPool[error] // Pool for parallel health check operations
+
+	// Lifecycle state. Phases change only by compare-and-set under lifecycleMu,
+	// which is never held while user code runs.
+	lifecycleMu sync.Mutex
+	closePhase  closePhase
+	closeDone   chan struct{}   // closed when the winning Shutdown finished
+	closeReport *ShutdownReport // private copy of the winner's report
 }
+
+// closePhase is the shutdown state of a root container.
+type closePhase int
+
+const (
+	closeOpen closePhase = iota
+	closeClosing
+	closeClosed
+)
 
 // Pass-through methods that delegate to the underlying scope
 // These methods provide the same interface as Scope but operate on the root level
@@ -169,12 +190,67 @@ func (s *RootScope) HealthCheckWithContext(ctx context.Context) map[string]error
 }
 
 // Shutdown gracefully shuts down the root scope and all its descendant scopes.
+// It runs once per root container; see [RootScope.ShutdownWithContext].
 func (s *RootScope) Shutdown() *ShutdownReport { return s.ShutdownWithContext(context.Background()) }
 
 // ShutdownWithContext gracefully shuts down the root scope and all its descendant scopes with context support.
 // This method ensures proper cleanup of the health check pool and all registered services.
+//
+// Root shutdown runs once per root container:
+//   - The first caller shuts the services down. Concurrent and later callers
+//     do not shut anything down again; they wait for the first caller and
+//     return a copy of its report. Each caller owns its copy: changing it
+//     affects neither the stored report nor other callers.
+//   - A caller that arrives after the shutdown completed always gets the
+//     first report, even if its own context has already ended.
+//   - A caller still waiting when its context ends returns a failed report
+//     whose only error is keyed by the root scope with an empty service name
+//     and wraps ctx.Err(). The first caller's shutdown keeps running.
+//   - If the first caller panics before producing a report (for example in
+//     a custom Logf), the panic propagates to it, and every other caller gets
+//     a failed report containing "DI: root shutdown did not complete".
+//   - A nil ctx is treated as context.Background().
+//   - Services registered on the root after the first Shutdown are not shut
+//     down by a later root Shutdown.
+//
+// Only the [RootScope] methods follow this model. A shutdown reached through
+// the root's *Scope (a provider's injector, or [Injector.Shutdown] on a
+// virtual scope) and Scope.Shutdown on child scopes bypass it and behave as
+// before.
 func (s *RootScope) ShutdownWithContext(ctx context.Context) *ShutdownReport {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	done, winner := s.beginClose()
+	if !winner {
+		return s.waitForClose(ctx, done)
+	}
+
+	report := s.shutdownAsWinner(ctx)
+
+	// pointClosed: closeDone is closed, so code here may call Shutdown().
+	return report
+}
+
+// waitForClose waits for the winning Shutdown, bounded by ctx, and returns a
+// copy of its report.
+func (s *RootScope) waitForClose(ctx context.Context, done <-chan struct{}) *ShutdownReport {
+	if awaitDone(done, ctx) {
+		s.lifecycleMu.Lock()
+		defer s.lifecycleMu.Unlock()
+		return cloneShutdownReport(s.closeReport)
+	}
+
+	return s.rootFailureReport(fmt.Errorf("DI: waiting for root shutdown: %w", ctx.Err()))
+}
+
+// shutdownAsWinner shuts the container down. Its deferred finishClose runs
+// even when this goroutine panics, so waiters are always released.
+func (s *RootScope) shutdownAsWinner(ctx context.Context) (report *ShutdownReport) {
+	defer func() { s.finishClose(report) }()
 	defer func() {
+		// Only the winner touches the pool.
 		if s.healthCheckPool != nil {
 			s.healthCheckPool.stop()
 			s.healthCheckPool = nil
@@ -182,6 +258,86 @@ func (s *RootScope) ShutdownWithContext(ctx context.Context) *ShutdownReport {
 	}()
 
 	return s.self.ShutdownWithContext(ctx)
+}
+
+// beginClose moves the close phase from open to closing. The caller that
+// does it is the winner and runs the shutdown; any other caller waits on done.
+func (s *RootScope) beginClose() (done chan struct{}, winner bool) {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+
+	if s.closePhase == closeOpen {
+		s.closePhase = closeClosing
+		s.closeDone = make(chan struct{})
+		return s.closeDone, true
+	}
+
+	return s.closeDone, false
+}
+
+// finishClose stores a private copy of the winner's report and releases the
+// waiters. A nil report means the winner panicked before producing one.
+func (s *RootScope) finishClose(report *ShutdownReport) {
+	stored := cloneShutdownReport(report)
+	if report == nil {
+		stored = s.rootFailureReport(errors.New("DI: root shutdown did not complete"))
+	}
+
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+
+	s.closePhase = closeClosed
+	s.closeReport = stored
+	close(s.closeDone)
+}
+
+// rootFailureReport returns a failed report whose only error is keyed by the
+// root scope with an empty service name.
+func (s *RootScope) rootFailureReport(err error) *ShutdownReport {
+	return &ShutdownReport{
+		Succeed:             false,
+		Services:            []ServiceDescription{},
+		Errors:              map[ServiceDescription]error{newServiceDescription(s.ID(), s.Name(), ""): err},
+		ShutdownTime:        0,
+		ServiceShutdownTime: map[ServiceDescription]time.Duration{},
+	}
+}
+
+// awaitDone waits until done is closed or ctx ends, and prefers completion:
+// it reports true whenever done is closed, even if ctx has ended too.
+func awaitDone(done <-chan struct{}, ctx context.Context) bool { //nolint:revive // done first mirrors the design
+	select {
+	case <-done:
+		return true
+	default:
+	}
+
+	select {
+	case <-done:
+		return true
+	case <-ctx.Done():
+		select {
+		case <-done:
+			return true
+		default:
+			return false
+		}
+	}
+}
+
+// cloneShutdownReport deep-copies a report, so callers cannot alter each other's copy.
+func cloneShutdownReport(report *ShutdownReport) *ShutdownReport {
+	if report == nil {
+		return nil
+	}
+
+	return &ShutdownReport{
+		Succeed:             report.Succeed,
+		Services:            slices.Clone(report.Services),
+		Errors:              maps.Clone(report.Errors),
+		ShutdownTime:        report.ShutdownTime,
+		ServiceShutdownTime: maps.Clone(report.ServiceShutdownTime),
+	}
 }
 
 func (s *RootScope) clone(root *RootScope, parent *Scope) *Scope { return s.self.clone(root, parent) }

@@ -2,10 +2,17 @@ package doger
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNew(t *testing.T) {
@@ -291,4 +298,355 @@ func TestRootScope_ShutdownOnSignalsWithContext(t *testing.T) {
 	// which require user input or external process termination. In a real scenario, this method
 	// would block until the application receives a termination signal from the OS or the context
 	// is canceled.
+}
+
+// rootShutdownProbe counts its Shutdown() error calls and returns err.
+type rootShutdownProbe struct {
+	calls atomic.Int32
+	err   error
+}
+
+func (p *rootShutdownProbe) Shutdown() error {
+	p.calls.Add(1)
+	return p.err
+}
+
+// provideBuiltProbe registers a lazy probe under name and builds it.
+func provideBuiltProbe(t *testing.T, root *RootScope, name string, err error) *rootShutdownProbe {
+	t.Helper()
+
+	probe := &rootShutdownProbe{err: err}
+	ProvideNamed(root, name, func(Injector) (*rootShutdownProbe, error) { return probe, nil })
+	_, invokeErr := InvokeNamed[*rootShutdownProbe](root, name)
+	require.NoError(t, invokeErr)
+
+	return probe
+}
+
+func rootServiceDescription(root *RootScope) ServiceDescription {
+	return ServiceDescription{ScopeID: root.ID(), ScopeName: root.Name(), Service: ""}
+}
+
+func TestRootScope_ConcurrentShutdown(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		opts *InjectorOpts
+	}{
+		{name: "default_opts", opts: &InjectorOpts{}},
+		{name: "health_check_parallelism_2", opts: &InjectorOpts{HealthCheckParallelism: 2}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, 5*time.Second)
+			is := assert.New(t)
+
+			root := NewWithOpts(tt.opts)
+			probes := []*rootShutdownProbe{
+				provideBuiltProbe(t, root, "a", nil),
+				provideBuiltProbe(t, root, "b", nil),
+				provideBuiltProbe(t, root, "c", nil),
+			}
+
+			const callers = 20
+			reports := make([]*ShutdownReport, callers)
+			start := make(chan struct{})
+			var wg sync.WaitGroup
+			for n := range callers {
+				wg.Go(func() {
+					<-start
+					reports[n] = root.Shutdown()
+				})
+			}
+			close(start)
+			wg.Wait()
+
+			for n, report := range reports {
+				is.Truef(report.Succeed, "report %d", n)
+				is.Emptyf(report.Errors, "report %d", n)
+				is.Equalf(reports[0], report, "report %d", n)
+			}
+			for n, probe := range probes {
+				is.Equalf(int32(1), probe.calls.Load(), "probe %d", n)
+			}
+		})
+	}
+}
+
+func TestRootScope_RepeatedShutdown(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+	is := assert.New(t)
+	errClose := errors.New("close failed")
+
+	root := New()
+	probe := provideBuiltProbe(t, root, "a", errClose)
+	descA := newServiceDescription(root.ID(), root.Name(), "a")
+
+	r1 := root.Shutdown()
+	r2 := root.Shutdown()
+
+	is.Equal(r1, r2)
+	is.ErrorIs(r2.Errors[descA], errClose)
+	is.NotSame(r1, r2)
+
+	delete(r2.Errors, descA)
+	is.ErrorIs(r1.Errors[descA], errClose)
+	is.Equal(int32(1), probe.calls.Load())
+}
+
+// blockingShutdownProbe signals entered when Shutdown starts and blocks until release is closed.
+type blockingShutdownProbe struct {
+	calls   atomic.Int32
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (p *blockingShutdownProbe) Shutdown() error {
+	p.calls.Add(1)
+	close(p.entered)
+	<-p.release
+	return nil
+}
+
+func TestRootScope_ShutdownWaiterDeadline(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		is := assert.New(t)
+
+		root := New()
+		probe := &blockingShutdownProbe{entered: make(chan struct{}), release: make(chan struct{})}
+		ProvideNamed(root, "a", func(Injector) (*blockingShutdownProbe, error) { return probe, nil })
+		_, err := InvokeNamed[*blockingShutdownProbe](root, "a")
+		require.NoError(t, err)
+
+		first := make(chan *ShutdownReport, 1)
+		go func() { first <- root.Shutdown() }()
+		<-probe.entered
+
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+		defer cancel()
+
+		begin := time.Now()
+		report := root.ShutdownWithContext(ctx)
+
+		is.Equal(time.Second, time.Since(begin))
+		is.False(report.Succeed)
+		is.Len(report.Errors, 1)
+		is.ErrorIs(report.Errors[rootServiceDescription(root)], context.DeadlineExceeded)
+
+		close(probe.release)
+		is.True((<-first).Succeed)
+		is.Equal(int32(1), probe.calls.Load())
+	})
+}
+
+func TestRootScope_ShutdownReportIsolated(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+	is := assert.New(t)
+	errClose := errors.New("close failed")
+
+	root := New()
+	provideBuiltProbe(t, root, "a", errClose)
+	descA := newServiceDescription(root.ID(), root.Name(), "a")
+
+	r1 := root.Shutdown()
+	clear(r1.Errors)
+
+	r2 := root.Shutdown()
+	is.ErrorIs(r2.Errors[descA], errClose)
+}
+
+func TestRootScope_ShutdownWithEndedContext(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		ctx  func(t *testing.T) context.Context
+	}{
+		{
+			name: "cancelled",
+			ctx: func(t *testing.T) context.Context {
+				ctx, cancel := context.WithCancel(t.Context())
+				cancel()
+				return ctx
+			},
+		},
+		{
+			name: "deadline_passed",
+			ctx: func(t *testing.T) context.Context {
+				ctx, cancel := context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
+				t.Cleanup(cancel)
+				return ctx
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, 5*time.Second)
+			is := assert.New(t)
+
+			root := New()
+			probe := provideBuiltProbe(t, root, "a", nil)
+
+			r1 := root.Shutdown()
+			ctx := tt.ctx(t)
+			for n := range 100 {
+				is.Equalf(r1, root.ShutdownWithContext(ctx), "call %d", n)
+			}
+			is.Equal(int32(1), probe.calls.Load())
+		})
+	}
+}
+
+// ctxShutdownProbe records the contexts its Shutdown(ctx) error receives.
+type ctxShutdownProbe struct {
+	mu   sync.Mutex
+	ctxs []context.Context
+}
+
+func (p *ctxShutdownProbe) Shutdown(ctx context.Context) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.ctxs = append(p.ctxs, ctx)
+	return nil
+}
+
+func TestRootScope_ShutdownNilContext(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		previous func(root *RootScope)
+	}{
+		{name: "called_nothing", previous: func(*RootScope) {}},
+		{name: "called_shutdown", previous: func(root *RootScope) { root.Shutdown() }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+			is := assert.New(t)
+
+			root := New()
+			probe := &ctxShutdownProbe{}
+			ProvideNamed(root, "a", func(Injector) (*ctxShutdownProbe, error) { return probe, nil })
+			_, err := InvokeNamed[*ctxShutdownProbe](root, "a")
+			require.NoError(t, err)
+
+			tt.previous(root)
+
+			var report *ShutdownReport
+			is.NotPanics(func() {
+				report = root.ShutdownWithContext(nil) //nolint:staticcheck // nil context is the case under test
+			})
+			if is.NotNil(report) {
+				is.True(report.Succeed)
+			}
+
+			probe.mu.Lock()
+			defer probe.mu.Unlock()
+			if is.Len(probe.ctxs, 1) {
+				is.NotNil(probe.ctxs[0])
+			}
+		})
+	}
+}
+
+func TestRootScope_ShutdownWinnerPanic(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		call func(t *testing.T, root *RootScope) *ShutdownReport
+	}{
+		{
+			name: "shutdown",
+			call: func(_ *testing.T, root *RootScope) *ShutdownReport { return root.Shutdown() },
+		},
+		{
+			name: "shutdown_with_deadline",
+			call: func(t *testing.T, root *RootScope) *ShutdownReport {
+				ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+				defer cancel()
+				return root.ShutdownWithContext(ctx)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, 2*time.Second)
+			is := assert.New(t)
+
+			root := NewWithOpts(&InjectorOpts{
+				Logf: func(format string, args ...any) {
+					if strings.Contains(fmt.Sprintf(format, args...), "requested shutdown") {
+						panic("log-boom")
+					}
+				},
+			})
+			is.PanicsWithValue("log-boom", func() { root.Shutdown() })
+
+			var report *ShutdownReport
+			is.NotPanics(func() { report = tt.call(t, root) })
+			if is.NotNil(report) {
+				is.False(report.Succeed)
+				is.Len(report.Errors, 1)
+				is.ErrorContains(report.Errors[rootServiceDescription(root)], "DI: root shutdown did not complete")
+			}
+		})
+	}
+}
+
+func TestAwaitDone(t *testing.T) {
+	t.Parallel()
+
+	t.Run("done_closed_and_context_ended", func(t *testing.T) {
+		t.Parallel()
+		is := assert.New(t)
+
+		done := make(chan struct{})
+		close(done)
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+
+		trues := 0
+		for range 1000 {
+			if awaitDone(done, ctx) {
+				trues++
+			}
+		}
+		is.Equal(1000, trues)
+	})
+
+	t.Run("only_context_ended", func(t *testing.T) {
+		t.Parallel()
+
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		assert.False(t, awaitDone(make(chan struct{}), ctx))
+	})
+
+	t.Run("done_closed_while_waiting", func(t *testing.T) {
+		t.Parallel()
+
+		synctest.Test(t, func(t *testing.T) {
+			done := make(chan struct{})
+			go func() {
+				time.Sleep(time.Second)
+				close(done)
+			}()
+			assert.True(t, awaitDone(done, t.Context()))
+		})
+	})
 }
