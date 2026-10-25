@@ -1241,3 +1241,58 @@ func TestContainerHooks_ReentrantStart(t *testing.T) {
 	is.ErrorIs(inner, ErrAlreadyStarted)
 	is.Equal(int32(1), started.Load())
 }
+
+func TestContainerHooks_ChildScopeShutdown(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+	is := assert.New(t)
+
+	root := New()
+	require.NoError(t, root.Start())
+	var closing, closed atomic.Int32
+	root.AddContainerClosingHook(func(context.Context, *RootScope) { closing.Add(1) })
+	root.AddContainerClosedHook(func(context.Context, *RootScope, *ShutdownReport) { closed.Add(1) })
+	request := root.Scope("request")
+	rec := &callRecorder{}
+	ProvideNamed(request, "session", func(Injector) (*recordingShutdowner, error) {
+		return &recordingShutdowner{name: "session", rec: rec}, nil
+	})
+	_, err := InvokeNamed[*recordingShutdowner](request, "session")
+	require.NoError(t, err)
+
+	request.Shutdown()
+
+	is.Equal([]string{"session.Shutdown"}, rec.list())
+	is.Equal(int32(0), closing.Load())
+	is.Equal(int32(0), closed.Load())
+}
+
+func TestContainerHooks_NoHooksUnchanged(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		ctor func() *RootScope
+	}{
+		{name: "New()", ctor: func() *RootScope { return New() }},
+		{name: "NewWithOpts(&InjectorOpts{})", ctor: func() *RootScope { return NewWithOpts(&InjectorOpts{}) }},
+		{name: "NewWithOpts(nil)", ctor: func() *RootScope { return NewWithOpts(nil) }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+			is := assert.New(t)
+
+			root := tt.ctor()
+			ProvideNamedValue(root, "server", &startWithErr{})
+			provideBuiltShutdowner(t, root, &callRecorder{}, "db", nil)
+
+			is.NotPanics(func() {
+				is.NoError(root.Start())
+				is.True(root.Shutdown().Succeed)
+			})
+		})
+	}
+}

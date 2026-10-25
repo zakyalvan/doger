@@ -164,3 +164,12 @@ root := doger.NewWithOpts(&doger.InjectorOpts{
 ```
 
 A panic in a Starting hook is different: it is a **veto**. `Start` fails with an error containing the panic value, and `HookContainerPanic` is not called.
+
+## Root container only {#root-only}
+
+Container hooks fire only for the `*doger.RootScope` methods `Start`, `StartWithContext`, `Shutdown`, `ShutdownWithContext` and `ShutdownOnSignals*`. These do not fire them:
+
+- `Shutdown` on a child `*doger.Scope`, such as a request scope;
+- a shutdown reached through the root's own `*doger.Scope`, for example the injector a provider receives, or `Component.Scope` of a root service.
+
+With no container hooks registered, `Start` and `Shutdown` behave as they did before container hooks existed.

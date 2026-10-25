@@ -113,10 +113,10 @@ Rules:
 
 ## 16. Only the root container fires container hooks (Part H)
 
-- [ ] 16.1 RED: add `TestContainerHooks_ChildScopeShutdown` (scenario "Child scope shutdown fires nothing") and `TestContainerHooks_NoHooksUnchanged` (scenario "No hooks registered leaves behavior unchanged", 3 rows); verify `go test -race -run 'TestContainerHooks_(ChildScopeShutdown|NoHooksUnchanged)' .`; they pass on arrival, so record that and show they can fail by temporarily firing Closing from `Scope.ShutdownWithContext` and by making a nil `HookContainerStarted` slice panic (not committed)
-- [ ] 16.2 GREEN: no production change expected; verify the 16.1 command passes and `make test` is green
-- [ ] 16.3 REFACTOR: none needed; verify `make test` and `make lint` pass
-- [ ] 16.4 Add the "root only" section to the docs page (child `Scope`/`virtualScope` shutdown bypasses container hooks); verify `npm --prefix docs run build` succeeds
+- [x] 16.1 RED: add `TestContainerHooks_ChildScopeShutdown` (scenario "Child scope shutdown fires nothing") and `TestContainerHooks_NoHooksUnchanged` (scenario "No hooks registered leaves behavior unchanged", 3 rows); verify `go test -race -run 'TestContainerHooks_(ChildScopeShutdown|NoHooksUnchanged)' .`; they pass on arrival, so record that and show they can fail by temporarily firing Closing from `Scope.ShutdownWithContext` and by making a nil `HookContainerStarted` slice panic (not committed)
+- [x] 16.2 GREEN: no production change expected; verify the 16.1 command passes and `make test` is green
+- [x] 16.3 REFACTOR: none needed; verify `make test` and `make lint` pass
+- [x] 16.4 Add the "root only" section to the docs page (child `Scope`/`virtualScope` shutdown bypasses container hooks); verify `npm --prefix docs run build` succeeds
 
 ## 17. Clones copy kind handlers (component-kinds; design Q1)
 
