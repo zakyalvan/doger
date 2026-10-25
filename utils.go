@@ -1,6 +1,7 @@
 package doger
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -107,9 +108,7 @@ func filter[V any](collection []V, predicate func(item V, index int) bool) []V {
 }
 
 func reverseSlice[S ~[]E, E any](s S) {
-	for i, j := 0, len(s)-1; i < j; i, j = i+1, j-1 {
-		s[i], s[j] = s[j], s[i]
-	}
+	slices.Reverse(s)
 }
 
 func orderedUniq[V comparable](in []V) []V {
@@ -130,15 +129,8 @@ func contains[T comparable](list []T, elem T) bool {
 	return slices.Contains(list, elem)
 }
 
-func coalesce[T comparable](v ...T) (result T) {
-	for _, e := range v {
-		if e != result {
-			result = e
-			break
-		}
-	}
-
-	return result
+func coalesce[T comparable](v ...T) T {
+	return cmp.Or(v...)
 }
 
 // https://gist.github.com/rkravchik/d9733e1d2d626188eb91df751471d739
