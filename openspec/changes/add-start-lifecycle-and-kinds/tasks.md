@@ -84,10 +84,10 @@ Prerequisites: `fix-stacktrace-frame-filter`, `rename-module-doger` and `upgrade
 
 ## 12. Per-service start hooks
 
-- [ ] 12.1 RED: add `TestStart_Hooks` ("Hooks around each Starter") and `TestStart_HooksSkipNonStarter` ("No hooks for an AsStarter instance without a Start method"); verify `go test -race -run TestStart_Hooks .` fails to compile only on `HookBeforeStart`, `HookAfterStart`, `AddBeforeStartHook` and `AddAfterStartHook`.
-- [ ] 12.2 GREEN: add the `InjectorOpts` fields (initialized in `NewWithOpts`, copied in `copy()`), `onBeforeStart`/`onAfterStart` and the `RootScope.Add*StartHook` methods, called around `startInstance` with the method's unwrapped error; verify the 12.1 command passes and `make test` is green.
-- [ ] 12.3 REFACTOR: none needed, the helpers mirror `onBeforeShutdown`/`onAfterShutdown`; verify `make test` and `make lint` pass.
-- [ ] 12.4 Document the start hooks in `docs/docs/container/options.md` and their godoc; verify `npm run build` in `docs/` passes.
+- [x] 12.1 RED: add `TestStart_Hooks` ("Hooks around each Starter") and `TestStart_HooksSkipNonStarter` ("No hooks for an AsStarter instance without a Start method"); verify `go test -race -run TestStart_Hooks .` fails to compile only on `HookBeforeStart`, `HookAfterStart`, `AddBeforeStartHook` and `AddAfterStartHook`.
+- [x] 12.2 GREEN: add the `InjectorOpts` fields (initialized in `NewWithOpts`, copied in `copy()`), `onBeforeStart`/`onAfterStart` and the `RootScope.Add*StartHook` methods, called around `startInstance` with the method's unwrapped error; verify the 12.1 command passes and `make test` is green.
+- [x] 12.3 REFACTOR: none needed, the helpers mirror `onBeforeShutdown`/`onAfterShutdown`; verify `make test` and `make lint` pass.
+- [x] 12.4 Document the start hooks in `docs/docs/container/options.md` and their godoc; verify `npm run build` in `docs/` passes.
 
 ## 13. Component kinds
 

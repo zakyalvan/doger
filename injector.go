@@ -128,6 +128,14 @@ type InjectorOpts struct {
 	// This hook can be used for logging, metrics collection, or error handling.
 	HookAfterShutdown []func(scope *Scope, serviceName string, err error)
 
+	// HookBeforeStart is called by Start just before a service's Start method.
+	HookBeforeStart []func(scope *Scope, serviceName string)
+
+	// HookAfterStart is called by Start just after a service's Start method,
+	// with the error the method returned, unwrapped (nil on success; a
+	// recovered panic as an error).
+	HookAfterStart []func(scope *Scope, serviceName string, err error)
+
 	// Logf is the logging function used by the DI container for internal logging.
 	// If not provided, no logging will occur. This function should handle the format
 	// string and arguments similar to fmt.Printf.
@@ -167,6 +175,8 @@ func (o *InjectorOpts) copy() *InjectorOpts {
 		HookAfterInvocation:      append([]func(*Scope, string, error){}, o.HookAfterInvocation...),
 		HookBeforeShutdown:       append([]func(*Scope, string){}, o.HookBeforeShutdown...),
 		HookAfterShutdown:        append([]func(*Scope, string, error){}, o.HookAfterShutdown...),
+		HookBeforeStart:          append([]func(*Scope, string){}, o.HookBeforeStart...),
+		HookAfterStart:           append([]func(*Scope, string, error){}, o.HookAfterStart...),
 		Logf:                     o.Logf,
 		HealthCheckParallelism:   o.HealthCheckParallelism,
 		HealthCheckGlobalTimeout: o.HealthCheckGlobalTimeout,
@@ -209,6 +219,18 @@ func (o *InjectorOpts) onBeforeShutdown(scope *Scope, serviceName string) {
 
 func (o *InjectorOpts) onAfterShutdown(scope *Scope, serviceName string, err error) {
 	for _, fn := range o.HookAfterShutdown {
+		fn(scope, serviceName, err)
+	}
+}
+
+func (o *InjectorOpts) onBeforeStart(scope *Scope, serviceName string) {
+	for _, fn := range o.HookBeforeStart {
+		fn(scope, serviceName)
+	}
+}
+
+func (o *InjectorOpts) onAfterStart(scope *Scope, serviceName string, err error) {
+	for _, fn := range o.HookAfterStart {
 		fn(scope, serviceName, err)
 	}
 }

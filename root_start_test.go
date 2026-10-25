@@ -1044,3 +1044,57 @@ func TestStart_ConcurrentInvoke(t *testing.T) {
 
 	is.Equal(int32(1), builds.Load())
 }
+
+func TestStart_Hooks(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+	is := assert.New(t)
+	errBoom := errors.New("boom")
+
+	rec := &callRecorder{}
+	var errB error
+	root := NewWithOpts(&InjectorOpts{
+		HookBeforeStart: []func(*Scope, string){
+			func(_ *Scope, name string) { rec.record("before " + name) },
+		},
+		HookAfterStart: []func(*Scope, string, error){
+			func(_ *Scope, name string, err error) {
+				if name == "b" {
+					errB = err
+				}
+				if err == nil {
+					rec.record("after " + name + " nil")
+					return
+				}
+				rec.record("after " + name + " " + err.Error())
+			},
+		},
+	})
+	root.AddAfterStartHook(func(_ *Scope, name string, _ error) { rec.record("late-after " + name) })
+	ProvideNamed(root, "a", func(Injector) (*errorStarter, error) { return &errorStarter{}, nil })
+	ProvideNamed(root, "b", func(Injector) (*errorStarter, error) { return &errorStarter{err: errBoom}, nil })
+
+	is.ErrorIs(root.Start(), errBoom)
+	is.Equal([]string{
+		"before a", "after a nil", "late-after a",
+		"before b", "after b boom", "late-after b",
+	}, rec.list())
+	is.Same(errBoom, errB, "the hook receives the method's own error, not a wrapping one")
+}
+
+func TestStart_HooksSkipNonStarter(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+	is := assert.New(t)
+
+	rec := &callRecorder{}
+	root := New()
+	root.AddBeforeStartHook(func(_ *Scope, name string) { rec.record("before " + name) })
+	root.AddAfterStartHook(func(_ *Scope, name string, _ error) { rec.record("after " + name) })
+	ProvideNamed(root, "app.Lifecycle", func(Injector) (startLifecycle, error) { return &startNone{}, nil }, AsStarter())
+
+	err := root.Start()
+
+	is.ErrorContains(err, "DI: service `app.Lifecycle` was opted in with AsStarter but does not implement any Starter interface")
+	is.Empty(rec.list())
+}

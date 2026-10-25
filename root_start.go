@@ -171,7 +171,7 @@ func (s *RootScope) runStartPipeline(startCtx context.Context) error {
 		return err
 	}
 
-	if err := startStarters(startCtx, s.orderByDependencies(starterCandidates(candidates))); err != nil {
+	if err := s.startStarters(startCtx, s.orderByDependencies(starterCandidates(candidates))); err != nil {
 		return err
 	}
 
@@ -284,7 +284,7 @@ func starterCandidates(candidates []*startCandidate) []*startCandidate {
 
 // startStarters starts the Starter candidates in order, stopping at the
 // first error.
-func startStarters(startCtx context.Context, candidates []*startCandidate) error {
+func (s *RootScope) startStarters(startCtx context.Context, candidates []*startCandidate) error {
 	for _, candidate := range candidates {
 		if !candidate.starter {
 			continue
@@ -298,7 +298,10 @@ func startStarters(startCtx context.Context, candidates []*startCandidate) error
 			return fmt.Errorf("DI: service `%s` was opted in with AsStarter but does not implement any Starter interface", candidate.name)
 		}
 
-		if err := startInstance(startCtx, candidate.instance); err != nil {
+		s.opts.onBeforeStart(candidate.scope, candidate.name)
+		err := startInstance(startCtx, candidate.instance)
+		s.opts.onAfterStart(candidate.scope, candidate.name, err)
+		if err != nil {
 			err = wrapStartError(candidate.scope, candidate.name, err)
 			return withAbortCause(startCtx, err)
 		}

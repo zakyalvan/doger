@@ -91,6 +91,12 @@ func NewWithOpts(opts *InjectorOpts, packages ...func(Injector)) *RootScope {
 	if opts.HookAfterShutdown == nil {
 		opts.HookAfterShutdown = []func(*Scope, string, error){}
 	}
+	if opts.HookBeforeStart == nil {
+		opts.HookBeforeStart = []func(*Scope, string){}
+	}
+	if opts.HookAfterStart == nil {
+		opts.HookAfterStart = []func(*Scope, string, error){}
+	}
 
 	root := &RootScope{
 		self:            newScope(DefaultRootScopeName, nil, nil),
@@ -506,6 +512,18 @@ func (s *RootScope) AddBeforeShutdownHook(hook func(*Scope, string)) {
 // Play: https://go.dev/play/p/FFKDcV0hMJx
 func (s *RootScope) AddAfterShutdownHook(hook func(*Scope, string, error)) {
 	s.opts.HookAfterShutdown = append(s.opts.HookAfterShutdown, hook)
+}
+
+// AddBeforeStartHook adds a hook that will be called by Start just before a
+// service's Start method.
+func (s *RootScope) AddBeforeStartHook(hook func(*Scope, string)) {
+	s.opts.HookBeforeStart = append(s.opts.HookBeforeStart, hook)
+}
+
+// AddAfterStartHook adds a hook that will be called by Start just after a
+// service's Start method, with the error the method returned.
+func (s *RootScope) AddAfterStartHook(hook func(*Scope, string, error)) {
+	s.opts.HookAfterStart = append(s.opts.HookAfterStart, hook)
 }
 
 // Clone clones injector with provided services but not with invoked instances.
