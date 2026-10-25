@@ -1,6 +1,7 @@
 package doger
 
 import (
+	"fmt"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -293,5 +294,229 @@ func TestEager_NoOptionsNeverErrors(t *testing.T) {
 		value, err := InvokeNamed[*depValue](root, "cfg")
 		is.NoErrorf(err, "invocation %d", n)
 		is.Equal("cfg", value.name)
+	}
+}
+
+// declareFixture registers the services of the "Declaring edges dynamically" scenario.
+func declareFixture(t *testing.T) (*RootScope, *Scope) {
+	t.Helper()
+
+	root := New()
+	rec := &callRecorder{}
+	provideRecorded(root, rec, "scheduler")
+	provideRecorded(root, rec, "job-a")
+	ProvideNamed(root, "job-b", func(i Injector) (*depValue, error) {
+		_, err := InvokeNamed[*depValue](i, "scheduler")
+		return &depValue{name: "job-b"}, err
+	})
+	provideRecorded(root, rec, "job-s", DependsOnNamed("scheduler"))
+	tenant := root.Scope("tenant")
+	provideRecorded(tenant, rec, "tenant-job")
+
+	// records job-b -> scheduler
+	_, err := InvokeNamed[*depValue](root, "job-b")
+	require.NoError(t, err)
+
+	return root, tenant
+}
+
+// TestDeclareDependency is not parallel: one row replaces DefaultRootScope.
+func TestDeclareDependency(t *testing.T) {
+	tests := []struct {
+		name       string
+		given      func(t *testing.T, root *RootScope)
+		injector   func(root *RootScope, tenant *Scope) Injector
+		dependent  string
+		dependency string
+		err        error
+		check      func(t *testing.T, root *RootScope, tenant *Scope)
+	}{
+		{
+			name: "records_edge", dependent: "scheduler", dependency: "job-a",
+			check: func(t *testing.T, root *RootScope, _ *Scope) {
+				assert.Equal(t, []string{"job-a"}, explainedNames(t, root, "scheduler", false))
+			},
+		},
+		{
+			name: "repeated_edge_changes_nothing", dependent: "scheduler", dependency: "job-a",
+			given: func(t *testing.T, root *RootScope) { require.NoError(t, DeclareDependency(root, "scheduler", "job-a")) },
+			check: func(t *testing.T, root *RootScope, _ *Scope) {
+				assert.Equal(t, []string{"job-a"}, explainedNames(t, root, "scheduler", false))
+			},
+		},
+		{name: "missing_dependency", dependent: "scheduler", dependency: "missing", err: ErrServiceNotFound},
+		{name: "missing_dependent", dependent: "missing", dependency: "job-a", err: ErrServiceNotFound},
+		{name: "empty_dependent", dependent: "", dependency: "job-a", err: ErrServiceNotFound},
+		{name: "cycle_through_invoked_edge", dependent: "scheduler", dependency: "job-b", err: ErrCircularDependency},
+		{name: "self_edge", dependent: "job-a", dependency: "job-a", err: ErrCircularDependency},
+		{name: "cycle_through_static_edge_not_built", dependent: "scheduler", dependency: "job-s", err: ErrCircularDependency},
+		{
+			name:      "dependency_not_visible_from_dependent_scope",
+			injector:  func(_ *RootScope, tenant *Scope) Injector { return tenant },
+			dependent: "scheduler", dependency: "tenant-job", err: ErrServiceNotFound,
+		},
+		{
+			name:      "child_to_ancestor",
+			injector:  func(_ *RootScope, tenant *Scope) Injector { return tenant },
+			dependent: "tenant-job", dependency: "scheduler",
+			check: func(t *testing.T, root *RootScope, tenant *Scope) {
+				explained, ok := ExplainNamedService(tenant, "tenant-job")
+				require.True(t, ok)
+				if assert.Len(t, explained.Dependencies, 1) {
+					assert.Equal(t, root.ID(), explained.Dependencies[0].ScopeID)
+					assert.Equal(t, "scheduler", explained.Dependencies[0].Service)
+				}
+				assert.Equal(t, "tenant", explained.ScopeName)
+			},
+		},
+		{
+			name: "nil_injector_uses_default_root_scope",
+			given: func(t *testing.T, root *RootScope) {
+				previous := DefaultRootScope
+				DefaultRootScope = root
+				t.Cleanup(func() { DefaultRootScope = previous })
+			},
+			injector:  func(*RootScope, *Scope) Injector { return nil },
+			dependent: "scheduler", dependency: "job-a",
+			check: func(t *testing.T, root *RootScope, _ *Scope) {
+				assert.Equal(t, []string{"job-a"}, explainedNames(t, root, "scheduler", false))
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testWithTimeout(t, time.Second)
+
+			root, tenant := declareFixture(t)
+			if tt.given != nil {
+				tt.given(t, root)
+			}
+			var injector Injector = root
+			if tt.injector != nil {
+				injector = tt.injector(root, tenant)
+			}
+
+			err := DeclareDependency(injector, tt.dependent, tt.dependency)
+
+			if tt.err != nil {
+				assert.ErrorIs(t, err, tt.err)
+				return
+			}
+			require.NoError(t, err)
+			tt.check(t, root, tenant)
+		})
+	}
+}
+
+func TestDeclareDependency_Concurrent(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, 5*time.Second)
+	is := assert.New(t)
+
+	root := New()
+	rec := &callRecorder{}
+	provideRecorded(root, rec, "scheduler")
+	const jobs = 50
+	for n := range jobs {
+		provideRecorded(root, rec, fmt.Sprintf("job-%d", n))
+	}
+
+	var wg sync.WaitGroup
+	for n := range jobs {
+		wg.Go(func() {
+			is.NoError(DeclareDependency(root, "scheduler", fmt.Sprintf("job-%d", n)))
+		})
+	}
+	wg.Wait()
+
+	is.Len(explainedNames(t, root, "scheduler", false), jobs)
+}
+
+func TestDeclareDependency_Clone(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		invoked string
+		deps    []string
+	}{
+		{name: "declared_edge_not_copied", invoked: "scheduler", deps: []string{}},
+		{name: "static_edge_recorded_again", invoked: "worker", deps: []string{"job"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+
+			root := New()
+			rec := &callRecorder{}
+			provideRecorded(root, rec, "scheduler")
+			provideRecorded(root, rec, "job")
+			provideRecorded(root, rec, "worker", DependsOnNamed("job"))
+			require.NoError(t, DeclareDependency(root, "scheduler", "job"))
+			_, err := InvokeNamed[*depValue](root, "worker")
+			require.NoError(t, err)
+
+			clone := root.Clone()
+			_, err = InvokeNamed[*depValue](clone, tt.invoked)
+			require.NoError(t, err)
+
+			assert.Equal(t, tt.deps, explainedNames(t, clone, tt.invoked, false))
+		})
+	}
+}
+
+// orderedShutdown records its name in rec when shut down.
+type orderedShutdown struct {
+	name string
+	rec  *callRecorder
+}
+
+func (s *orderedShutdown) Shutdown() error {
+	s.rec.record(s.name)
+	return nil
+}
+
+func TestDeclaredEdges_ShutdownOrder(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		schedulerOpts []ProvideOption
+		declare       bool
+	}{
+		{name: "declare_dependency", declare: true},
+		{name: "depends_on_named", schedulerOpts: []ProvideOption{DependsOnNamed("job")}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+
+			root := New()
+			rec := &callRecorder{}
+			for _, name := range []string{"job", "scheduler"} {
+				var opts []ProvideOption
+				if name == "scheduler" {
+					opts = tt.schedulerOpts
+				}
+				ProvideNamed(root, name, func(Injector) (*orderedShutdown, error) {
+					return &orderedShutdown{name: name, rec: rec}, nil
+				}, opts...)
+			}
+			for _, name := range []string{"scheduler", "job"} {
+				_, err := InvokeNamed[*orderedShutdown](root, name)
+				require.NoError(t, err)
+			}
+			if tt.declare {
+				require.NoError(t, DeclareDependency(root, "scheduler", "job"))
+			}
+
+			require.True(t, root.Shutdown().Succeed)
+			assert.Equal(t, []string{"scheduler", "job"}, rec.list())
+		})
 	}
 }

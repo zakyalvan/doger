@@ -133,6 +133,7 @@ type RootScope struct {
 	healthCheckPool *jobPool[error] // Pool for parallel health check operations
 
 	nextRegIndex atomic.Uint64 // next registration index, shared by every scope of this container
+	declareMu    sync.Mutex    // serializes DeclareDependency (cycle check plus add)
 
 	// Lifecycle state. Phases change only by compare-and-set under lifecycleMu,
 	// which is never held while user code runs.

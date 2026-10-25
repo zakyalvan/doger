@@ -1,6 +1,9 @@
 package doger
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
 type exampleMetrics struct{}
 
@@ -31,4 +34,43 @@ func ExampleDependsOn() {
 	// build metrics
 	// build reporter
 	// depends on: *github.com/kartaladev/doger.exampleMetrics
+}
+
+type exampleScheduler struct{}
+
+func (*exampleScheduler) Shutdown() error {
+	fmt.Println("stop scheduler")
+	return nil
+}
+
+type exampleJob struct{}
+
+func (*exampleJob) Shutdown() error {
+	fmt.Println("stop job")
+	return nil
+}
+
+func ExampleDeclareDependency() {
+	injector := New()
+
+	ProvideNamed(injector, "scheduler", func(i Injector) (*exampleScheduler, error) { return &exampleScheduler{}, nil })
+	ProvideNamed(injector, "job", func(i Injector) (*exampleJob, error) { return &exampleJob{}, nil })
+	_, _ = InvokeNamed[*exampleScheduler](injector, "scheduler")
+	_, _ = InvokeNamed[*exampleJob](injector, "job")
+
+	// The scheduler drives the job: stop the scheduler before the job.
+	if err := DeclareDependency(injector, "scheduler", "job"); err != nil {
+		fmt.Println(err)
+	}
+
+	// The reverse edge would close a cycle.
+	err := DeclareDependency(injector, "job", "scheduler")
+	fmt.Println(errors.Is(err, ErrCircularDependency))
+
+	injector.Shutdown()
+
+	// Output:
+	// true
+	// stop scheduler
+	// stop job
 }
