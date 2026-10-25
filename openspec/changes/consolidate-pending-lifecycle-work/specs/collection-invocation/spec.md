@@ -341,7 +341,7 @@ Then the result is empty
 And the error is nil
 ```
 
-<!-- cases: N/A 2 overrides: snapshot semantics are fixed; live collections are phase 2 -->
+<!-- cases: N/A 2 overrides: InvokeAll is a snapshot by definition; the live alternative is capability live-collections -->
 <!-- cases: N/A 9 panics: no panicking path -->
 
 ### Requirement: Concurrent collection callers
