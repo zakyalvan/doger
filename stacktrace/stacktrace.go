@@ -68,7 +68,7 @@ func callerFrame(
 	depth int,
 ) (Frame, bool) {
 	// find the first frame that is not in this package
-	for i := 0; i < depth; i++ {
+	for i := range depth {
 		pc, file, line, ok := caller(i)
 		if !ok {
 			break

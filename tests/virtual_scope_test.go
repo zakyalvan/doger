@@ -75,7 +75,7 @@ func TestVirtualScopeConcurrentAccess(t *testing.T) {
 	results := make([]string, numGoroutines)
 	errors := make([]error, numGoroutines)
 
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
@@ -88,7 +88,7 @@ func TestVirtualScopeConcurrentAccess(t *testing.T) {
 	wg.Wait()
 
 	// All invocations should succeed with the same result
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		is.NoError(errors[i])
 		is.Equal("dependent-shared-value", results[i])
 	}
@@ -287,7 +287,7 @@ func TestVirtualScopeMemoryLeak(t *testing.T) {
 
 	// Invoke the service many times to test for memory leaks
 	const numInvocations = 1000
-	for i := 0; i < numInvocations; i++ {
+	for range numInvocations {
 		result, err := doger.InvokeNamed[string](root, "memory-test-service")
 		is.NoError(err)
 		is.Equal("test-value", result)

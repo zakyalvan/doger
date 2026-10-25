@@ -101,7 +101,7 @@ func TestScope_Scope_race(t *testing.T) {
 
 	var wg sync.WaitGroup
 	wg.Add(5)
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		go func(j int) {
 			injector.Scope(fmt.Sprintf("test-%d", j))
 			wg.Done()

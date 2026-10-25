@@ -426,7 +426,7 @@ func TestInvokeByName_race(t *testing.T) {
 
 	var wg sync.WaitGroup
 	wg.Add(5)
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		go func(j int) {
 			_, err1 := invokeByName[int](injector, NameOf[int]())
 			_, err2 := invokeByName[*lazyTest](child, NameOf[*lazyTest]())
@@ -458,7 +458,7 @@ func TestInvokeByGenericType_race(t *testing.T) {
 
 	var wg sync.WaitGroup
 	wg.Add(5)
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		go func(j int) {
 			_, err1 := invokeByGenericType[int](injector)
 			_, err2 := invokeByGenericType[*lazyTest](child)

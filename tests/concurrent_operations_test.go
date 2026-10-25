@@ -44,7 +44,7 @@ func TestConcurrentServiceAliasOperations(t *testing.T) {
 	var wg sync.WaitGroup
 	errors := make([]error, numAliases)
 
-	for i := 0; i < numAliases; i++ {
+	for i := range numAliases {
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
@@ -56,7 +56,7 @@ func TestConcurrentServiceAliasOperations(t *testing.T) {
 	wg.Wait()
 
 	// All alias creations should succeed
-	for i := 0; i < numAliases; i++ {
+	for i := range numAliases {
 		is.NoError(errors[i])
 	}
 
@@ -65,7 +65,7 @@ func TestConcurrentServiceAliasOperations(t *testing.T) {
 	results := make([]string, numAliases)
 	invokeErrors := make([]error, numAliases)
 
-	for i := 0; i < numAliases; i++ {
+	for i := range numAliases {
 		wg2.Add(1)
 		go func(index int) {
 			defer wg2.Done()
@@ -79,7 +79,7 @@ func TestConcurrentServiceAliasOperations(t *testing.T) {
 	wg2.Wait()
 
 	// All alias invocations should succeed with the same result
-	for i := 0; i < numAliases; i++ {
+	for i := range numAliases {
 		is.NoError(invokeErrors[i])
 		is.Equal("base-value", results[i])
 	}
@@ -140,7 +140,7 @@ func TestConcurrentServiceInvocationDuringRegistration(t *testing.T) {
 	results := make([]string, numGoroutines)
 	errors := make([]error, numGoroutines)
 
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
@@ -153,7 +153,7 @@ func TestConcurrentServiceInvocationDuringRegistration(t *testing.T) {
 	wg.Wait()
 
 	// All invocations should succeed
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		is.NoError(errors[i])
 		is.Equal("slow-registered-value", results[i])
 	}
@@ -177,7 +177,7 @@ func TestConcurrentScopeOperations(t *testing.T) {
 	scopes := make([]doger.Injector, numScopes)
 	errors := make([]error, numScopes)
 
-	for i := 0; i < numScopes; i++ {
+	for i := range numScopes {
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
@@ -213,7 +213,7 @@ func TestConcurrentScopeOperations(t *testing.T) {
 	wg.Wait()
 
 	// All operations should succeed
-	for i := 0; i < numScopes; i++ {
+	for i := range numScopes {
 		is.NoError(errors[i])
 		is.NotNil(scopes[i])
 	}
@@ -246,7 +246,7 @@ func TestConcurrentHealthCheckDuringShutdown(t *testing.T) {
 	var wg sync.WaitGroup
 	healthResults := make([]map[string]error, numHealthChecks)
 
-	for i := 0; i < numHealthChecks; i++ {
+	for i := range numHealthChecks {
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
@@ -262,7 +262,7 @@ func TestConcurrentHealthCheckDuringShutdown(t *testing.T) {
 	is.Empty(report.Errors)
 
 	// Health checks should either succeed or fail gracefully during shutdown
-	for i := 0; i < numHealthChecks; i++ {
+	for i := range numHealthChecks {
 		is.NotNil(healthResults[i])
 	}
 }
@@ -309,7 +309,7 @@ func TestConcurrentServiceRegistration(t *testing.T) {
 	const numServices = 100
 	var wg sync.WaitGroup
 
-	for i := 0; i < numServices; i++ {
+	for i := range numServices {
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
@@ -323,7 +323,7 @@ func TestConcurrentServiceRegistration(t *testing.T) {
 	wg.Wait()
 
 	// Verify all services can be invoked
-	for i := 0; i < numServices; i++ {
+	for i := range numServices {
 		serviceName := fmt.Sprintf("service-%d", i)
 		result, err := doger.InvokeNamed[string](root, serviceName)
 		is.NoError(err)
@@ -350,7 +350,7 @@ func TestConcurrentServiceInvocation(t *testing.T) {
 	results := make([]string, numGoroutines)
 	errors := make([]error, numGoroutines)
 
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
@@ -363,7 +363,7 @@ func TestConcurrentServiceInvocation(t *testing.T) {
 	wg.Wait()
 
 	// All invocations should succeed with the same result
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		is.NoError(errors[i])
 		is.Equal("concurrent-value", results[i])
 	}
@@ -381,7 +381,7 @@ func TestConcurrentScopeCreation(t *testing.T) {
 	var wg sync.WaitGroup
 	scopes := make([]doger.Injector, numScopes)
 
-	for i := 0; i < numScopes; i++ {
+	for i := range numScopes {
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
@@ -393,7 +393,7 @@ func TestConcurrentScopeCreation(t *testing.T) {
 	wg.Wait()
 
 	// Verify all scopes were created correctly
-	for i := 0; i < numScopes; i++ {
+	for i := range numScopes {
 		is.NotNil(scopes[i])
 		is.Equal(fmt.Sprintf("scope-%d", i), scopes[i].Name())
 	}
@@ -426,7 +426,7 @@ func TestConcurrentHealthChecks(t *testing.T) {
 	var wg sync.WaitGroup
 	results := make([]map[string]error, numGoroutines)
 
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
@@ -437,7 +437,7 @@ func TestConcurrentHealthChecks(t *testing.T) {
 	wg.Wait()
 
 	// All health checks should return consistent results
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		is.NotNil(results[i])
 		is.Contains(results[i], "healthy-service")
 		is.NoError(results[i]["healthy-service"])
@@ -476,7 +476,7 @@ func TestConcurrentShutdown(t *testing.T) {
 	var wg sync.WaitGroup
 	errors := make([]*doger.ShutdownReport, numGoroutines)
 
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
@@ -488,7 +488,7 @@ func TestConcurrentShutdown(t *testing.T) {
 
 	// All shutdown operations should complete (may have errors due to concurrent access)
 	// In concurrent scenarios, some shutdowns may succeed and others may have errors
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		// Either nil (success) or non-nil (error) is acceptable in concurrent scenarios
 		_ = errors[i] // Just ensure all calls completed
 	}
@@ -525,7 +525,7 @@ func TestConcurrentServiceLifecycleFailures(t *testing.T) {
 	constructionErrors := make([]error, numGoroutines)
 	healthErrors := make([]error, numGoroutines)
 
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
@@ -549,13 +549,13 @@ func TestConcurrentServiceLifecycleFailures(t *testing.T) {
 	wg.Wait()
 
 	// All construction failures should be consistent
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		is.Error(constructionErrors[i])
 		is.Contains(constructionErrors[i].Error(), "construction failed")
 	}
 
 	// All health check failures should be consistent
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		is.Error(healthErrors[i])
 	}
 }
@@ -588,7 +588,7 @@ func TestConcurrentTimeoutScenarios(t *testing.T) {
 	results := make([]string, numGoroutines)
 	errors := make([]error, numGoroutines)
 
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
@@ -601,7 +601,7 @@ func TestConcurrentTimeoutScenarios(t *testing.T) {
 	wg.Wait()
 
 	// All invocations should succeed with the same result
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		is.NoError(errors[i])
 		is.Equal("dependent-slow-value", results[i])
 	}
@@ -631,7 +631,7 @@ func TestConcurrentBlockingOperations(t *testing.T) {
 	var wg sync.WaitGroup
 	reports := make([]*doger.ShutdownReport, numGoroutines)
 
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
@@ -643,7 +643,7 @@ func TestConcurrentBlockingOperations(t *testing.T) {
 
 	// All shutdown operations should complete
 	// Some may have erroreportsrs due to blocking/timeout, some may succeed if shutdown completes quickly
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		// Each shutdown call should return (either success or timeout)
 		// The result depends on timing - first call might succeed, others might timeout
 		// We just ensure all calls completed
@@ -662,7 +662,7 @@ func TestConcurrentMemoryPressure(t *testing.T) {
 	// Create many services to simulate memory pressure
 	const numServices = 1000
 
-	for i := 0; i < numServices; i++ {
+	for i := range numServices {
 		serviceName := fmt.Sprintf("service-%d", i)
 		doger.ProvideNamed(root, serviceName, func(i doger.Injector) (string, error) {
 			return fmt.Sprintf("value-%d", i), nil
@@ -674,13 +674,13 @@ func TestConcurrentMemoryPressure(t *testing.T) {
 	var wg sync.WaitGroup
 	errors := make([]error, numGoroutines)
 
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
 
 			// Invoke a few random services
-			for j := 0; j < 10; j++ {
+			for j := range 10 {
 				serviceIndex := (index + j) % numServices
 				serviceName := fmt.Sprintf("service-%d", serviceIndex)
 				_, err := doger.InvokeNamed[string](root, serviceName)
@@ -695,7 +695,7 @@ func TestConcurrentMemoryPressure(t *testing.T) {
 	wg.Wait()
 
 	// All operations should succeed
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		is.NoError(errors[i])
 	}
 }

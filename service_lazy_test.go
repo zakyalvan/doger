@@ -786,7 +786,7 @@ func TestServiceLazy_source(t *testing.T) {
 
 	// Test concurrent access to source method
 	done := make(chan bool, 10)
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		go func() {
 			_, _ = service.source()
 			done <- true
@@ -794,7 +794,7 @@ func TestServiceLazy_source(t *testing.T) {
 	}
 
 	// Wait for all goroutines to complete
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		<-done
 	}
 
