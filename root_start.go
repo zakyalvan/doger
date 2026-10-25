@@ -285,18 +285,34 @@ func (s *RootScope) runStartPipeline(startCtx context.Context) error {
 }
 
 // runStartingHooks runs the container Starting hooks in order. The first
-// error is a veto: the remaining hooks do not run and Start fails with it.
+// error or panic is a veto: the remaining hooks do not run and Start fails
+// with it.
 func (s *RootScope) runStartingHooks(startCtx context.Context) error {
 	for _, hook := range slices.Clone(s.opts.HookContainerStarting) {
 		if hook == nil {
 			continue
 		}
-		if err := hook(startCtx, s); err != nil {
+
+		var err error
+		if recovered, panicked := callHookSafely(func() { err = hook(startCtx, s) }); panicked {
+			err = startingHookPanicError(recovered)
+		}
+		if err != nil {
 			return fmt.Errorf("DI: container start aborted: %w", err)
 		}
 	}
 
 	return nil
+}
+
+// startingHookPanicError turns a Starting hook panic into a veto error. An
+// error value is wrapped, so errors.Is and errors.As reach it.
+func startingHookPanicError(recovered any) error {
+	if err, ok := recovered.(error); ok {
+		return fmt.Errorf("DI: container starting hook panicked: %w", err)
+	}
+
+	return fmt.Errorf("DI: container starting hook panicked: %v", recovered)
 }
 
 func (c *startCandidate) desc() ServiceDescription {

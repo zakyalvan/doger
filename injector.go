@@ -142,7 +142,9 @@ type InjectorOpts struct {
 	// after its one-shot guard and before its context check, discovery or any
 	// instantiation, with the Start-time context. A non-nil error vetoes
 	// Start: the remaining Starting hooks do not run, nothing is built or
-	// started, and Start returns an error wrapping it.
+	// started, and Start returns an error wrapping it. A panic is a veto too:
+	// Start returns an error containing the panic value (wrapping it when it
+	// is an error), and HookContainerPanic is not called.
 	//
 	// A Starting hook must not call root Shutdown synchronously without a
 	// deadline: Shutdown waits for the running Start, which waits for the hook.

@@ -101,9 +101,9 @@ Rules:
 
 ## 14. Starting hook panics are vetoes (Part H)
 
-- [ ] 14.1 RED: add `TestContainerStartingHook_Panic` (scenario "Panicking Starting hook", 2 rows); verify `go test -race -run TestContainerStartingHook_Panic .` fails because the panic escapes `Start`
-- [ ] 14.2 GREEN: recover in `runStartingHooks` with `callHookSafely`, converting the value with `%w` when it is an error and `%v` otherwise, as a veto that bypasses `HookContainerPanic` (design D6); verify the 14.1 command passes and `make test` is green
-- [ ] 14.3 REFACTOR: none needed, since 14.2 reuses `callHookSafely`; verify `make test` and `make lint` pass
+- [x] 14.1 RED: add `TestContainerStartingHook_Panic` (scenario "Panicking Starting hook", 2 rows); verify `go test -race -run TestContainerStartingHook_Panic .` fails because the panic escapes `Start`
+- [x] 14.2 GREEN: recover in `runStartingHooks` with `callHookSafely`, converting the value with `%w` when it is an error and `%v` otherwise, as a veto that bypasses `HookContainerPanic` (design D6); verify the 14.1 command passes and `make test` is green
+- [x] 14.3 REFACTOR: none needed, since 14.2 reuses `callHookSafely`; verify `make test` and `make lint` pass
 
 ## 15. At most once and concurrency (Part H)
 

@@ -1092,3 +1092,52 @@ func TestContainerHooks_ClonePanicPolicy(t *testing.T) {
 	assert.NotPanics(t, func() { _ = clone.Start() })
 	assert.Equal(t, []string{"started"}, points)
 }
+
+func TestContainerStartingHook_Panic(t *testing.T) {
+	t.Parallel()
+
+	errKaboom := errors.New("kaboom error")
+
+	tests := []struct {
+		name  string
+		value any
+		match func(t *testing.T, err error)
+	}{
+		{
+			name:  "string kaboom",
+			value: "kaboom",
+			match: func(t *testing.T, err error) { t.Helper(); assert.ErrorContains(t, err, "kaboom") },
+		},
+		{
+			name:  "error ErrKaboom",
+			value: errKaboom,
+			match: func(t *testing.T, err error) { t.Helper(); assert.ErrorIs(t, err, errKaboom) },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+			is := assert.New(t)
+
+			var panicCalls, nextRan, failed atomic.Int32
+			root := NewWithOpts(&InjectorOpts{
+				HookContainerPanic: func(*RootScope, string, any) { panicCalls.Add(1) },
+			})
+			builds := provideBuildCountedServer(root)
+			root.AddContainerStartingHook(func(context.Context, *RootScope) error { panic(tt.value) })
+			root.AddContainerStartingHook(func(context.Context, *RootScope) error { nextRan.Add(1); return nil })
+			root.AddContainerFailedHook(func(context.Context, *RootScope, error) { failed.Add(1) })
+
+			var err error
+			is.NotPanics(func() { err = root.Start() })
+
+			tt.match(t, err)
+			is.Equal(int32(0), nextRan.Load())
+			is.Equal(int32(0), builds.Load())
+			is.Equal(int32(1), failed.Load())
+			is.Equal(int32(0), panicCalls.Load())
+		})
+	}
+}
