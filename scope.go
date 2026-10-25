@@ -3,6 +3,7 @@ package doger
 import (
 	"context"
 	"fmt"
+	"maps"
 	"sync"
 	"time"
 )
@@ -533,12 +534,8 @@ func (s *Scope) clone(root *RootScope, parent *Scope) *Scope {
 	s.mu.RLock()
 	services := make(map[string]any, len(s.services))
 	childScopes := make(map[string]*Scope, len(s.childScopes))
-	for name, serviceAny := range s.services {
-		services[name] = serviceAny
-	}
-	for name, childScope := range s.childScopes {
-		childScopes[name] = childScope
-	}
+	maps.Copy(services, s.services)
+	maps.Copy(childScopes, s.childScopes)
 	s.mu.RUnlock()
 
 	for name, serviceAny := range services {
