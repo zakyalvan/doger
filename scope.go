@@ -6,6 +6,8 @@ import (
 	"maps"
 	"sync"
 	"time"
+
+	"github.com/jonboulle/clockwork"
 )
 
 // newScope creates a new Scope instance with the provided parameters.
@@ -118,6 +120,11 @@ func (s *Scope) Scope(name string, packages ...func(Injector)) *Scope {
 // Play: https://go.dev/play/p/pao_03UdGE2
 func (s *Scope) RootScope() *RootScope {
 	return s.rootScope
+}
+
+// clock returns the time source of the container.
+func (s *Scope) clock() clockwork.Clock {
+	return s.rootScope.opts.Clock
 }
 
 // Ancestors returns the list of all parent scopes in order from immediate parent to root.
@@ -309,8 +316,10 @@ func (s *Scope) HealthCheckWithContext(ctx context.Context) map[string]error {
 	s.logf("requested health check")
 
 	if s.rootScope.opts.HealthCheckGlobalTimeout > 0 {
+		clock := s.clock()
+		ctx = withHealthCheckDeadline(ctx, clock.Now().Add(s.rootScope.opts.HealthCheckGlobalTimeout))
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, s.rootScope.opts.HealthCheckGlobalTimeout)
+		ctx, cancel = clockwork.WithTimeout(ctx, clock, s.rootScope.opts.HealthCheckGlobalTimeout)
 		defer cancel()
 	}
 
@@ -369,14 +378,14 @@ func (s *Scope) Shutdown() *ShutdownReport {
 // Play: https://go.dev/play/p/nkiBBYow2d5
 func (s *Scope) ShutdownWithContext(ctx context.Context) *ShutdownReport {
 	s.logf("requested shutdown")
-	start := time.Now()
+	start := s.clock().Now()
 
 	rep1 := s.shutdownChildrenInParallel(ctx)
 	rep2 := s.shutdownServicesInParallel(ctx)
 	s.logf("shut down services")
 
 	report := mergeShutdownReports(rep1, rep2)
-	report.ShutdownTime = time.Since(start)
+	report.ShutdownTime = s.clock().Since(start)
 	report.Succeed = len(report.Errors) == 0
 	return report
 }
@@ -488,9 +497,9 @@ func (s *Scope) shutdownServicesWithoutDependenciesInParallel(ctx context.Contex
 	for _, name := range serviceNames {
 		wg.Go(func() {
 			desc := newServiceDescription(s.id, s.name, name)
-			start := time.Now()
+			start := s.clock().Now()
 			e := s.serviceShutdown(ctx, name)
-			dt := time.Since(start)
+			dt := s.clock().Since(start)
 
 			mu.Lock()
 			services = append(services, desc)
@@ -724,26 +733,43 @@ func (s *Scope) serviceForEachRec(cb func(name string, scope *Scope, service any
 // Returns an error if the health check fails, or nil if the service is healthy
 // or doesn't implement the Healthchecker interface.
 func (s *Scope) serviceHealthCheck(ctx context.Context, name string) error {
+	check, err := s.serviceHealthCheckFunc(name)
+	if err != nil || check == nil {
+		return err
+	}
+
+	// If the healthchecker does not support context.Timeout, the error will be triggered by raceWithTimeout().
+	return raceWithTimeout(ctx, s.clock(), check)
+}
+
+// serviceHealthCheckFunc returns the health check of a service in the current
+// scope, or nil when the service is not a health checker at this moment (a
+// value without a check, a lazy service not built yet, a transient service).
+// A timeout error is never triggered for such a service. It returns an error
+// when the service is not found.
+func (s *Scope) serviceHealthCheckFunc(name string) (func(context.Context) error, error) {
 	s.mu.RLock()
 
 	serviceAny, ok := s.services[name]
 	if !ok {
 		s.mu.RUnlock()
-		return serviceNotFound(s, ErrServiceNotFound, []string{name})
+		return nil, serviceNotFound(s, ErrServiceNotFound, []string{name})
 	}
 
 	s.mu.RUnlock()
 
-	service, ok := serviceAny.(serviceWrapperHealthcheck)
+	service, ok := serviceAny.(interface {
+		serviceWrapperIsHealthchecker
+		serviceWrapperHealthcheck
+	})
 	if ok {
 		s.logf("requested health check for service %s", name)
 
-		// A timeout error is not triggered when the service is not a healthchecker.
-		// If the healthchecker does not support context.Timeout, the error will be triggered by raceWithTimeout().
-		return raceWithTimeout(
-			ctx,
-			service.healthcheck,
-		)
+		if !service.isHealthchecker() {
+			return nil, nil
+		}
+
+		return service.healthcheck, nil
 	}
 
 	// Should never happen.

@@ -7,7 +7,7 @@ Defines what a health check returns when its context ends or a configured health
 ## ADDED Requirements
 
 ### Requirement: A health check whose context ended returns a timeout error
-When a health check's context is done (cancelled or past its deadline) by the time its result is observed, the call SHALL return an error that matches `ErrHealthCheckTimeout` and the context's error with `errors.Is`, with the message `DI: health check timeout: <context error>`, whatever the service's check returned. This holds for the per-service functions and for scope-wide health checks, on every call.
+When the service is a health checker and its health check's context is done (cancelled or past its deadline) by the time its result is observed, the call SHALL return an error that matches `ErrHealthCheckTimeout` and the context's error with `errors.Is`, with the message `DI: health check timeout: <context error>`, whatever the service's check returned. This holds for the per-service functions and for scope-wide health checks, on every call.
 
 #### Scenario: Health check on an ended context is a timeout
 ```gherkin
@@ -56,6 +56,39 @@ Examples:
 <!-- cases: N/A 9 panics: panic behavior of health checks is unchanged and out of scope -->
 <!-- cases: 10 backward compatibility: message text is unchanged; errors.Is(err, ErrHealthCheckTimeout) keeps matching; errors.Is with the context error now also matches (additive); results returned before the context ends are unchanged -->
 
+### Requirement: A service without a health check never times out
+A service that is not a health checker when its health check begins (a value that implements neither `Healthchecker` nor `HealthcheckerWithContext`, a lazy service not yet built, a transient service, or an alias to one of these) SHALL report `nil`, whatever the state of the context, on the per-service functions and on scope-wide health checks. An unknown service name SHALL keep returning an error matching `ErrServiceNotFound`, whatever the state of the context.
+
+#### Scenario: Service without a health check on an ended context
+```gherkin
+Given a root scope with a service "svc" that is <service>
+And a context that is <context>
+When the consumer calls <entry> for "svc" 1000 times, each with a fresh scope and context
+Then every result for "svc" is <expected>
+
+Examples:
+  | entry                                | service                                         | context                           | expected                          |
+  | HealthCheckNamedWithContext          | a plain value 42                                | cancelled before the call         | nil                               |
+  | HealthCheckWithContext (injector)    | a plain value 42                                | cancelled before the call         | nil                               |
+  | HealthCheckWithContext (injector)    | a plain value 42                                | past its deadline before the call | nil                               |
+  | HealthCheckWithContext (injector)    | a lazy Healthchecker that was never invoked     | cancelled before the call         | nil                               |
+  | HealthCheckWithContext (injector)    | a transient service                             | cancelled before the call         | nil                               |
+  | HealthCheckWithContext (injector)    | an alias (As) to a lazy Healthchecker never invoked | cancelled before the call     | nil                               |
+  | HealthCheckWithContext (child scope) | a plain value 42 registered in the root scope   | cancelled before the call         | nil                               |
+  | HealthCheckNamedWithContext          | not registered (name "missing")                 | cancelled before the call         | an error matching ErrServiceNotFound |
+```
+
+<!-- cases: 1 default: every row runs with zero configuration (no timeout options) -->
+<!-- cases: N/A 2 overrides: no option governs this rule by design -->
+<!-- cases: 3 zero values: a plain value with no methods is the zero case of "has a health check" -->
+<!-- cases: 4 boundaries: cancelled vs past-deadline contexts; a lazy service that is built is a health checker and follows the previous requirement -->
+<!-- cases: 5 errors: no error for a service without a check; ErrServiceNotFound keeps precedence over the context state -->
+<!-- cases: 6 not found/duplicate: the "missing" row -->
+<!-- cases: 7 lifecycle: an unbuilt lazy service, a transient, an alias, and a service inherited from the root scope -->
+<!-- cases: 8 concurrency: the 1000-call repetition pins the formerly random scope-wide result (about 998/1000 timeouts before) -->
+<!-- cases: N/A 9 panics: unchanged and out of scope -->
+<!-- cases: 10 backward compatibility: HealthCheckNamedWithContext on a service without a check already returned nil; the scope-wide result on a done context changes from a random timeout to nil, as the existing code comment intended -->
+
 ### Requirement: Configured health-check timeouts elapse on the injector's clock
 `HealthCheckTimeout` (per service) and `HealthCheckGlobalTimeout` (per scope-wide check) SHALL be measured on the injector's clock. A check still running when its timeout elapses SHALL return the timeout error with `context deadline exceeded`; a check that returns before SHALL keep its result. A zero duration SHALL mean no timeout.
 
@@ -66,6 +99,7 @@ And a service "svc" whose health check returns <result> after <duration> on that
 When the consumer calls HealthCheckWithContext on the injector with context.Background()
 And the fake clock advances by <advance>
 Then the result for "svc" is <expected>
+And the same result is returned on each of 1000 runs, each with a fresh injector and fake clock
 
 Examples:
   | options                                              | result                | duration | advance | expected                                                  |
@@ -103,10 +137,38 @@ And after the fake clock advances by another 1ms the result for "svc" is "DI: he
 <!-- cases: 1 default: the "(none: both 0)" row: no timeout with zero configuration -->
 <!-- cases: 2 overrides: per-service and global timeout rows, and both combined (the shorter one wins) -->
 <!-- cases: 3 zero values: both options 0 means no timeout -->
-<!-- cases: 4 boundaries: 9ms (one before), 10ms (exactly at the limit), 20ms (past it); the "does not time out before" scenario pins the boundary from the other side -->
+<!-- cases: 4 boundaries: 9ms (one before), 10ms (exactly at the limit), 20ms (past it), each pinned over 1000 runs; the "does not time out before" scenario pins the boundary from the other side -->
 <!-- cases: 5 errors: timeout message and errors.Is matching per the previous requirement; a service error returned in time is kept -->
 <!-- cases: N/A 6 not found/duplicate: unrelated to timeouts -->
 <!-- cases: 7 lifecycle: HealthCheckParallelism 1 runs checks through the health-check pool; the pool is stopped by Shutdown at the end of each test -->
 <!-- cases: 8 concurrency: the sequential scenario fixes the outcome by count, not by map order; timed-out checks that are still running finish when the clock advances, so no goroutine leaks -->
 <!-- cases: N/A 9 panics: unchanged and out of scope -->
 <!-- cases: 10 backward compatibility: option names, zero-value meaning and messages are unchanged; with the default real clock the timeouts behave as before, minus the random outcome -->
+
+### Requirement: A container-set deadline counts once the injector's clock reaches it
+A result observed when the injector's clock has reached the earliest deadline the container set for that check (from `HealthCheckTimeout` or `HealthCheckGlobalTimeout`) SHALL be the timeout error with `context deadline exceeded`, even if the check returned at that same instant and the context is not yet marked done. A deadline carried only by the consumer's context SHALL count only once that context is done, never by the injector's clock.
+
+#### Scenario: A consumer's own deadline is not measured on the injector's clock
+```gherkin
+Given an injector with a fake clock and options <options>
+And a service "svc" whose health check returns nil after 2h on that fake clock
+When the consumer calls HealthCheckWithContext on the injector with a context from context.WithTimeout(context.Background(), 1h) on the real clock
+And the fake clock advances by 2h
+Then the result for "svc" is nil
+
+Examples:
+  | options                  |
+  | (none: both 0)           |
+  | HealthCheckTimeout: 3h   |
+```
+
+<!-- cases: 1 default: the "(none: both 0)" row: no container deadline, so only the consumer's context counts -->
+<!-- cases: 2 overrides: a container timeout (3h) later than the consumer's deadline; the exact-limit rows of "Timeout options decide the result on the clock" cover the container deadline itself -->
+<!-- cases: 3 zero values: both options 0 means no container deadline -->
+<!-- cases: 4 boundaries: the 10ms / 10ms row of the previous requirement is the exact-limit case, pinned over 1000 runs; here the fake clock passes the consumer's real-clock deadline without it counting -->
+<!-- cases: 5 errors: the timeout cause is context.DeadlineExceeded when the clock decided it -->
+<!-- cases: N/A 6 not found/duplicate: unrelated to timeouts -->
+<!-- cases: N/A 7 lifecycle: unchanged -->
+<!-- cases: 8 concurrency: removes the race between the check's result and the context's own cancellation at the deadline instant -->
+<!-- cases: N/A 9 panics: unchanged and out of scope -->
+<!-- cases: 10 backward compatibility: with the real clock, a consumer's own deadline behaves as before; container deadlines differ only at the exact instant, which was random before -->

@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/kartaladev/doger/stacktrace"
 )
 
@@ -100,7 +101,8 @@ func (s *serviceLazy[T]) getInstance(i Injector) (T, error) {
 }
 
 func (s *serviceLazy[T]) build(i Injector) (err error) {
-	start := time.Now()
+	clock := injectorClock(i)
+	start := clock.Now()
 
 	if err := resolveDeclaredDependencies(i, s.opts); err != nil {
 		return err
@@ -113,9 +115,19 @@ func (s *serviceLazy[T]) build(i Injector) (err error) {
 
 	s.instance = instance
 	s.built = true
-	s.buildTime = time.Since(start)
+	s.buildTime = clock.Since(start)
 
 	return nil
+}
+
+// injectorClock returns the clock of the injector's root scope, or the real
+// clock when there is no injector.
+func injectorClock(i Injector) clockwork.Clock {
+	if i == nil {
+		return clockwork.NewRealClock()
+	}
+
+	return i.RootScope().opts.Clock
 }
 
 func (s *serviceLazy[T]) isHealthchecker() bool {
@@ -141,14 +153,14 @@ func (s *serviceLazy[T]) healthcheck(ctx context.Context) error {
 
 	switch instance := any(s.instance).(type) {
 	case HealthcheckerWithContext:
-		if ctx.Err() != nil {
-			return ctx.Err()
+		if err := contextDone(ctx); err != nil {
+			return err
 		}
 
 		return instance.HealthCheck(ctx)
 	case Healthchecker:
-		if ctx.Err() != nil {
-			return ctx.Err()
+		if err := contextDone(ctx); err != nil {
+			return err
 		}
 
 		return instance.HealthCheck()

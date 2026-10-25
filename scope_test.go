@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -1705,198 +1706,223 @@ func TestScope_ShutdownWithContextExpiration_ChildScopes(t *testing.T) {
 // Test healthcheck context expiration
 func TestScope_HealthCheckWithContextExpiration_Timeout(t *testing.T) {
 	t.Parallel()
-	is := assert.New(t)
-	injector := New()
+	// Bubble time: delays, timeouts and durations no longer depend on scheduling.
+	synctest.Test(t, func(t *testing.T) {
+		is := assert.New(t)
+		injector := New()
 
-	// Create a service that takes longer than the context timeout
-	slowService := newScopeTestSlowHealthchecker(200 * time.Millisecond)
-	ProvideNamedValue(injector, "slow-healthcheck", slowService)
+		// Create a service that takes longer than the context timeout
+		slowService := newScopeTestSlowHealthchecker(200 * time.Millisecond)
+		ProvideNamedValue(injector, "slow-healthcheck", slowService)
 
-	// Create context with short timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
+		// Create context with short timeout
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
 
-	// Healthcheck should timeout
-	start := time.Now()
-	results := injector.HealthCheckWithContext(ctx)
-	duration := time.Since(start)
+		// Healthcheck should timeout
+		start := time.Now()
+		results := injector.HealthCheckWithContext(ctx)
+		duration := time.Since(start)
 
-	// Should complete quickly due to timeout
-	is.Less(duration, 70*time.Millisecond)
+		// Should complete quickly due to timeout
+		is.Less(duration, 70*time.Millisecond)
 
-	// Should have healthcheck errors due to timeout
-	is.NotEmpty(results)
-	is.Len(results, 1)
-	for _, err := range results {
-		is.Error(err)
-		// Check if it's a timeout error (could be wrapped)
-		is.True(errors.Is(err, context.DeadlineExceeded) || err.Error() == "DI: health check timeout: context deadline exceeded")
-	}
+		// Should have healthcheck errors due to timeout
+		is.NotEmpty(results)
+		is.Len(results, 1)
+		for _, err := range results {
+			is.Error(err)
+			// Check if it's a timeout error (could be wrapped)
+			is.True(errors.Is(err, context.DeadlineExceeded) || err.Error() == "DI: health check timeout: context deadline exceeded")
+		}
 
-	// Check that the service was attempted to be health checked
-	is.Equal(1, slowService.getHealthcheckCount())
+		// Check that the service was attempted to be health checked
+		is.Equal(1, slowService.getHealthcheckCount())
+
+		time.Sleep(200 * time.Millisecond) // let abandoned checks return
+	})
 }
 
 func TestScope_HealthCheckWithContextExpiration_Cancellation(t *testing.T) {
 	t.Parallel()
-	is := assert.New(t)
-	injector := New()
+	// Bubble time: delays, timeouts and durations no longer depend on scheduling.
+	synctest.Test(t, func(t *testing.T) {
+		is := assert.New(t)
+		injector := New()
 
-	// Create a blocking service
-	blockingService := newScopeTestBlockingHealthchecker()
-	ProvideNamedValue(injector, "blocking-healthcheck", blockingService)
+		// Create a blocking service
+		blockingService := newScopeTestBlockingHealthchecker()
+		ProvideNamedValue(injector, "blocking-healthcheck", blockingService)
 
-	// Create cancellable context
-	ctx, cancel := context.WithCancel(context.Background())
+		// Create cancellable context
+		ctx, cancel := context.WithCancel(context.Background())
 
-	// Start healthcheck in goroutine
-	var results map[string]error
-	var wg sync.WaitGroup
-	wg.Go(func() {
-		results = injector.HealthCheckWithContext(ctx)
+		// Start healthcheck in goroutine
+		var results map[string]error
+		var wg sync.WaitGroup
+		wg.Go(func() {
+			results = injector.HealthCheckWithContext(ctx)
+		})
+
+		// Cancel context after short delay
+		time.Sleep(10 * time.Millisecond)
+		cancel()
+
+		// Wait for healthcheck to complete
+		wg.Wait()
+
+		// Should have healthcheck errors due to cancellation
+		is.NotEmpty(results)
+		is.Len(results, 1)
+		for _, err := range results {
+			is.Error(err)
+			// Check if it's a cancellation error (could be wrapped)
+			is.True(errors.Is(err, context.Canceled) || err.Error() == "DI: health check timeout: context canceled")
+		}
+
+		// Check that the service was attempted to be health checked
+		is.Equal(1, blockingService.getHealthcheckCount())
+
+		time.Sleep(200 * time.Millisecond) // let abandoned checks return
 	})
-
-	// Cancel context after short delay
-	time.Sleep(10 * time.Millisecond)
-	cancel()
-
-	// Wait for healthcheck to complete
-	wg.Wait()
-
-	// Should have healthcheck errors due to cancellation
-	is.NotEmpty(results)
-	is.Len(results, 1)
-	for _, err := range results {
-		is.Error(err)
-		// Check if it's a cancellation error (could be wrapped)
-		is.True(errors.Is(err, context.Canceled) || err.Error() == "DI: health check timeout: context canceled")
-	}
-
-	// Check that the service was attempted to be health checked
-	is.Equal(1, blockingService.getHealthcheckCount())
 }
 
 func TestScope_HealthCheckWithContextExpiration_MultipleServices(t *testing.T) {
 	t.Parallel()
-	is := assert.New(t)
-	injector := New()
+	// Bubble time: delays, timeouts and durations no longer depend on scheduling.
+	synctest.Test(t, func(t *testing.T) {
+		is := assert.New(t)
+		injector := New()
 
-	// Create multiple services with different delays
-	fastService := newScopeTestSlowHealthchecker(10 * time.Millisecond)
-	slowService := newScopeTestSlowHealthchecker(200 * time.Millisecond)
+		// Create multiple services with different delays
+		fastService := newScopeTestSlowHealthchecker(10 * time.Millisecond)
+		slowService := newScopeTestSlowHealthchecker(200 * time.Millisecond)
 
-	ProvideNamedValue(injector, "fast-healthcheck", fastService)
-	ProvideNamedValue(injector, "slow-healthcheck", slowService)
+		ProvideNamedValue(injector, "fast-healthcheck", fastService)
+		ProvideNamedValue(injector, "slow-healthcheck", slowService)
 
-	// Invoke the services to ensure they are instantiated
-	_, err1 := InvokeNamed[*scopeTestSlowHealthchecker](injector, "fast-healthcheck")
-	_, err2 := InvokeNamed[*scopeTestSlowHealthchecker](injector, "slow-healthcheck")
-	is.NoError(err1)
-	is.NoError(err2)
+		// Invoke the services to ensure they are instantiated
+		_, err1 := InvokeNamed[*scopeTestSlowHealthchecker](injector, "fast-healthcheck")
+		_, err2 := InvokeNamed[*scopeTestSlowHealthchecker](injector, "slow-healthcheck")
+		is.NoError(err1)
+		is.NoError(err2)
 
-	// Create context with timeout between fast and slow service delays
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
+		// Create context with timeout between fast and slow service delays
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
 
-	// Healthcheck should timeout
-	results := injector.HealthCheckWithContext(ctx)
+		// Healthcheck should timeout
+		results := injector.HealthCheckWithContext(ctx)
 
-	// Should have healthcheck results
-	is.NotEmpty(results)
-	is.Len(results, 2)
+		// Should have healthcheck results
+		is.NotEmpty(results)
+		is.Len(results, 2)
 
-	// Check that both services were attempted
-	is.Equal(1, fastService.getHealthcheckCount())
-	is.Equal(1, slowService.getHealthcheckCount())
+		// Check that both services were attempted
+		is.Equal(1, fastService.getHealthcheckCount())
+		is.Equal(1, slowService.getHealthcheckCount())
 
-	// At least one service should have a timeout error
-	hasTimeoutError := 0
-	for _, err := range results {
-		if err != nil && (errors.Is(err, context.DeadlineExceeded) || err.Error() == "DI: health check timeout: context deadline exceeded") {
-			hasTimeoutError++
+		// At least one service should have a timeout error
+		hasTimeoutError := 0
+		for _, err := range results {
+			if err != nil && (errors.Is(err, context.DeadlineExceeded) || err.Error() == "DI: health check timeout: context deadline exceeded") {
+				hasTimeoutError++
+			}
 		}
-	}
-	is.Equal(1, hasTimeoutError, "Expected at least one timeout error")
+		is.Equal(1, hasTimeoutError, "Expected at least one timeout error")
+
+		time.Sleep(200 * time.Millisecond) // let abandoned checks return
+	})
 }
 
 func TestScope_HealthCheckWithContextExpiration_ChildScopes(t *testing.T) {
 	t.Parallel()
-	is := assert.New(t)
-	injector := New()
-	childScope := injector.Scope("child")
+	// Bubble time: delays, timeouts and durations no longer depend on scheduling.
+	synctest.Test(t, func(t *testing.T) {
+		is := assert.New(t)
+		injector := New()
+		childScope := injector.Scope("child")
 
-	// Create services in both scopes
-	parentService := newScopeTestSlowHealthchecker(200 * time.Millisecond)
-	childService := newScopeTestSlowHealthchecker(200 * time.Millisecond)
+		// Create services in both scopes
+		parentService := newScopeTestSlowHealthchecker(200 * time.Millisecond)
+		childService := newScopeTestSlowHealthchecker(200 * time.Millisecond)
 
-	ProvideNamedValue(injector, "parent-healthcheck", parentService)
-	ProvideNamedValue(childScope, "child-healthcheck", childService)
+		ProvideNamedValue(injector, "parent-healthcheck", parentService)
+		ProvideNamedValue(childScope, "child-healthcheck", childService)
 
-	// Invoke the services to ensure they are instantiated
-	_, err1 := InvokeNamed[*scopeTestSlowHealthchecker](injector, "parent-healthcheck")
-	_, err2 := InvokeNamed[*scopeTestSlowHealthchecker](childScope, "child-healthcheck")
-	is.NoError(err1)
-	is.NoError(err2)
+		// Invoke the services to ensure they are instantiated
+		_, err1 := InvokeNamed[*scopeTestSlowHealthchecker](injector, "parent-healthcheck")
+		_, err2 := InvokeNamed[*scopeTestSlowHealthchecker](childScope, "child-healthcheck")
+		is.NoError(err1)
+		is.NoError(err2)
 
-	// Create context with short timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
+		// Create context with short timeout
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
 
-	// Healthcheck should timeout - call healthcheck on child scope first, then parent scope
-	results1 := childScope.HealthCheckWithContext(ctx)
-	_ = injector.HealthCheckWithContext(ctx)
+		// Healthcheck should timeout - call healthcheck on child scope first, then parent scope
+		results1 := childScope.HealthCheckWithContext(ctx)
+		_ = injector.HealthCheckWithContext(ctx)
 
-	// Should have healthcheck results
-	is.NotEmpty(results1)
+		// Should have healthcheck results
+		is.NotEmpty(results1)
 
-	// Check that both services were attempted
-	is.Equal(1, parentService.getHealthcheckCount())
-	is.Equal(1, childService.getHealthcheckCount())
+		// Check that both services were attempted
+		is.Equal(1, parentService.getHealthcheckCount())
+		is.Equal(1, childService.getHealthcheckCount())
 
-	// At least one service should have a timeout error
-	hasTimeoutError := 0
-	for _, err := range results1 {
-		if err != nil && (errors.Is(err, context.DeadlineExceeded) || err.Error() == "DI: health check timeout: context deadline exceeded") {
-			hasTimeoutError++
+		// At least one service should have a timeout error
+		hasTimeoutError := 0
+		for _, err := range results1 {
+			if err != nil && (errors.Is(err, context.DeadlineExceeded) || err.Error() == "DI: health check timeout: context deadline exceeded") {
+				hasTimeoutError++
+			}
 		}
-	}
-	is.Equal(2, hasTimeoutError, "Expected at least one timeout error")
+		is.Equal(2, hasTimeoutError, "Expected at least one timeout error")
+
+		time.Sleep(200 * time.Millisecond) // let abandoned checks return
+	})
 }
 
 func TestScope_HealthCheckWithContextExpiration_GlobalTimeoutOption(t *testing.T) {
 	t.Parallel()
-	is := assert.New(t)
-	// Create injector with global healthcheck timeout
-	injector := NewWithOpts(&InjectorOpts{
-		HealthCheckGlobalTimeout: 50 * time.Millisecond,
+	// Bubble time: delays, timeouts and durations no longer depend on scheduling.
+	synctest.Test(t, func(t *testing.T) {
+		is := assert.New(t)
+		// Create injector with global healthcheck timeout
+		injector := NewWithOpts(&InjectorOpts{
+			HealthCheckGlobalTimeout: 50 * time.Millisecond,
+		})
+
+		// Create a service that takes longer than the global timeout
+		slowService := newScopeTestSlowHealthchecker(200 * time.Millisecond)
+		ProvideNamedValue(injector, "global-timeout-service", slowService)
+
+		// Invoke the service to ensure it is instantiated
+		_, err := InvokeNamed[*scopeTestSlowHealthchecker](injector, "global-timeout-service")
+		is.NoError(err)
+
+		// Healthcheck should timeout due to global timeout
+		start := time.Now()
+		results := injector.HealthCheckWithContext(context.Background())
+		duration := time.Since(start)
+
+		// Should complete quickly due to global timeout
+		is.Less(duration, 100*time.Millisecond)
+
+		// Should have healthcheck errors due to timeout
+		is.NotEmpty(results)
+		for _, err := range results {
+			is.Error(err)
+			// Check if it's a timeout error (could be wrapped)
+			is.True(errors.Is(err, context.DeadlineExceeded) || err.Error() == "DI: health check timeout: context deadline exceeded")
+		}
+
+		// Check that the service was attempted to be health checked
+		is.Equal(1, slowService.getHealthcheckCount())
+
+		time.Sleep(200 * time.Millisecond) // let abandoned checks return
 	})
-
-	// Create a service that takes longer than the global timeout
-	slowService := newScopeTestSlowHealthchecker(200 * time.Millisecond)
-	ProvideNamedValue(injector, "global-timeout-service", slowService)
-
-	// Invoke the service to ensure it is instantiated
-	_, err := InvokeNamed[*scopeTestSlowHealthchecker](injector, "global-timeout-service")
-	is.NoError(err)
-
-	// Healthcheck should timeout due to global timeout
-	start := time.Now()
-	results := injector.HealthCheckWithContext(context.Background())
-	duration := time.Since(start)
-
-	// Should complete quickly due to global timeout
-	is.Less(duration, 100*time.Millisecond)
-
-	// Should have healthcheck errors due to timeout
-	is.NotEmpty(results)
-	for _, err := range results {
-		is.Error(err)
-		// Check if it's a timeout error (could be wrapped)
-		is.True(errors.Is(err, context.DeadlineExceeded) || err.Error() == "DI: health check timeout: context deadline exceeded")
-	}
-
-	// Check that the service was attempted to be health checked
-	is.Equal(1, slowService.getHealthcheckCount())
 }
 
 // Test mixed scenarios

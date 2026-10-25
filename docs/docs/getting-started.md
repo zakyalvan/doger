@@ -15,7 +15,7 @@ Discover **doger in less than 5 minutes**.
 
 Compatible with [Go](https://go.dev/doc/install/) 1.27 or later.
 
-This library has no dependencies except the Go std lib.
+Besides the Go std lib, this library depends only on [`samber/go-type-to-string`](https://github.com/samber/go-type-to-string) and [`jonboulle/clockwork`](https://github.com/jonboulle/clockwork).
 
 Import package:
 

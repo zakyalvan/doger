@@ -3,6 +3,8 @@ package doger
 import (
 	"context"
 	"time"
+
+	"github.com/jonboulle/clockwork"
 )
 
 // Injector is the main interface for dependency injection containers.
@@ -161,6 +163,15 @@ type InjectorOpts struct {
 	// This allows customization of the struct tag format for injection.
 	StructTagKey string
 
+	// Clock is the time source of the container. It measures HealthCheckTimeout
+	// and HealthCheckGlobalTimeout, lazy service build times, and shutdown
+	// durations. Child scopes and Clone use the root scope's clock.
+	// Default: the real clock (clockwork.NewRealClock()).
+	// Set a clockwork.NewFakeClock() to control time in tests. A health check
+	// running on a fake clock must wait on ctx.Done(): ctx.Err() blocks on a
+	// live fake-clock context.
+	Clock clockwork.Clock
+
 	// DisableStarterAutoDetection makes Start start only the services
 	// registered with AsStarter. By default, every non-transient service whose
 	// registered type implements a Starter variant is started too.
@@ -188,6 +199,7 @@ func (o *InjectorOpts) copy() *InjectorOpts {
 		HealthCheckGlobalTimeout: o.HealthCheckGlobalTimeout,
 		HealthCheckTimeout:       o.HealthCheckTimeout,
 		StructTagKey:             o.StructTagKey,
+		Clock:                    o.Clock,
 
 		DisableStarterAutoDetection: o.DisableStarterAutoDetection,
 		EnableRunnerAutoDetection:   o.EnableRunnerAutoDetection,

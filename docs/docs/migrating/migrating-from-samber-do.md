@@ -88,6 +88,22 @@ To restore the old `(zero, nil)` result, run the program with `GODEBUG=panicnil=
 package main
 ```
 
+## Health checks on an ended context {#health-checks-on-an-ended-context}
+
+In `samber/do`, a health check whose context had ended returned a random result: sometimes the timeout error, sometimes the check's own result, and sometimes a bare `context.Canceled` or `context.DeadlineExceeded`. doger decides it the same way every time:
+
+- A service with a health check whose context is done when its result is observed returns the timeout error, whatever the check returned. The error matches `ErrHealthCheckTimeout` **and** the context error with `errors.Is`. Its message is unchanged, for example `DI: health check timeout: context canceled`.
+- A service without a health check (a value without a `HealthCheck` method, a lazy service not invoked yet, a transient service) always reports `nil`, even on an ended context.
+
+If you compared a health-check error with `==` against `context.Canceled` or `context.DeadlineExceeded`, use `errors.Is` instead:
+
+```go
+err := doger.HealthCheckNamedWithContext(ctx, injector, "db")
+if errors.Is(err, context.Canceled) {
+	// ...
+}
+```
+
 ## Registration options and run-once root shutdown {#registration-options-and-root-shutdown}
 
 doger adds a trailing `...doger.ProvideOption` parameter to the registration functions and makes root `Shutdown()` run once per container. Calls compile unchanged; code that stores a registration function as a value, or relies on a second root `Shutdown()`, needs a small change. See [Upgrading to the Start lifecycle release](../upgrading/start-lifecycle.md).
@@ -97,3 +113,5 @@ doger adds a trailing `...doger.ProvideOption` parameter to the registration fun
 - The struct injection tag key is still `do` (`do:""`), and you can still override it with `InjectorOpts.StructTagKey`.
 - The messages of `ErrServiceNotFound`, `ErrServiceNotMatch`, `ErrCircularDependency` and `ErrHealthCheckTimeout` keep their `DI: ` prefix, and still match with `errors.Is`.
 - Every other exported identifier, signature, option and default, apart from the additions above.
+
+doger also adds one option, `InjectorOpts.Clock`. It defaults to the real clock, so you do not need to set it. See [Clock](../container/options.md#clock).
