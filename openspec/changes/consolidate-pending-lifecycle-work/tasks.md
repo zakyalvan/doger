@@ -107,9 +107,9 @@ Rules:
 
 ## 15. At most once and concurrency (Part H)
 
-- [ ] 15.1 RED: add `TestContainerHooks_ConcurrentStart` (scenario "Concurrent Start calls"), `TestContainerHooks_ConcurrentShutdown` (scenario "Repeated and concurrent Shutdown calls", 2 rows) and `TestContainerHooks_ReentrantStart` (scenario "Hook calling Start re-entrantly"), all with `testWithTimeout`; verify `go test -race -count=5 -run 'TestContainerHooks_(ConcurrentStart|ConcurrentShutdown|ReentrantStart)' .`; they pass on arrival through the start-lifecycle CAS guards, so record that and show they can fail by temporarily replacing the close-phase CAS with an unconditional store (not committed)
-- [ ] 15.2 GREEN: no production change expected; fix any race or double firing the 15.1 run reports; verify the 15.1 command passes and goleak reports no leaks
-- [ ] 15.3 REFACTOR: none expected; confirm with a `gopls` call-hierarchy review of `lifecycleMu.Lock` that no lock is held while hooks run; verify `make test` and `make lint` pass
+- [x] 15.1 RED: add `TestContainerHooks_ConcurrentStart` (scenario "Concurrent Start calls"), `TestContainerHooks_ConcurrentShutdown` (scenario "Repeated and concurrent Shutdown calls", 2 rows) and `TestContainerHooks_ReentrantStart` (scenario "Hook calling Start re-entrantly"), all with `testWithTimeout`; verify `go test -race -count=5 -run 'TestContainerHooks_(ConcurrentStart|ConcurrentShutdown|ReentrantStart)' .`; they pass on arrival through the start-lifecycle CAS guards, so record that and show they can fail by temporarily replacing the close-phase CAS with an unconditional store (not committed)
+- [x] 15.2 GREEN: no production change expected; fix any race or double firing the 15.1 run reports; verify the 15.1 command passes and goleak reports no leaks
+- [x] 15.3 REFACTOR: none expected; confirm with a `gopls` call-hierarchy review of `lifecycleMu.Lock` that no lock is held while hooks run; verify `make test` and `make lint` pass
 
 ## 16. Only the root container fires container hooks (Part H)
 

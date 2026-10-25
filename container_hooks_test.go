@@ -1141,3 +1141,103 @@ func TestContainerStartingHook_Panic(t *testing.T) {
 		})
 	}
 }
+
+func TestContainerHooks_ConcurrentStart(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, 5*time.Second)
+	is := assert.New(t)
+
+	root := New()
+	ProvideNamedValue(root, "server", &startWithErr{})
+	var starting, started, ready atomic.Int32
+	root.AddContainerStartingHook(func(context.Context, *RootScope) error { starting.Add(1); return nil })
+	root.AddContainerStartedHook(func(context.Context, *RootScope) { started.Add(1) })
+	root.AddContainerReadyHook(func(context.Context, *RootScope) { ready.Add(1) })
+
+	const callers = 50
+	errs := make(chan error, callers)
+	var wg sync.WaitGroup
+	for range callers {
+		wg.Go(func() { errs <- root.Start() })
+	}
+	wg.Wait()
+	close(errs)
+
+	succeeded, already := 0, 0
+	for err := range errs {
+		switch {
+		case err == nil:
+			succeeded++
+		case errors.Is(err, ErrAlreadyStarted):
+			already++
+		}
+	}
+	is.Equal(1, succeeded)
+	is.Equal(callers-1, already)
+	is.Equal(int32(1), starting.Load())
+	is.Equal(int32(1), started.Load())
+	is.Equal(int32(1), ready.Load())
+}
+
+func TestContainerHooks_ConcurrentShutdown(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		callers int
+		times   int
+	}{
+		{name: "1 caller, 2 times", callers: 1, times: 2},
+		{name: "20 callers, 1 time", callers: 20, times: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, 5*time.Second)
+			is := assert.New(t)
+
+			root := New()
+			require.NoError(t, root.Start())
+			var closing, closed atomic.Int32
+			root.AddContainerClosingHook(func(context.Context, *RootScope) { closing.Add(1) })
+			root.AddContainerClosedHook(func(context.Context, *RootScope, *ShutdownReport) { closed.Add(1) })
+
+			reports := make(chan *ShutdownReport, tt.callers*tt.times)
+			var wg sync.WaitGroup
+			for range tt.callers {
+				wg.Go(func() {
+					for range tt.times {
+						reports <- root.Shutdown()
+					}
+				})
+			}
+			wg.Wait()
+			close(reports)
+
+			is.Equal(int32(1), closing.Load())
+			is.Equal(int32(1), closed.Load())
+			for report := range reports {
+				is.True(report.Succeed)
+			}
+		})
+	}
+}
+
+func TestContainerHooks_ReentrantStart(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+	is := assert.New(t)
+
+	root := New()
+	var started atomic.Int32
+	var inner error
+	root.AddContainerStartedHook(func(_ context.Context, r *RootScope) {
+		started.Add(1)
+		inner = r.Start()
+	})
+
+	is.NoError(root.Start())
+	is.ErrorIs(inner, ErrAlreadyStarted)
+	is.Equal(int32(1), started.Load())
+}

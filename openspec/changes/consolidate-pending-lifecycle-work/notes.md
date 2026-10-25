@@ -24,3 +24,10 @@ Each was shown to fail with a temporary, uncommitted mutation:
 - 9.1 `TestContainerHooks_HookCallsShutdown*`: pass; the Started and Closed rows deadlock (1s test timeout) when Started fires at `pointStartersUp` or Closed fires before `finishClose`.
 - 10.1 `TestContainerHooks_ShutdownDuringStart`: passes through the D7 abort checks; firing Started at `pointAfterStart` regardless of the outcome fails every row.
 - 11.1 `TestContainerHooks_NilContext`: **both rows pass on arrival**, including the `ShutdownWithContext` row the task expected to fail: start-lifecycle already normalizes a nil Shutdown context at the top of `RootScope.ShutdownWithContext` (D6 step 0), so 11.2 needs no production change. Passing the raw argument to the hooks fails both rows.
+
+## Groups 12–15
+
+- 12.1 `TestContainerHooks_RegistrationOrder` and the `CloneWithOpts` row passed on arrival; reversing the hook iteration and copying hooks in `CloneWithOpts` fail them.
+- 12.2 asks to copy `HookContainerPanic` in `copy()`, but the field is added by group 13; it is copied there, pinned by `TestContainerHooks_ClonePanicPolicy`.
+- 15.1 tests passed on arrival through the start-lifecycle CAS guards; replacing the close-phase CAS in `beginClose` with an unconditional store panics `TestContainerHooks_ConcurrentShutdown` (close of closed channel).
+- 15.3 gopls review: `lifecycleMu` is locked in `waitForClose`, `beginClose`, `finishClose`, `markReady`, `beginStart` and `finishStart` only. Each is a short critical section with a deferred unlock that calls no hook, provider, Starter or handler.
