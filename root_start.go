@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"reflect"
 	"slices"
 )
 
@@ -150,6 +151,7 @@ type startCandidate struct {
 	regIndex uint64
 	service  serviceWrapperAny
 	starter  bool
+	kinds    []kindBinding
 	instance any
 }
 
@@ -165,7 +167,9 @@ func (s *RootScope) runStartPipeline(startCtx context.Context) error {
 		return err
 	}
 
-	// StageBeforeStart handlers will run here.
+	if err := s.runStage(startCtx, StageBeforeStart, candidates); err != nil {
+		return err
+	}
 
 	if err := s.checkCycles(candidates); err != nil {
 		return err
@@ -175,7 +179,10 @@ func (s *RootScope) runStartPipeline(startCtx context.Context) error {
 		return err
 	}
 
-	// pointStartersUp; StageAfterStart handlers will run here.
+	// pointStartersUp
+	if err := s.runStage(startCtx, StageAfterStart, candidates); err != nil {
+		return err
+	}
 
 	if err := checkAbort(startCtx); err != nil {
 		return err
@@ -238,7 +245,11 @@ func (s *RootScope) newStartCandidate(scope *Scope, name string, depth int, serv
 	opts := service.getOptions()
 	starter := (opts != nil && opts.starter) ||
 		(!s.opts.DisableStarterAutoDetection && typeIsStarter(service.getReflectType()))
-	if !starter {
+	var kinds []kindBinding
+	if opts != nil {
+		kinds = opts.kinds
+	}
+	if !starter && len(kinds) == 0 {
 		return nil
 	}
 
@@ -249,6 +260,7 @@ func (s *RootScope) newStartCandidate(scope *Scope, name string, depth int, serv
 		regIndex: service.getRegistrationIndex(),
 		service:  service,
 		starter:  starter,
+		kinds:    kinds,
 	}
 }
 
@@ -265,6 +277,16 @@ func buildCandidates(startCtx context.Context, candidates []*startCandidate) err
 			return withAbortCause(startCtx, err)
 		}
 		candidate.instance = instance
+
+		for _, binding := range candidate.kinds {
+			if !binding.deferred {
+				continue
+			}
+			if instance == nil || !reflect.TypeOf(instance).Implements(binding.target) {
+				err := fmt.Errorf("DI: service `%s` does not implement `%s` required by kind `%s`", candidate.name, binding.target.String(), binding.id.name)
+				return fmt.Errorf("DI: failed to build service `%s` in scope `%s`: %w", candidate.name, candidate.scope.Name(), err)
+			}
+		}
 	}
 
 	return nil
@@ -377,4 +399,54 @@ func withAbortCause(startCtx context.Context, err error) error {
 	}
 
 	return err
+}
+
+// runStage runs the handlers registered for stage, kind by kind in
+// order of first Handle, each over its components in dependency order.
+func (s *RootScope) runStage(startCtx context.Context, stage Stage, candidates []*startCandidate) error {
+	s.kindsMu.Lock()
+	entries := slices.Clone(s.kinds)
+	s.kindsMu.Unlock()
+
+	for _, entry := range entries {
+		if entry.stage != stage {
+			continue
+		}
+
+		components := []*startCandidate{}
+		metas := map[*startCandidate]any{}
+		for _, candidate := range candidates {
+			for _, binding := range candidate.kinds {
+				if binding.id == entry.id {
+					components = append(components, candidate)
+					metas[candidate] = binding.meta
+				}
+			}
+		}
+
+		for _, component := range s.orderByDependencies(components) {
+			if err := checkAbort(startCtx); err != nil {
+				return err
+			}
+
+			if err := callKindHandler(startCtx, entry, component, metas[component]); err != nil {
+				err = fmt.Errorf("DI: kind `%s` failed for service `%s` in scope `%s`: %w", entry.id.name, component.name, component.scope.Name(), err)
+				return withAbortCause(startCtx, err)
+			}
+		}
+	}
+
+	return nil
+}
+
+// callKindHandler calls entry's handler for one component, recovering a panic
+// as an error.
+func callKindHandler(startCtx context.Context, entry kindEntry, component *startCandidate, meta any) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = recoverAsError(r)
+		}
+	}()
+
+	return entry.run(startCtx, component.scope, component.name, component.instance, meta)
 }

@@ -11,6 +11,7 @@ type serviceOptions struct {
 	starter         bool
 	starterDeferred bool // registered under an interface type: checked on the instance at Start
 	dependsOn       []string
+	kinds           []kindBinding
 }
 
 // ProvideOption attaches an opt-in to a registration. Values come only from
@@ -101,12 +102,36 @@ func validateServiceOptions(name string, service serviceWrapperAny, opts *servic
 	}
 
 	validateStarterOpt(name, service.getReflectType(), opts)
+	validateKindOpt(name, service.getReflectType(), opts)
 }
 
 // validateTransientOpts rejects opt-ins that need a single instance.
 func validateTransientOpts(name string, opts *serviceOptions) {
 	if opts.starter {
 		panic(fmt.Errorf("DI: transient service `%s` cannot be started", name))
+	}
+	if len(opts.kinds) > 0 {
+		panic(fmt.Errorf("DI: transient service `%s` cannot be handled by kind `%s`", name, opts.kinds[0].id.name))
+	}
+}
+
+// validateKindOpt checks kind bindings against the registered type.
+func validateKindOpt(name string, registered reflect.Type, opts *serviceOptions) {
+	seen := map[*kindID]struct{}{}
+	for i := range opts.kinds {
+		binding := &opts.kinds[i]
+		if _, ok := seen[binding.id]; ok {
+			panic(fmt.Errorf("DI: kind `%s` applied twice to service `%s`", binding.id.name, name))
+		}
+		seen[binding.id] = struct{}{}
+
+		switch {
+		case typeCanCastToType(registered, binding.target):
+		case registered.Kind() == reflect.Interface:
+			binding.deferred = true
+		default:
+			panic(fmt.Errorf("DI: service `%s` is not assignable to `%s` required by kind `%s`", name, binding.target.String(), binding.id.name))
+		}
 	}
 }
 

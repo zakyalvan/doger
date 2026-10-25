@@ -181,6 +181,13 @@ func (*optServer) Run(ctx context.Context) error { return nil }
 type optIns struct {
 	starter   bool
 	dependsOn []string
+	kinds     []kindOptIn
+}
+
+// kindOptIn is a kind binding, by kind name and metadata.
+type kindOptIn struct {
+	name string
+	meta any
 }
 
 // optInsOf returns the opt-ins of name, registered in scope itself.
@@ -197,7 +204,12 @@ func optInsOf(t *testing.T, scope Injector, name string) optIns {
 		return optIns{}
 	}
 
-	return optIns{starter: opts.starter, dependsOn: opts.dependsOn}
+	var kinds []kindOptIn
+	for _, binding := range opts.kinds {
+		kinds = append(kinds, kindOptIn{name: binding.id.name, meta: binding.meta})
+	}
+
+	return optIns{starter: opts.starter, dependsOn: opts.dependsOn, kinds: kinds}
 }
 
 func TestProvideOptions_Registration(t *testing.T) {
@@ -330,6 +342,11 @@ func TestProvideOptions_Constructors(t *testing.T) {
 		{name: "as_starter", option: AsStarter(), want: optIns{starter: true}},
 		{name: "depends_on", option: DependsOn[*optDB](), want: optIns{dependsOn: []string{NameOf[*optDB]()}}},
 		{name: "depends_on_named", option: DependsOnNamed("primary-db"), want: optIns{dependsOn: []string{"primary-db"}}},
+		{
+			name:   "scheduled",
+			option: NewKind[Job, Spec]("scheduled").With(Spec{Every: time.Minute}),
+			want:   optIns{kinds: []kindOptIn{{name: "scheduled", meta: Spec{Every: time.Minute}}}},
+		},
 	}
 
 	for _, tt := range tests {
@@ -346,15 +363,22 @@ func TestProvideOptions_Constructors(t *testing.T) {
 
 func TestProvideOptions_Repeated(t *testing.T) {
 	t.Parallel()
+	scheduled := NewKind[Job, Spec]("scheduled")
 
 	tests := []struct {
-		name string
-		opts []ProvideOption
-		want optIns
+		name     string
+		opts     []ProvideOption
+		want     optIns
+		panicMsg string
 	}{
 		{name: "depends_on_accumulates", opts: []ProvideOption{DependsOnNamed("a"), DependsOnNamed("b")}, want: optIns{dependsOn: []string{"a", "b"}}},
 		{name: "depends_on_collapses_duplicates", opts: []ProvideOption{DependsOnNamed("a"), DependsOnNamed("a")}, want: optIns{dependsOn: []string{"a"}}},
 		{name: "as_starter_twice", opts: []ProvideOption{AsStarter(), AsStarter()}, want: optIns{starter: true}},
+		{
+			name:     "same_kind_twice",
+			opts:     []ProvideOption{scheduled.With(Spec{Every: time.Minute}), scheduled.With(Spec{Every: 2 * time.Minute})},
+			panicMsg: "DI: kind `scheduled` applied twice to service `worker`",
+		},
 	}
 
 	for _, tt := range tests {
@@ -362,7 +386,14 @@ func TestProvideOptions_Repeated(t *testing.T) {
 			t.Parallel()
 
 			root := New()
-			ProvideNamed(root, "worker", func(Injector) (*optServer, error) { return &optServer{}, nil }, tt.opts...)
+			register := func() {
+				ProvideNamed(root, "worker", func(Injector) (*optServer, error) { return &optServer{}, nil }, tt.opts...)
+			}
+			if tt.panicMsg != "" {
+				assert.PanicsWithError(t, tt.panicMsg, register)
+				return
+			}
+			register()
 
 			assert.Equal(t, tt.want, optInsOf(t, root, "worker"))
 		})
@@ -371,6 +402,7 @@ func TestProvideOptions_Repeated(t *testing.T) {
 
 func TestProvideOptions_Invalid(t *testing.T) {
 	t.Parallel()
+	scheduled := NewKind[Job, Spec]("scheduled")
 
 	tests := []struct {
 		name     string
@@ -406,6 +438,29 @@ func TestProvideOptions_Invalid(t *testing.T) {
 			service: "req",
 			register: func(root *RootScope) {
 				ProvideNamedTransient(root, "req", func(Injector) (*optRequest, error) { return &optRequest{}, nil }, DependsOnNamed("db"))
+			},
+		},
+		{
+			name:    "transient_kind",
+			service: "tjob",
+			register: func(root *RootScope) {
+				ProvideNamedTransient(root, "tjob", func(Injector) (*CleanupJob, error) { return &CleanupJob{}, nil }, scheduled.With(Spec{}))
+			},
+			panicMsg: "DI: transient service `tjob` cannot be handled by kind `scheduled`",
+		},
+		{
+			name:    "concrete_not_assignable_to_kind",
+			service: "plain",
+			register: func(root *RootScope) {
+				ProvideNamed(root, "plain", func(Injector) (*optConfig, error) { return &optConfig{}, nil }, scheduled.With(Spec{}))
+			},
+			panicMsg: "DI: service `plain` is not assignable to `doger.Job` required by kind `scheduled`",
+		},
+		{
+			name:    "interface_kind_is_deferred",
+			service: "life",
+			register: func(root *RootScope) {
+				ProvideNamed(root, "life", func(Injector) (optLifecycle, error) { return &optServer{}, nil }, scheduled.With(Spec{}))
 			},
 		},
 		{

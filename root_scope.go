@@ -141,6 +141,9 @@ type RootScope struct {
 	nextRegIndex atomic.Uint64 // next registration index, shared by every scope of this container
 	declareMu    sync.Mutex    // serializes DeclareDependency (cycle check plus add)
 
+	kindsMu sync.Mutex
+	kinds   []kindEntry // kind handlers, in order of first Handle
+
 	// Lifecycle state. Phases change only by compare-and-set under lifecycleMu,
 	// which is never held while user code runs.
 	lifecycleMu sync.Mutex
