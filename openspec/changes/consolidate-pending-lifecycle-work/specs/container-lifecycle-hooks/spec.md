@@ -489,8 +489,37 @@ Examples:
   | NewWithOpts(nil)                |
 ```
 
-<!-- cases: N/A 2 overrides: root-only firing is not configurable; per-scope hooks are phase 2 -->
+<!-- cases: N/A 2 overrides: root-only firing is not configurable; child scopes have their own hooks (capability scope-lifecycle-hooks) -->
 <!-- cases: N/A 4 boundaries: there is exactly one root per container -->
 <!-- cases: N/A 5 errors, 6 duplicates: no failure path -->
 <!-- cases: N/A 8 concurrency: covered by the at-most-once requirement -->
 <!-- cases: N/A 9 panics: covered by the panic requirements -->
+
+### Requirement: Incremental start fires no container hooks
+`RootScope.Refresh` and `Scope.Start` SHALL NOT fire any container hook: Starting, Started, Ready and Failed fire at most once per container, for its first `Start`. Per-service start hooks and kind handlers still run for the services that the incremental start starts.
+
+#### Scenario: Refresh after Start fires no container hook
+```gherkin
+Given a root container with counting Starting, Started, Ready and Failed hooks
+And a child scope "tenant"
+And the consumer called Start(), which returned nil
+And then registered lazy Starter "late" in <target>
+When the consumer calls <operation>
+Then <operation> returns nil
+And "late" was started 1 time
+And the Starting, Started, Ready and Failed hooks ran 1, 1, 1 and 0 times in total
+
+Examples:
+  | target   | operation      |
+  | the root | root.Refresh() |
+  | "tenant" | tenant.Start() |
+```
+
+<!-- cases: N/A 2 overrides: container hooks are once per container by design; scope hooks cover child scopes -->
+<!-- cases: N/A 3 zero values, 4 boundaries: one incremental start per row is sufficient -->
+<!-- cases: 5 errors: a failing incremental start does not fire Failed; it returns its error (capability container-start) -->
+<!-- cases: N/A 6 duplicates: covered by the at-most-once requirement -->
+<!-- cases: 7 lifecycle: Refresh after Start is the subject; Refresh before Start is covered in container-start -->
+<!-- cases: N/A 8 concurrency: covered by container-start "Concurrent Refresh calls are serialized" -->
+<!-- cases: N/A 9 panics: per-service hook panics propagate as specified in container-start -->
+<!-- cases: N/A 10 compatibility: new API -->
