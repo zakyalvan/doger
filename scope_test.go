@@ -1618,11 +1618,9 @@ func TestScope_ShutdownWithContextExpiration_Cancellation(t *testing.T) {
 	// Start shutdown in goroutine
 	var report *ShutdownReport
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		report = injector.ShutdownWithContext(ctx)
-	}()
+	})
 
 	// Cancel context after short delay
 	time.Sleep(10 * time.Millisecond)
@@ -1754,11 +1752,9 @@ func TestScope_HealthCheckWithContextExpiration_Cancellation(t *testing.T) {
 	// Start healthcheck in goroutine
 	var results map[string]error
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		results = injector.HealthCheckWithContext(ctx)
-	}()
+	})
 
 	// Cancel context after short delay
 	time.Sleep(10 * time.Millisecond)
@@ -1959,11 +1955,9 @@ func TestScope_ContextExpiration_ParallelOperations(t *testing.T) {
 	// Start shutdown in goroutine
 	var report *ShutdownReport
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		report = injector.ShutdownWithContext(ctx)
-	}()
+	})
 
 	// Cancel context after short delay
 	time.Sleep(10 * time.Millisecond)
