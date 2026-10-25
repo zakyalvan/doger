@@ -195,8 +195,10 @@ func provide[T any, A any](i Injector, name string, valueOrProvider A, serviceCt
 	}
 
 	service := serviceCtor(name, valueOrProvider)
+	options := buildServiceOptions(opts)
+	validateServiceOptions(name, service, options)
 	service.setRegistrationIndex(assignRegistrationIndex(_i, name))
-	service.setOptions(buildServiceOptions(opts))
+	service.setOptions(options)
 	_i.serviceSet(name, service)
 
 	_i.RootScope().opts.Logf("DI: service %s injected", name)
@@ -326,8 +328,10 @@ func override[T any, A any](i Injector, name string, valueOrProvider A, serviceC
 
 	// Note: We don't check if the service exists here, allowing override
 	service := serviceCtor(name, valueOrProvider)
+	options := buildServiceOptions(opts)
+	validateServiceOptions(name, service, options)
 	service.setRegistrationIndex(assignRegistrationIndex(_i, name))
-	service.setOptions(buildServiceOptions(opts))
+	service.setOptions(options)
 	_i.serviceSet(name, service) // @TODO: should we unload/shutdown the previous service ?
 
 	_i.RootScope().opts.Logf("DI: service %s overridden", name)

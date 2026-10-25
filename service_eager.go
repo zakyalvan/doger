@@ -147,6 +147,7 @@ func (s *serviceEager[T]) clone(newScope Injector) any {
 	return &serviceEager[T]{
 		name:     s.name,
 		regIndex: s.regIndex,
+		opts:     s.opts,
 		typeName: s.typeName,
 		instance: s.instance,
 

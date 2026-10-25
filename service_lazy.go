@@ -218,6 +218,7 @@ func (s *serviceLazy[T]) clone(newScope Injector) any {
 		mu:       sync.RWMutex{},
 		name:     s.name,
 		regIndex: s.regIndex,
+		opts:     s.opts,
 		typeName: s.typeName,
 
 		built:     false,

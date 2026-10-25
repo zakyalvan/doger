@@ -28,10 +28,10 @@ Prerequisites: `fix-stacktrace-frame-filter`, `rename-module-doger` and `upgrade
 
 ## 4. Option validation, combination, clone, override and alias
 
-- [ ] 4.1 RED: add `TestProvideOptions_Repeated` (non-kind rows of "Repeated options"), `TestProvideOptions_Invalid` (non-kind rows cfg/AsStarter, srv/transient, life/AsStarter, req, srv/eager of "Invalid opt-in combinations") and `TestProvideOptions_CloneOverrideAlias` (5 rows of "Clone, override and alias"); verify `go test -race -run 'TestProvideOptions_(Repeated|Invalid|CloneOverrideAlias)' .` fails on missing panics, uncollapsed duplicates and the Clone row; the Override and As rows pass on arrival after 3.2, so show they can fail by temporarily copying the old wrapper's options in `override` and returning the target's options from aliases.
-- [ ] 4.2 GREEN: implement `validateServiceOptions` (design D2: exact spec panic messages, run before `serviceSet`, interface types deferred), collapse duplicate dependencies, copy `opts` in each wrapper's `clone`; verify the 4.1 command passes and `make test` is green.
-- [ ] 4.3 REFACTOR: *Extract Function* per rule (`validateStarterOpt`, `validateTransientOpts`) so group 13 adds `validateKindOpt` without branching; verify `make test` and `make lint` pass.
-- [ ] 4.4 Document the registration-time panics in the godoc of `AsStarter` and `DependsOnNamed`; verify `go doc AsStarter` shows them and `make lint` passes.
+- [x] 4.1 RED: add `TestProvideOptions_Repeated` (non-kind rows of "Repeated options"), `TestProvideOptions_Invalid` (non-kind rows cfg/AsStarter, srv/transient, life/AsStarter, req, srv/eager of "Invalid opt-in combinations") and `TestProvideOptions_CloneOverrideAlias` (5 rows of "Clone, override and alias"); verify `go test -race -run 'TestProvideOptions_(Repeated|Invalid|CloneOverrideAlias)' .` fails on missing panics, uncollapsed duplicates and the Clone row; the Override and As rows pass on arrival after 3.2, so show they can fail by temporarily copying the old wrapper's options in `override` and returning the target's options from aliases.
+- [x] 4.2 GREEN: implement `validateServiceOptions` (design D2: exact spec panic messages, run before `serviceSet`, interface types deferred), collapse duplicate dependencies, copy `opts` in each wrapper's `clone`; verify the 4.1 command passes and `make test` is green.
+- [x] 4.3 REFACTOR: *Extract Function* per rule (`validateStarterOpt`, `validateTransientOpts`) so group 13 adds `validateKindOpt` without branching; verify `make test` and `make lint` pass.
+- [x] 4.4 Document the registration-time panics in the godoc of `AsStarter` and `DependsOnNamed`; verify `go doc AsStarter` shows them and `make lint` passes.
 
 ## 5. Static declared dependencies (DependsOn)
 

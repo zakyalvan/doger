@@ -81,6 +81,7 @@ func (s *serviceTransient[T]) clone(newScope Injector) any {
 	return &serviceTransient[T]{
 		name:     s.name,
 		regIndex: s.regIndex,
+		opts:     s.opts,
 		typeName: s.typeName,
 
 		provider: s.provider,

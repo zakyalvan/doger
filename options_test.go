@@ -163,10 +163,16 @@ func TestRegistrationIndex_CloneDuringRegistration(t *testing.T) {
 
 // Registration-option fixtures.
 type (
-	optDB     struct{}
-	optConfig struct{}
-	optServer struct{}
+	optDB      struct{}
+	optConfig  struct{}
+	optServer  struct{}
+	optRequest struct{}
+
+	// optLifecycle has neither Start nor Run.
+	optLifecycle interface{ Name() string }
 )
+
+func (*optServer) Name() string { return "server" }
 
 func (*optServer) Start() error                  { return nil }
 func (*optServer) Run(ctx context.Context) error { return nil }
@@ -334,6 +340,165 @@ func TestProvideOptions_Constructors(t *testing.T) {
 			Provide(root, func(Injector) (*optServer, error) { return &optServer{}, nil }, tt.option)
 
 			assert.Equal(t, tt.want, optInsOf(t, root, NameOf[*optServer]()))
+		})
+	}
+}
+
+func TestProvideOptions_Repeated(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		opts []ProvideOption
+		want optIns
+	}{
+		{name: "depends_on_accumulates", opts: []ProvideOption{DependsOnNamed("a"), DependsOnNamed("b")}, want: optIns{dependsOn: []string{"a", "b"}}},
+		{name: "depends_on_collapses_duplicates", opts: []ProvideOption{DependsOnNamed("a"), DependsOnNamed("a")}, want: optIns{dependsOn: []string{"a"}}},
+		{name: "as_starter_twice", opts: []ProvideOption{AsStarter(), AsStarter()}, want: optIns{starter: true}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			root := New()
+			ProvideNamed(root, "worker", func(Injector) (*optServer, error) { return &optServer{}, nil }, tt.opts...)
+
+			assert.Equal(t, tt.want, optInsOf(t, root, "worker"))
+		})
+	}
+}
+
+func TestProvideOptions_Invalid(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		service  string
+		register func(root *RootScope)
+		panicMsg string // empty: registration succeeds
+	}{
+		{
+			name:    "concrete_without_start_as_starter",
+			service: "cfg",
+			register: func(root *RootScope) {
+				ProvideNamed(root, "cfg", func(Injector) (*optConfig, error) { return &optConfig{}, nil }, AsStarter())
+			},
+			panicMsg: "DI: service `cfg` does not implement any Starter interface",
+		},
+		{
+			name:    "transient_as_starter",
+			service: "srv",
+			register: func(root *RootScope) {
+				ProvideNamedTransient(root, "srv", func(Injector) (*optServer, error) { return &optServer{}, nil }, AsStarter())
+			},
+			panicMsg: "DI: transient service `srv` cannot be started",
+		},
+		{
+			name:    "interface_as_starter_is_deferred",
+			service: "life",
+			register: func(root *RootScope) {
+				ProvideNamed(root, "life", func(Injector) (optLifecycle, error) { return &optServer{}, nil }, AsStarter())
+			},
+		},
+		{
+			name:    "transient_depends_on",
+			service: "req",
+			register: func(root *RootScope) {
+				ProvideNamedTransient(root, "req", func(Injector) (*optRequest, error) { return &optRequest{}, nil }, DependsOnNamed("db"))
+			},
+		},
+		{
+			name:     "eager_as_starter",
+			service:  "srv",
+			register: func(root *RootScope) { ProvideNamedValue(root, "srv", &optServer{}, AsStarter()) },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			is := assert.New(t)
+
+			root := New()
+			if tt.panicMsg == "" {
+				is.NotPanics(func() { tt.register(root) })
+				is.True(root.serviceExist(tt.service))
+				return
+			}
+
+			is.PanicsWithError(tt.panicMsg, func() { tt.register(root) })
+			is.False(root.serviceExist(tt.service))
+		})
+	}
+}
+
+func TestProvideOptions_CloneOverrideAlias(t *testing.T) {
+	t.Parallel()
+
+	serverName := NameOf[*optServer]()
+	newServer := func(Injector) (*optServer, error) { return &optServer{}, nil }
+
+	tests := []struct {
+		name      string
+		operation func(t *testing.T, root *RootScope) Injector
+		service   string
+		want      optIns
+	}{
+		{
+			name:      "clone",
+			operation: func(_ *testing.T, root *RootScope) Injector { return root.Clone() },
+			service:   serverName,
+			want:      optIns{starter: true, dependsOn: []string{"db"}},
+		},
+		{
+			name: "override_without_options",
+			operation: func(_ *testing.T, root *RootScope) Injector {
+				Override(root, newServer)
+				return root
+			},
+			service: serverName,
+			want:    optIns{},
+		},
+		{
+			name: "override_with_options",
+			operation: func(_ *testing.T, root *RootScope) Injector {
+				Override(root, newServer, DependsOnNamed("cache"))
+				return root
+			},
+			service: serverName,
+			want:    optIns{dependsOn: []string{"cache"}},
+		},
+		{
+			name: "alias_has_none",
+			operation: func(t *testing.T, root *RootScope) Injector {
+				require.NoError(t, As[*optServer, optLifecycle](root))
+				return root
+			},
+			service: NameOf[optLifecycle](),
+			want:    optIns{},
+		},
+		{
+			name: "alias_target_keeps_its_own",
+			operation: func(t *testing.T, root *RootScope) Injector {
+				require.NoError(t, As[*optServer, optLifecycle](root))
+				return root
+			},
+			service: serverName,
+			want:    optIns{starter: true, dependsOn: []string{"db"}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			root := New()
+			Provide(root, newServer, AsStarter(), DependsOnNamed("db"))
+
+			container := tt.operation(t, root)
+
+			assert.Equal(t, tt.want, optInsOf(t, container, tt.service))
 		})
 	}
 }
