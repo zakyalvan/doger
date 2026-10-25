@@ -146,22 +146,26 @@ type InjectorOpts struct {
 	//
 	// A Starting hook must not call root Shutdown synchronously without a
 	// deadline: Shutdown waits for the running Start, which waits for the hook.
+	// With a deadline, Shutdown returns a failed report when it expires, and
+	// Start then fails with an error matching ErrStartAfterShutdown.
 	HookContainerStarting []func(ctx context.Context, scope *RootScope) error
 
 	// HookContainerStarted is called by the first Start once its pipeline
 	// succeeded: after every Starter and every StageAfterStart handler,
 	// including the Runnable handler. It receives the context passed to
-	// Start. Use it for last wiring, such as route registration.
+	// Start. Use it for last wiring, such as route registration. It runs
+	// after the running Start was released, so it may call root Shutdown.
 	HookContainerStarted []func(ctx context.Context, scope *RootScope)
 
 	// HookContainerReady is called by the first Start after every Started
 	// hook has returned, with the context passed to Start. Use it to signal
-	// readiness to an orchestrator.
+	// readiness to an orchestrator. It may call root Shutdown.
 	HookContainerReady []func(ctx context.Context, scope *RootScope)
 
 	// HookContainerFailed is called by the first Start when it fails after
 	// its one-shot guard, with the context passed to Start and the exact
-	// error Start returns.
+	// error Start returns. It may call root Shutdown, for example to clean up
+	// what did start.
 	HookContainerFailed []func(ctx context.Context, scope *RootScope, err error)
 
 	// HookContainerClosing is called by the root Shutdown that begins the
@@ -170,14 +174,15 @@ type InjectorOpts struct {
 	//
 	// A Closing hook must not call root Shutdown synchronously without a
 	// deadline: that call waits for the running Shutdown, which waits for the
-	// hook.
+	// hook. With a deadline, it returns a failed report when it expires.
 	HookContainerClosing []func(ctx context.Context, scope *RootScope)
 
 	// HookContainerClosed is called by the first root Shutdown once every
 	// service is shut down and the close phase is closed, with the Shutdown
 	// context and the report Shutdown returns. Mutating the report is
 	// unsupported. Concurrent Shutdown callers may return before the Closed
-	// hooks have run.
+	// hooks have run. A Closed hook may call root Shutdown, which returns a
+	// copy of the first report.
 	HookContainerClosed []func(ctx context.Context, scope *RootScope, report *ShutdownReport)
 
 	// Logf is the logging function used by the DI container for internal logging.

@@ -68,10 +68,10 @@ Rules:
 
 ## 9. Calling Shutdown from hooks (Part H)
 
-- [ ] 9.1 RED: add `TestContainerHooks_HookCallsShutdown` (scenario "Post-start or Closed hook calls Shutdown", 4 rows, `testWithTimeout`) and `TestContainerHooks_HookCallsShutdownWithDeadline` (scenario "Starting or Closing hook calls Shutdown with a deadline", 2 rows, `synctest.Test`); verify `go test -race -run 'TestContainerHooks_HookCallsShutdown' .`; both may pass on arrival because groups 5–8 use `pointAfterStart`/`pointClosed` and start-lifecycle's deadline handling, so record that and show they can fail by temporarily firing Started at `pointStartersUp` (timeout) and Closed before `finishClose` (timeout), neither committed
-- [ ] 9.2 GREEN: no production change expected; if 9.1 failed, move the offending dispatch to `pointAfterStart`/`pointClosed` (D5, D8); verify the 9.1 command passes and `make test` is green
-- [ ] 9.3 REFACTOR: none needed, since no structure changed; verify `make test` and `make lint` pass
-- [ ] 9.4 Add a "Calling Shutdown from a hook" docs section and godoc on the Starting/Closing fields and adders (safe from Started, Ready, Failed and Closed; Starting and Closing need a deadline, D8); verify `npm --prefix docs run build` succeeds
+- [x] 9.1 RED: add `TestContainerHooks_HookCallsShutdown` (scenario "Post-start or Closed hook calls Shutdown", 4 rows, `testWithTimeout`) and `TestContainerHooks_HookCallsShutdownWithDeadline` (scenario "Starting or Closing hook calls Shutdown with a deadline", 2 rows, `synctest.Test`); verify `go test -race -run 'TestContainerHooks_HookCallsShutdown' .`; both may pass on arrival because groups 5–8 use `pointAfterStart`/`pointClosed` and start-lifecycle's deadline handling, so record that and show they can fail by temporarily firing Started at `pointStartersUp` (timeout) and Closed before `finishClose` (timeout), neither committed
+- [x] 9.2 GREEN: no production change expected; if 9.1 failed, move the offending dispatch to `pointAfterStart`/`pointClosed` (D5, D8); verify the 9.1 command passes and `make test` is green
+- [x] 9.3 REFACTOR: none needed, since no structure changed; verify `make test` and `make lint` pass
+- [x] 9.4 Add a "Calling Shutdown from a hook" docs section and godoc on the Starting/Closing fields and adders (safe from Started, Ready, Failed and Closed; Starting and Closing need a deadline, D8); verify `npm --prefix docs run build` succeeds
 
 ## 10. Shutdown during an in-flight Start (Part H)
 

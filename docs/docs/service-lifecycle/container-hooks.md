@@ -121,3 +121,17 @@ For a start and a shutdown with all six hooks registered, the order is:
 ```text
 starting, db started, started, ready, closing, db stopped, closed
 ```
+
+## Calling Shutdown from a hook {#calling-shutdown-from-a-hook}
+
+Started, Ready, Failed and Closed hooks run after the running `Start` or `Shutdown` was released, so they may call root `Shutdown()` synchronously:
+
+- from Started, Ready or Failed, it shuts the container down; Closing and Closed fire once, on that call;
+- from Closed, it returns a copy of the first report at once.
+
+Starting and Closing hooks run while `Start` or `Shutdown` is still running. A root `Shutdown` called synchronously from them waits for that operation, which waits for the hook: it **deadlocks** unless its context has a deadline. With a deadline:
+
+- from a Starting hook, `Shutdown` returns a failed report when the deadline expires, and `Start` then fails with an error matching `ErrStartAfterShutdown`;
+- from a Closing hook, the nested `Shutdown` returns a failed report when the deadline expires, while the outer `Shutdown` completes normally.
+
+Prefer returning an error from a Starting hook to veto `Start`.

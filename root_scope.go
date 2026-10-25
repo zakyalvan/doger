@@ -539,7 +539,10 @@ func (s *RootScope) AddContainerFailedHook(hook func(context.Context, *RootScope
 }
 
 // AddContainerClosingHook adds a hook that will be called by the first root
-// Shutdown before any service is shut down. See
+// Shutdown before any service is shut down.
+//
+// The hook must not call root Shutdown synchronously without a deadline: it
+// would wait for the running Shutdown, which waits for the hook. See
 // [InjectorOpts.HookContainerClosing].
 func (s *RootScope) AddContainerClosingHook(hook func(context.Context, *RootScope)) {
 	s.opts.HookContainerClosing = append(s.opts.HookContainerClosing, hook)

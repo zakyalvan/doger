@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -446,4 +447,149 @@ func TestContainerHooks_ShutdownOnSignalsWithContext(t *testing.T) {
 
 	is.Equal(int32(1), closing.Load())
 	is.Equal(int32(1), closed.Load())
+}
+
+func TestContainerHooks_HookCallsShutdown(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+
+	// callShutdown records the report of a nested root Shutdown.
+	type nested struct{ report *ShutdownReport }
+
+	tests := []struct {
+		name      string
+		setup     func(root *RootScope)
+		register  func(root *RootScope, got *nested)
+		operation func(t *testing.T, root *RootScope)
+	}{
+		{
+			name:  "Started",
+			setup: func(root *RootScope) { ProvideNamedValue(root, "server", &startWithErr{}) },
+			register: func(root *RootScope, got *nested) {
+				root.AddContainerStartedHook(func(_ context.Context, r *RootScope) { got.report = r.Shutdown() })
+			},
+			operation: func(t *testing.T, root *RootScope) { t.Helper(); assert.NoError(t, root.Start()) },
+		},
+		{
+			name:  "Ready",
+			setup: func(root *RootScope) { ProvideNamedValue(root, "server", &startWithErr{}) },
+			register: func(root *RootScope, got *nested) {
+				root.AddContainerReadyHook(func(_ context.Context, r *RootScope) { got.report = r.Shutdown() })
+			},
+			operation: func(t *testing.T, root *RootScope) { t.Helper(); assert.NoError(t, root.Start()) },
+		},
+		{
+			name:  "Failed",
+			setup: func(root *RootScope) { ProvideNamedValue(root, "server", &errorStarter{err: errBoom}) },
+			register: func(root *RootScope, got *nested) {
+				root.AddContainerFailedHook(func(_ context.Context, r *RootScope, _ error) { got.report = r.Shutdown() })
+			},
+			operation: func(t *testing.T, root *RootScope) { t.Helper(); assert.ErrorIs(t, root.Start(), errBoom) },
+		},
+		{
+			name:  "Closed",
+			setup: func(*RootScope) {},
+			register: func(root *RootScope, got *nested) {
+				root.AddContainerClosedHook(func(_ context.Context, r *RootScope, _ *ShutdownReport) { got.report = r.Shutdown() })
+			},
+			operation: func(t *testing.T, root *RootScope) { t.Helper(); assert.True(t, root.Shutdown().Succeed) },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+			is := assert.New(t)
+
+			root := New()
+			provideBuiltShutdowner(t, root, &callRecorder{}, "db", nil)
+			var closing, closed atomic.Int32
+			root.AddContainerClosingHook(func(context.Context, *RootScope) { closing.Add(1) })
+			root.AddContainerClosedHook(func(context.Context, *RootScope, *ShutdownReport) { closed.Add(1) })
+			tt.setup(root)
+			got := &nested{}
+			tt.register(root, got)
+
+			tt.operation(t, root)
+
+			is.Equal(int32(1), closing.Load())
+			is.Equal(int32(1), closed.Load())
+			require.NotNil(t, got.report)
+			is.True(got.report.Succeed)
+		})
+	}
+}
+
+func TestContainerHooks_HookCallsShutdownWithDeadline(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		register func(root *RootScope, record func(*ShutdownReport))
+		check    func(t *testing.T, root *RootScope, failed *atomic.Int32)
+	}{
+		{
+			name: "Starting",
+			register: func(root *RootScope, record func(*ShutdownReport)) {
+				root.AddContainerStartingHook(func(_ context.Context, r *RootScope) error {
+					// not derived from the Start context, which Shutdown cancels
+					ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+					defer cancel()
+					record(r.ShutdownWithContext(ctx))
+					return nil
+				})
+			},
+			check: func(t *testing.T, root *RootScope, failed *atomic.Int32) {
+				t.Helper()
+				assert.ErrorIs(t, root.Start(), ErrStartAfterShutdown)
+				assert.Equal(t, int32(1), failed.Load())
+			},
+		},
+		{
+			name: "Closing",
+			register: func(root *RootScope, record func(*ShutdownReport)) {
+				root.AddContainerClosingHook(func(ctx context.Context, r *RootScope) {
+					ctx, cancel := context.WithTimeout(ctx, time.Second)
+					defer cancel()
+					record(r.ShutdownWithContext(ctx))
+				})
+			},
+			check: func(t *testing.T, root *RootScope, failed *atomic.Int32) {
+				t.Helper()
+				assert.True(t, root.Shutdown().Succeed)
+				assert.Equal(t, int32(0), failed.Load())
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			synctest.Test(t, func(t *testing.T) {
+				is := assert.New(t)
+
+				root := New()
+				var closing, closed, failed atomic.Int32
+				root.AddContainerClosingHook(func(context.Context, *RootScope) { closing.Add(1) })
+				root.AddContainerClosedHook(func(context.Context, *RootScope, *ShutdownReport) { closed.Add(1) })
+				root.AddContainerFailedHook(func(context.Context, *RootScope, error) { failed.Add(1) })
+				var nestedReport *ShutdownReport
+				tt.register(root, func(report *ShutdownReport) { nestedReport = report })
+
+				tt.check(t, root, &failed)
+
+				require.NotNil(t, nestedReport)
+				is.False(nestedReport.Succeed)
+				is.NotEmpty(nestedReport.Errors)
+				for _, err := range nestedReport.Errors {
+					is.ErrorIs(err, context.DeadlineExceeded)
+				}
+				is.Equal(int32(1), closing.Load())
+				is.Equal(int32(1), closed.Load())
+			})
+		})
+	}
 }
