@@ -51,9 +51,9 @@ func (s *RootScope) Start() error {
 // an error wrapping ctx.Err().
 //
 // On the first failure (a build error, a Start error, or a panic in a Start
-// method, recovered as an error), Start stops and returns an error that names
-// the service and its scope and wraps the cause, so errors.Is and errors.As
-// reach it. Starters not reached yet are not started. Nothing is rolled
+// method, recovered as an error), Start stops and returns a [*StartError]
+// that names the service, its scope and the failed step, and wraps the
+// cause, so errors.Is and errors.As reach it. Starters not reached yet are not started. Nothing is rolled
 // back: cleanup is the caller's job, typically by calling Shutdown, so
 // services must tolerate Shutdown without a prior Start.
 //
@@ -402,7 +402,7 @@ func buildCandidates(startCtx context.Context, candidates []*startCandidate) err
 
 		instance, err := invokeAnyByName(candidate.scope, candidate.name)
 		if err != nil {
-			err = fmt.Errorf("DI: failed to build service `%s` in scope `%s`: %w", candidate.name, candidate.scope.Name(), err)
+			err = newStartError(StartOpBuild, candidate.scope, candidate.name, "", err)
 			return withAbortCause(startCtx, err)
 		}
 		candidate.instance = instance
@@ -413,7 +413,7 @@ func buildCandidates(startCtx context.Context, candidates []*startCandidate) err
 			}
 			if instance == nil || !reflect.TypeOf(instance).Implements(binding.target) {
 				err := fmt.Errorf("DI: service `%s` does not implement `%s` required by kind `%s`", candidate.name, binding.target.String(), binding.id.name)
-				return fmt.Errorf("DI: failed to build service `%s` in scope `%s`: %w", candidate.name, candidate.scope.Name(), err)
+				return newStartError(StartOpBuild, candidate.scope, candidate.name, "", err)
 			}
 		}
 	}
@@ -446,14 +446,16 @@ func (s *RootScope) startStarters(startCtx context.Context, candidates []*startC
 		}
 
 		if !instanceIsStarter(candidate.instance) {
-			return fmt.Errorf("DI: service `%s` was opted in with AsStarter but does not implement any Starter interface", candidate.name)
+			startErr := newStartError(StartOpStart, candidate.scope, candidate.name, "", fmt.Errorf("DI: service `%s` was opted in with AsStarter but does not implement any Starter interface", candidate.name))
+			startErr.unprefixed = true // the cause names the service already
+			return startErr
 		}
 
 		s.opts.onBeforeStart(candidate.scope, candidate.name)
 		err := startInstance(startCtx, candidate.instance)
 		s.opts.onAfterStart(candidate.scope, candidate.name, err)
 		if err != nil {
-			err = wrapStartError(candidate.scope, candidate.name, err)
+			err = newStartError(StartOpStart, candidate.scope, candidate.name, "", err)
 			return withAbortCause(startCtx, err)
 		}
 	}
@@ -492,11 +494,6 @@ func instanceIsStarter(instance any) bool {
 	}
 
 	return false
-}
-
-// wrapStartError names the service and scope whose Start failed.
-func wrapStartError(scope *Scope, name string, err error) error {
-	return fmt.Errorf("DI: failed to start service `%s` in scope `%s`: %w", name, scope.Name(), err)
 }
 
 // recoverAsError turns a recovered panic value into an error. An error value
@@ -564,7 +561,7 @@ func (s *RootScope) runStage(startCtx context.Context, stage Stage, candidates [
 			}
 
 			if err := callKindHandler(startCtx, entry, component, metas[component]); err != nil {
-				err = fmt.Errorf("DI: kind `%s` failed for service `%s` in scope `%s`: %w", entry.id.name, component.name, component.scope.Name(), err)
+				err = newStartError(StartOpHandle, component.scope, component.name, entry.id.name, err)
 				return withAbortCause(startCtx, err)
 			}
 		}

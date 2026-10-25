@@ -2,6 +2,7 @@ package doger
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
 
@@ -69,4 +70,27 @@ func ExampleAsStarter() {
 
 	// Output:
 	// db started
+}
+
+type exampleFailingCache struct{}
+
+func (*exampleFailingCache) Start() error { return errors.New("connection refused") }
+
+func ExampleStartError() {
+	root := New()
+	ProvideNamedValue(root, "cache", &exampleFailingCache{})
+
+	err := root.Start()
+
+	if startErr, ok := errors.AsType[*StartError](err); ok {
+		fmt.Println("service:", startErr.Service)
+		fmt.Println("scope:", startErr.Scope.Name())
+		fmt.Println("op:", startErr.Op)
+		fmt.Println("cause:", startErr.Cause)
+	}
+	// Output:
+	// service: cache
+	// scope: [root]
+	// op: start
+	// cause: connection refused
 }

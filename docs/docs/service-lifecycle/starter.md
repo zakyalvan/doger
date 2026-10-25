@@ -136,6 +136,26 @@ if err := root.Start(); err != nil {
 
 Services must therefore tolerate `Shutdown` without a prior `Start`. A panic that escapes `Start` (for example from a hook) still marks the container as started, so a later `Shutdown()` never blocks on it.
 
+### StartError {#start-error}
+
+A failure of a service or of a kind handler is a `*doger.StartError`. Its `Error()` message is the one shown above, and `errors.Is` reaches the cause through `Unwrap`. Use `errors.AsType` (or `errors.As`) to inspect it:
+
+| Field     | Content                                                             |
+| --------- | ------------------------------------------------------------------- |
+| `Scope`   | the scope the service is registered in                              |
+| `Service` | the service name                                                    |
+| `Kind`    | the kind whose handler failed; empty unless `Op` is `StartOpHandle` |
+| `Op`      | `StartOpBuild`, `StartOpStart` or `StartOpHandle`                   |
+| `Cause`   | the underlying error                                                |
+
+```go
+if startErr, ok := errors.AsType[*doger.StartError](err); ok {
+	log.Printf("%s failed at %s in scope %s: %v", startErr.Service, startErr.Op, startErr.Scope.Name(), startErr.Cause)
+}
+```
+
+Errors that are not tied to a service are not `StartError` values: `ErrAlreadyStarted`, `ErrStartAfterShutdown`, a cancelled context and a dependency cycle.
+
 ## Shutdown during Start {#shutdown-during-start}
 
 A root `Shutdown()` that begins while `Start` runs:

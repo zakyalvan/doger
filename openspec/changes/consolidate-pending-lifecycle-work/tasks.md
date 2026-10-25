@@ -127,10 +127,10 @@ Rules:
 
 ## 18. Start failures are StartError values (container-start; design Q2)
 
-- [ ] 18.1 RED: add `TestStartError_Fields` (scenario "StartError fields per failure point", 4 rows) and `TestStartError_NotForGuards` (scenario "Errors that are not service failures are not StartError", 3 rows) to `root_start_test.go`; verify `go test -race -run TestStartError_ .` fails to compile only on `StartError`, `StartOp` and the `StartOp*` constants
-- [ ] 18.2 GREEN: add `StartError`/`StartOp` and return them from the build, start (including AsStarter-without-Start) and handle failure points with unchanged `Error()` text, keeping abort wrapping around them (design Q2); verify the 18.1 command passes, the existing `TestStart_*`/`TestKind_*`/`TestRunnable_*` message assertions pass unchanged, and `make test` is green
-- [ ] 18.3 REFACTOR: *Replace Function with Constructor*: `wrapStartError` and the build/handle formats become `newStartError(op, scope, name, kind, cause)`; verify `make test` and `make lint` pass
-- [ ] 18.4 Add `ExampleStartError` (errors.As on a failed Start) and the StartError section of the starter page; verify `go test -run ExampleStartError .` and the docs lint and build pass
+- [x] 18.1 RED: add `TestStartError_Fields` (scenario "StartError fields per failure point", 4 rows) and `TestStartError_NotForGuards` (scenario "Errors that are not service failures are not StartError", 3 rows) to `root_start_test.go`; verify `go test -race -run TestStartError_ .` fails to compile only on `StartError`, `StartOp` and the `StartOp*` constants
+- [x] 18.2 GREEN: add `StartError`/`StartOp` and return them from the build, start (including AsStarter-without-Start) and handle failure points with unchanged `Error()` text, keeping abort wrapping around them (design Q2); verify the 18.1 command passes, the existing `TestStart_*`/`TestKind_*`/`TestRunnable_*` message assertions pass unchanged, and `make test` is green
+- [x] 18.3 REFACTOR: *Replace Function with Constructor*: `wrapStartError` and the build/handle formats become `newStartError(op, scope, name, kind, cause)`; verify `make test` and `make lint` pass
+- [x] 18.4 Add `ExampleStartError` (errors.As on a failed Start) and the StartError section of the starter page; verify `go test -run ExampleStartError .` and the docs lint and build pass
 
 ## 19. Explained edges report their source (dependency-declaration; design Q3)
 

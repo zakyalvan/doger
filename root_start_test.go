@@ -1148,3 +1148,129 @@ func TestStart_HooksSkipNonStarter(t *testing.T) {
 	is.ErrorContains(err, "DI: service `app.Lifecycle` was opted in with AsStarter but does not implement any Starter interface")
 	is.Empty(rec.list())
 }
+
+func TestStartError_Fields(t *testing.T) {
+	t.Parallel()
+
+	errBuild := errors.New("build failed")
+	errBoom := errors.New("boom")
+
+	tests := []struct {
+		name    string
+		setup   func(root *RootScope)
+		service string
+		kind    string
+		op      StartOp
+		cause   error
+		message string // the message before StartError existed
+	}{
+		{
+			name: "provider returns errBuild",
+			setup: func(root *RootScope) {
+				ProvideNamed(root, "b", func(Injector) (*startWithErr, error) { return nil, errBuild })
+			},
+			service: "b", op: StartOpBuild, cause: errBuild,
+			message: "DI: failed to build service `b` in scope `[root]`: build failed",
+		},
+		{
+			name: "Start returns errBoom",
+			setup: func(root *RootScope) {
+				ProvideNamedValue(root, "b", &errorStarter{err: errBoom})
+			},
+			service: "b", op: StartOpStart, cause: errBoom,
+			message: "DI: failed to start service `b` in scope `[root]`: boom",
+		},
+		{
+			name: "kind handler returns errBoom",
+			setup: func(root *RootScope) {
+				k := NewKind[Job, Spec]("k")
+				ProvideNamed(root, "j", func(Injector) (*CleanupJob, error) { return &CleanupJob{}, nil }, k.With(Spec{}))
+				k.Handle(root, StageBeforeStart, func(context.Context, Component[Job, Spec]) error { return errBoom })
+			},
+			service: "j", kind: "k", op: StartOpHandle, cause: errBoom,
+			message: "DI: kind `k` failed for service `j` in scope `[root]`: boom",
+		},
+		{
+			name: "missing declared dependency",
+			setup: func(root *RootScope) {
+				ProvideNamed(root, "b", func(Injector) (*startWithErr, error) { return &startWithErr{}, nil }, DependsOnNamed("missing"))
+			},
+			service: "b", op: StartOpBuild, cause: ErrServiceNotFound,
+			message: "DI: failed to build service `b` in scope `[root]`: DI: could not find service `missing`, available services: `b`, path: `b` -> `missing`",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+			is := assert.New(t)
+
+			root := New()
+			tt.setup(root)
+
+			err := root.Start()
+
+			var startErr *StartError
+			require.ErrorAs(t, err, &startErr)
+			is.Equal(tt.service, startErr.Service)
+			is.Equal("[root]", startErr.Scope.Name())
+			is.Equal(tt.kind, startErr.Kind)
+			is.Equal(tt.op, startErr.Op)
+			is.ErrorIs(err, tt.cause)
+			is.EqualError(err, tt.message)
+		})
+	}
+}
+
+func TestStartError_NotForGuards(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		start    func(root *RootScope) error
+		sentinel error
+	}{
+		{
+			name: "already started",
+			start: func(root *RootScope) error {
+				_ = root.Start()
+				return root.Start()
+			},
+			sentinel: ErrAlreadyStarted,
+		},
+		{
+			name: "already shut down",
+			start: func(root *RootScope) error {
+				root.Shutdown()
+				return root.Start()
+			},
+			sentinel: ErrStartAfterShutdown,
+		},
+		{
+			name: "context already cancelled",
+			start: func(root *RootScope) error {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return root.StartWithContext(ctx)
+			},
+			sentinel: context.Canceled,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+
+			root := New()
+			ProvideNamedValue(root, "b", &startWithErr{})
+
+			err := tt.start(root)
+
+			var startErr *StartError
+			assert.NotErrorAs(t, err, &startErr)
+			assert.ErrorIs(t, err, tt.sentinel)
+		})
+	}
+}
