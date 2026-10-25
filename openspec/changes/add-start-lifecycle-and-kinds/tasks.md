@@ -98,9 +98,9 @@ Prerequisites: `fix-stacktrace-frame-filter`, `rename-module-doger` and `upgrade
 
 ## 14. Handlers declaring dependencies
 
-- [ ] 14.1 RED: add `TestKind_DeclareDependencyInHandler` ("Scheduler handler orders start and shutdown"); verify `go test -race -run TestKind_DeclareDependencyInHandler .` runs; it passes on arrival (8.2 already orders after `StageBeforeStart`, 6.2 records edges), so show it fails when the start order is temporarily computed before `StageBeforeStart`.
-- [ ] 14.2 GREEN: no production change needed beyond 8.2 and 13.2; verify the 14.1 command passes and `make test` is green.
-- [ ] 14.3 REFACTOR: none needed, this only pins pipeline order; verify `make test` and `make lint` pass.
+- [x] 14.1 RED: add `TestKind_DeclareDependencyInHandler` ("Scheduler handler orders start and shutdown"); verify `go test -race -run TestKind_DeclareDependencyInHandler .` runs; it passes on arrival (8.2 already orders after `StageBeforeStart`, 6.2 records edges), so show it fails when the start order is temporarily computed before `StageBeforeStart`.
+- [x] 14.2 GREEN: no production change needed beyond 8.2 and 13.2; verify the 14.1 command passes and `make test` is green.
+- [x] 14.3 REFACTOR: none needed, this only pins pipeline order; verify `make test` and `make lint` pass.
 
 ## 15. Built-in Runnable kind
 

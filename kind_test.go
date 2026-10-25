@@ -372,3 +372,53 @@ func TestKind_HandlerFailure(t *testing.T) {
 		})
 	}
 }
+
+// eventService records its build, start and shutdown in rec.
+type eventService struct {
+	name string
+	rec  *callRecorder
+}
+
+func (s *eventService) Start() error {
+	s.rec.record("start " + s.name)
+	return nil
+}
+
+func (s *eventService) Shutdown() error {
+	s.rec.record("shutdown " + s.name)
+	return nil
+}
+
+func (*eventService) Run(context.Context) error { return nil }
+
+func TestKind_DeclareDependencyInHandler(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+	is := assert.New(t)
+
+	scheduled := NewKind[Job, Spec]("scheduled")
+	root := New()
+	events := &callRecorder{}
+	for _, name := range []string{"scheduler", "job"} {
+		var opts []ProvideOption
+		if name == "job" {
+			opts = []ProvideOption{scheduled.With(Spec{Every: time.Minute})}
+		}
+		ProvideNamed(root, name, func(Injector) (*eventService, error) {
+			events.record("build " + name)
+			return &eventService{name: name, rec: events}, nil
+		}, opts...)
+	}
+	scheduled.Handle(root, StageBeforeStart, func(_ context.Context, c Component[Job, Spec]) error {
+		return DeclareDependency(c.Scope, "scheduler", c.Name)
+	})
+
+	require.NoError(t, root.Start())
+	require.True(t, root.Shutdown().Succeed)
+
+	is.Equal([]string{
+		"build scheduler", "build job",
+		"start job", "start scheduler", // the declared edge orders start
+		"shutdown scheduler", "shutdown job",
+	}, events.list())
+}
