@@ -484,13 +484,12 @@ func (s *Scope) shutdownServicesWithoutDependenciesInParallel(ctx context.Contex
 	perServiceTimes := map[ServiceDescription]time.Duration{}
 
 	var wg sync.WaitGroup
-	wg.Add(len(serviceNames))
 
 	for _, name := range serviceNames {
-		go func(n string) {
-			desc := newServiceDescription(s.id, s.name, n)
+		wg.Go(func() {
+			desc := newServiceDescription(s.id, s.name, name)
 			start := time.Now()
-			e := s.serviceShutdown(ctx, n)
+			e := s.serviceShutdown(ctx, name)
 			dt := time.Since(start)
 
 			mu.Lock()
@@ -500,9 +499,7 @@ func (s *Scope) shutdownServicesWithoutDependenciesInParallel(ctx context.Contex
 			}
 			perServiceTimes[desc] = dt
 			mu.Unlock()
-
-			wg.Done()
-		}(name)
+		})
 	}
 
 	wg.Wait()
