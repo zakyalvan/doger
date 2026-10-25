@@ -1,5 +1,7 @@
 version: "2"
 run:
+  # lint with the language version of the go directive
+  go: "1.27"
   concurrency: 4
   # also lint _test.go files
   tests: true
@@ -48,6 +50,12 @@ linters:
       min-occurrences: 3
     gocyclo:
       min-complexity: 15 # strict; lower => stricter
+    modernize:
+      disable:
+        # its fixes change test fixture field types (int32 -> atomic.Int32)
+        # and rewrite assertion expressions: not a mechanical rewrite, and
+        # it only affects tests
+        - atomictypes
     wsl_v5:
       allow-first-in-block: true
       allow-whole-block: false
