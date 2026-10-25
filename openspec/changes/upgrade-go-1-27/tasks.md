@@ -20,7 +20,7 @@ Specs: `specs/toolchain-support/spec.md`, `specs/provider-panic-handling/spec.md
 - [x] 2.10 REFACTOR: run `go fix -waitgroupgo ./...` after reviewing `-diff` (3 sites in `scope_test.go`); verify `go test -race -count=3 -run Shutdown .` and `make test` pass and lint shows no `waitgroupgo` finding.
 - [x] 2.11 REFACTOR: run `go fix -any ./...` in every workspace module and hand-edit the 3 `interface{}` comments (`invoke.go:14,21`, `invoke_test.go:69`); verify `grep -rn 'interface{}' --include='*.go' .` prints nothing, every module still passes `go vet ./...`, and `make lint` reports 0 issues.
 - [x] 2.12 Docs: update every Go-version statement listed in design Context and D6 (README, getting-started, about, faq, comparison tables, `index.tsx`, structured-data, `llms.txt`) to Go 1.27; verify `grep -rn '1\.18' README.md docs/docs docs/src docs/static/llms.txt docs/plugins` shows only the `samber/lo` and `samber/mo` lines, and `cd docs && npm ci && npm run lint && npm run build` passes.
-- [ ] 2.13 Docs: add a "Go 1.27 and panic(nil)" section to `docs/docs/migrating/migrating-from-samber-do.md` (created by `rename-module-doger`) covering the Go 1.27 floor and the `panic(nil)` change with its `GODEBUG=panicnil=1` / `//go:debug panicnil=1` workaround; verify the page mentions `panicnil` and `cd docs && npm run build` passes.
+- [x] 2.13 Docs: add a "Go 1.27 and panic(nil)" section to `docs/docs/migrating/migrating-from-samber-do.md` (created by `rename-module-doger`) covering the Go 1.27 floor and the `panic(nil)` change with its `GODEBUG=panicnil=1` / `//go:debug panicnil=1` workaround; verify the page mentions `panicnil` and `cd docs && npm run build` passes.
 
 ## 3. Helper bodies and shutdown fan-outs (behavior-preserving refactorings)
 
