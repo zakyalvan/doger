@@ -30,9 +30,9 @@ Specs: `specs/health-check-timeouts/spec.md`, `specs/container-clock/spec.md`. R
 
 ## 5. Integration checks
 
-- [ ] 5.1 Run `go mod tidy` in all 25 workspace modules; verify the diff only adds `clockwork` requirements (indirect in sub-modules) and `go.sum` entries, and a second tidy is clean.
-- [ ] 5.2 Inventory diff against the 1.1 baseline; verify the only differences are the added tests (`TestHealthCheck_*` ×7, `TestClock_*` ×5, `ExampleInjectorOpts_clock`), with no deletions.
-- [ ] 5.3 Full green run; verify `make test`, `make lint` (0 issues), per-module `go vet ./... && go test -race ./...` in all 25 modules, and `cd docs && npm run lint && npm run build` all pass, with no goleak reports.
+- [x] 5.1 Run `go mod tidy` in all 25 workspace modules; verify the diff only adds `clockwork` requirements (indirect in sub-modules) and `go.sum` entries, and a second tidy is clean.
+- [x] 5.2 Inventory diff against the 1.1 baseline; verify the only differences are the added tests (`TestHealthCheck_*` ×7, `TestClock_*` ×5, `ExampleInjectorOpts_clock`), with no deletions.
+- [x] 5.3 Full green run; verify `make test`, `make lint` (0 issues), per-module `go vet ./... && go test -race ./...` in all 25 modules, and `cd docs && npm run lint && npm run build` all pass, with no goleak reports.
 
 ## Workflow follow-up
 

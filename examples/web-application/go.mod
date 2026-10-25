@@ -8,7 +8,10 @@ require (
 	github.com/kartaladev/doger/http/chi v0.0.0-00010101000000-000000000000
 )
 
-require github.com/samber/go-type-to-string v1.8.0 // indirect
+require (
+	github.com/jonboulle/clockwork v0.5.0 // indirect
+	github.com/samber/go-type-to-string v1.8.0 // indirect
+)
 
 replace github.com/kartaladev/doger => ../../
 
