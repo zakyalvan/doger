@@ -11,6 +11,9 @@ import (
 	"reflect"
 	"slices"
 	"sync"
+	"time"
+
+	"github.com/jonboulle/clockwork"
 )
 
 //
@@ -206,19 +209,19 @@ func (p *jobPool[R]) stop() {
 
 // raceWithTimeout runs a health check. When ctx has a deadline, it returns as
 // soon as ctx is done, without waiting for the check; otherwise it waits.
-func raceWithTimeout(ctx context.Context, fn func(context.Context) error) error {
+func raceWithTimeout(ctx context.Context, clock clockwork.Clock, fn func(context.Context) error) error {
 	_, ok := ctx.Deadline()
 	if !ok {
-		return healthCheckResult(ctx, fn(ctx))
+		return healthCheckResult(ctx, clock, fn(ctx))
 	}
 
-	return awaitHealthCheck(ctx, fn)
+	return awaitHealthCheck(ctx, clock, fn)
 }
 
 // awaitHealthCheck runs a health check in its own goroutine and returns its
 // result, or a timeout error as soon as ctx is done. A check that ignores ctx
 // keeps running after a timeout.
-func awaitHealthCheck(ctx context.Context, fn func(context.Context) error) error {
+func awaitHealthCheck(ctx context.Context, clock clockwork.Clock, fn func(context.Context) error) error {
 	err := make(chan error, 1)
 	go func() {
 		err <- fn(ctx)
@@ -226,21 +229,49 @@ func awaitHealthCheck(ctx context.Context, fn func(context.Context) error) error
 
 	select {
 	case e := <-err:
-		return healthCheckResult(ctx, e)
+		return healthCheckResult(ctx, clock, e)
 	case <-ctx.Done():
 		return timeoutError(ctx.Err())
 	}
 }
 
 // healthCheckResult decides an observed health-check result: once ctx is
-// done the check counts as timed out, whatever it returned; before that, the
-// check keeps its own result.
-func healthCheckResult(ctx context.Context, err error) error {
+// done, or once clock has reached the deadline the container set for the
+// check, the check counts as timed out, whatever it returned; before that,
+// the check keeps its own result.
+func healthCheckResult(ctx context.Context, clock clockwork.Clock, err error) error {
 	if cause := contextDone(ctx); cause != nil {
 		return timeoutError(cause)
 	}
 
+	// The context may not be marked done yet when the check returned at its
+	// deadline: its cancellation runs in another goroutine.
+	if deadline, ok := healthCheckDeadline(ctx); ok && !clock.Now().Before(deadline) {
+		return timeoutError(context.DeadlineExceeded)
+	}
+
 	return err
+}
+
+// healthCheckDeadlineKey is the context key of the earliest health-check
+// deadline the container set, on its clock.
+type healthCheckDeadlineKey struct{}
+
+// withHealthCheckDeadline records a health-check deadline set by the
+// container, keeping an earlier one already recorded in ctx.
+func withHealthCheckDeadline(ctx context.Context, deadline time.Time) context.Context {
+	if current, ok := healthCheckDeadline(ctx); ok && !deadline.Before(current) {
+		return ctx
+	}
+
+	return context.WithValue(ctx, healthCheckDeadlineKey{}, deadline)
+}
+
+// healthCheckDeadline returns the health-check deadline the container
+// recorded in ctx. A deadline set by the consumer's context is not one.
+func healthCheckDeadline(ctx context.Context) (time.Time, bool) {
+	deadline, ok := ctx.Value(healthCheckDeadlineKey{}).(time.Time)
+	return deadline, ok
 }
 
 // timeoutError returns an error matching both ErrHealthCheckTimeout and

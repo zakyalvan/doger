@@ -8,6 +8,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -32,6 +33,47 @@ func (h *healthCheckTestUntilDone) HealthCheck(ctx context.Context) error {
 	<-ctx.Done()
 	return h.err
 }
+
+// healthCheckTestOnClock is a Healthchecker that returns a fixed result after
+// a duration on its clock, ignoring its context.
+type healthCheckTestOnClock struct {
+	clock    clockwork.Clock
+	duration time.Duration
+	err      error
+}
+
+func (h *healthCheckTestOnClock) HealthCheck() error {
+	h.clock.Sleep(h.duration)
+	return h.err
+}
+
+// healthCheckTestBlocking is a Healthchecker that blocks until released,
+// ignoring its context.
+type healthCheckTestBlocking struct{ release chan struct{} }
+
+func newHealthCheckTestBlocking() *healthCheckTestBlocking {
+	return &healthCheckTestBlocking{release: make(chan struct{})}
+}
+
+func (h *healthCheckTestBlocking) HealthCheck() error {
+	<-h.release
+	return nil
+}
+
+// healthCheckTestAsync starts a scope-wide health check in its own goroutine.
+func healthCheckTestAsync(ctx context.Context, i Injector) <-chan map[string]error {
+	result := make(chan map[string]error, 1)
+	go func() { result <- i.HealthCheckWithContext(ctx) }()
+	return result
+}
+
+// healthCheckTestReturned reports whether a health check started with
+// healthCheckTestAsync has returned.
+func healthCheckTestReturned(result <-chan map[string]error) bool {
+	return len(result) > 0
+}
+
+const healthCheckTestDeadlineMessage = "DI: health check timeout: context deadline exceeded"
 
 // healthCheckTestEntry is the public API a test row calls.
 type healthCheckTestEntry string
@@ -285,6 +327,185 @@ func TestHealthCheck_ServiceWithoutCheckNeverTimesOut(t *testing.T) {
 			}
 
 			require.Zero(t, unexpected, "calls with an unexpected result (want %v; first: %v)", tt.wantErr, firstErr)
+		})
+	}
+}
+
+func TestHealthCheck_TimeoutOptionsOnClock(t *testing.T) {
+	t.Parallel()
+
+	const runs = 1000
+
+	tests := []struct {
+		name     string
+		global   time.Duration
+		perCheck time.Duration
+		result   error
+		duration time.Duration
+		advance  time.Duration
+		want     string // "" for the check's own result
+	}{
+		{name: "per_check_10ms_check_20ms", perCheck: 10 * time.Millisecond, duration: 20 * time.Millisecond, advance: 20 * time.Millisecond, want: healthCheckTestDeadlineMessage},
+		{name: "per_check_10ms_check_9ms", perCheck: 10 * time.Millisecond, duration: 9 * time.Millisecond, advance: 9 * time.Millisecond},
+		{name: "per_check_10ms_check_10ms_exact_limit", perCheck: 10 * time.Millisecond, duration: 10 * time.Millisecond, advance: 10 * time.Millisecond, want: healthCheckTestDeadlineMessage},
+		{name: "per_check_10ms_db_down_5ms", perCheck: 10 * time.Millisecond, result: errHealthCheckDBDown, duration: 5 * time.Millisecond, advance: 5 * time.Millisecond},
+		{name: "global_10ms_check_20ms", global: 10 * time.Millisecond, duration: 20 * time.Millisecond, advance: 20 * time.Millisecond, want: healthCheckTestDeadlineMessage},
+		{name: "global_10ms_check_9ms", global: 10 * time.Millisecond, duration: 9 * time.Millisecond, advance: 9 * time.Millisecond},
+		{name: "per_check_50ms_global_10ms_check_20ms", global: 10 * time.Millisecond, perCheck: 50 * time.Millisecond, duration: 20 * time.Millisecond, advance: 20 * time.Millisecond, want: healthCheckTestDeadlineMessage},
+		{name: "per_check_10ms_global_50ms_check_20ms", global: 50 * time.Millisecond, perCheck: 10 * time.Millisecond, duration: 20 * time.Millisecond, advance: 20 * time.Millisecond, want: healthCheckTestDeadlineMessage},
+		{name: "no_timeout_check_1h", duration: time.Hour, advance: time.Hour},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var unexpected int
+			var firstErr error
+			synctest.Test(t, func(t *testing.T) {
+				for range runs {
+					fc := clockwork.NewFakeClock()
+					i := NewWithOpts(&InjectorOpts{
+						Clock:                    fc,
+						HealthCheckTimeout:       tt.perCheck,
+						HealthCheckGlobalTimeout: tt.global,
+					})
+					ProvideNamedValue(i, "svc", &healthCheckTestOnClock{clock: fc, duration: tt.duration, err: tt.result})
+
+					result := healthCheckTestAsync(context.Background(), i)
+					synctest.Wait()
+					fc.Advance(tt.advance)
+					err := (<-result)["svc"]
+
+					ok := err == tt.result //nolint:errorlint // the check's own error value
+					if tt.want != "" {
+						ok = err != nil && err.Error() == tt.want
+					}
+					if !ok {
+						unexpected++
+						if firstErr == nil {
+							firstErr = fmt.Errorf("got %v", err) //nolint:errorlint
+						}
+					}
+
+					fc.Advance(tt.duration) // let an abandoned check return
+					synctest.Wait()
+				}
+			})
+
+			want := tt.want
+			if want == "" {
+				want = fmt.Sprint(tt.result)
+			}
+			assert.Zero(t, unexpected, "runs not returning %q (first: %v)", want, firstErr)
+		})
+	}
+}
+
+func TestHealthCheck_SequentialChecksShareGlobalTimeout(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		is := assert.New(t)
+
+		fc := clockwork.NewFakeClock()
+		i := NewWithOpts(&InjectorOpts{
+			Clock:                    fc,
+			HealthCheckParallelism:   1,
+			HealthCheckGlobalTimeout: 50 * time.Millisecond,
+		})
+		for _, name := range []string{"a", "b", "c", "d"} {
+			ProvideNamedValue(i, name, &healthCheckTestOnClock{clock: fc, duration: 20 * time.Millisecond})
+		}
+
+		result := healthCheckTestAsync(context.Background(), i)
+		for {
+			synctest.Wait()
+			if healthCheckTestReturned(result) {
+				break
+			}
+			fc.Advance(10 * time.Millisecond)
+		}
+		results := <-result
+
+		var healthy, timedOut int
+		for _, err := range results {
+			switch {
+			case err == nil:
+				healthy++
+			case err.Error() == healthCheckTestDeadlineMessage:
+				timedOut++
+			}
+		}
+		is.Len(results, 4)
+		is.Equal(2, healthy, "results: %v", results)
+		is.Equal(2, timedOut, "results: %v", results)
+
+		fc.Advance(time.Hour) // let abandoned checks return
+		synctest.Wait()
+		i.Shutdown()
+	})
+}
+
+func TestHealthCheck_NotBeforeClockReachesTimeout(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		is := assert.New(t)
+
+		fc := clockwork.NewFakeClock()
+		i := NewWithOpts(&InjectorOpts{Clock: fc, HealthCheckTimeout: 10 * time.Millisecond})
+		check := newHealthCheckTestBlocking()
+		ProvideNamedValue(i, "svc", check)
+
+		result := healthCheckTestAsync(context.Background(), i)
+		synctest.Wait()
+		fc.Advance(9 * time.Millisecond)
+		synctest.Wait()
+		is.False(healthCheckTestReturned(result), "returned before the clock reached the timeout")
+
+		fc.Advance(time.Millisecond)
+		err := (<-result)["svc"]
+		is.EqualError(err, healthCheckTestDeadlineMessage)
+
+		close(check.release)
+		synctest.Wait()
+	})
+}
+
+func TestHealthCheck_ConsumerDeadlineOnContextOnly(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		perCheck time.Duration
+		waiters  int // fake-clock waiters once the check runs
+	}{
+		{name: "no_timeout_options", waiters: 1},
+		{name: "per_check_3h", perCheck: 3 * time.Hour, waiters: 2},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			// Not in a bubble: bubble time would reach the consumer's 1h deadline.
+			testWithTimeout(t, 5*time.Second)
+			must := require.New(t)
+
+			fc := clockwork.NewFakeClock()
+			i := NewWithOpts(&InjectorOpts{Clock: fc, HealthCheckTimeout: tt.perCheck})
+			ProvideNamedValue(i, "svc", &healthCheckTestOnClock{clock: fc, duration: 2 * time.Hour})
+
+			ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
+			defer cancel()
+
+			result := healthCheckTestAsync(ctx, i)
+			waitCtx, waitCancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer waitCancel()
+			must.NoError(fc.BlockUntilContext(waitCtx, tt.waiters))
+			fc.Advance(2 * time.Hour)
+
+			must.NoError((<-result)["svc"])
 		})
 	}
 }

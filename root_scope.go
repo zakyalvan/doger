@@ -5,6 +5,8 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+
+	"github.com/jonboulle/clockwork"
 )
 
 // DefaultRootScopeName is the default name for the root scope.
@@ -83,6 +85,9 @@ func NewWithOpts(opts *InjectorOpts, packages ...func(Injector)) *RootScope {
 	}
 	if opts.HookAfterShutdown == nil {
 		opts.HookAfterShutdown = []func(*Scope, string, error){}
+	}
+	if opts.Clock == nil {
+		opts.Clock = clockwork.NewRealClock()
 	}
 
 	root := &RootScope{
@@ -213,7 +218,8 @@ func (s *RootScope) queueServiceHealthcheck(ctx context.Context, scope *Scope, s
 	cancel := func() {}
 	if s.opts.HealthCheckTimeout > 0 {
 		// `ctx` might already contain a timeout, but we add another one
-		ctx, cancel = context.WithTimeout(ctx, s.opts.HealthCheckTimeout)
+		ctx = withHealthCheckDeadline(ctx, s.opts.Clock.Now().Add(s.opts.HealthCheckTimeout))
+		ctx, cancel = clockwork.WithTimeout(ctx, s.opts.Clock, s.opts.HealthCheckTimeout)
 	}
 
 	// when no pooling policy has been defined
@@ -231,7 +237,7 @@ func (s *RootScope) queueServiceHealthcheck(ctx context.Context, scope *Scope, s
 			}
 
 			// returns as soon as ctx is done, even without a deadline
-			err <- awaitHealthCheck(ctx, check)
+			err <- awaitHealthCheck(ctx, s.opts.Clock, check)
 		}()
 
 		return err
