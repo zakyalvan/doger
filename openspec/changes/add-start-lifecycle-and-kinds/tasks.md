@@ -70,10 +70,10 @@ Prerequisites: `fix-stacktrace-frame-filter`, `rename-module-doger` and `upgrade
 
 ## 10. Context handling
 
-- [ ] 10.1 RED: add `TestStart_Context` (3 rows of "Cancellation and deadline", inside `synctest.Test`), `TestStart_NilContext` and `TestStart_ContextEndsWithStart`; verify `go test -race -run 'TestStart_(Context|NilContext|ContextEndsWithStart)' .` fails because "b" starts after cancellation, the nil context panics, and the kept context is not cancelled.
-- [ ] 10.2 GREEN: implement the D6 Start context (`context.WithCancelCause`, nil to `Background`, abort checks before each candidate, handler call and Starter and after the last step, abort-error wrapping, `startCancel(nil)` in `finishStart`, and `finishStart` turning a nil result into the abort error when `closePhase != closeOpen`); verify the 10.1 command passes and `make test` is green.
-- [ ] 10.3 REFACTOR: *Extract Function* `checkAbort(startCtx) error` used at every loop head; verify `make test` and `make lint` pass.
-- [ ] 10.4 Document the Start context contract (derived, cancelled when Start returns, do not retain it) in the `StartWithContext` godoc and the starter docs page; verify `go doc RootScope.StartWithContext` and `npm run build` in `docs/` pass.
+- [x] 10.1 RED: add `TestStart_Context` (3 rows of "Cancellation and deadline", inside `synctest.Test`), `TestStart_NilContext` and `TestStart_ContextEndsWithStart`; verify `go test -race -run 'TestStart_(Context|NilContext|ContextEndsWithStart)' .` fails because "b" starts after cancellation, the nil context panics, and the kept context is not cancelled.
+- [x] 10.2 GREEN: implement the D6 Start context (`context.WithCancelCause`, nil to `Background`, abort checks before each candidate, handler call and Starter and after the last step, abort-error wrapping, `startCancel(nil)` in `finishStart`, and `finishStart` turning a nil result into the abort error when `closePhase != closeOpen`); verify the 10.1 command passes and `make test` is green.
+- [x] 10.3 REFACTOR: *Extract Function* `checkAbort(startCtx) error` used at every loop head; verify `make test` and `make lint` pass.
+- [x] 10.4 Document the Start context contract (derived, cancelled when Start returns, do not retain it) in the `StartWithContext` godoc and the starter docs page; verify `go doc RootScope.StartWithContext` and `npm run build` in `docs/` pass.
 
 ## 11. Shutdown cancels and waits for a running Start
 

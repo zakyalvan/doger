@@ -39,6 +39,15 @@ func (s *RootScope) Start() error {
 // starts independently of its source; clones share eager instances, so an
 // eager Starter is started again by the clone.
 //
+// Context: Start derives its own cancellable context from ctx (a nil ctx is
+// treated as context.Background()). Context-aware Start(ctx) methods, kind
+// handlers and runners receive that derived context, which is cancelled when
+// Start returns: do not retain it for long-running work; start a goroutine
+// with its own context and stop it from a Shutdowner method instead. Start
+// checks the context before each candidate build, each handler call and each
+// Starter, and once at the end; a cancelled or expired ctx stops Start with
+// an error wrapping ctx.Err().
+//
 // On the first failure (a build error, a Start error, or a panic in a Start
 // method, recovered as an error), Start stops and returns an error that names
 // the service and its scope and wraps the cause, so errors.Is and errors.As
@@ -49,56 +58,72 @@ func (s *RootScope) Start() error {
 // Only [RootScope] methods are container-level: the root's *Scope (the
 // injector a provider receives) and child scopes have no Start.
 func (s *RootScope) StartWithContext(ctx context.Context) error {
-	if err := s.beginStart(); err != nil {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	startCtx, err := s.beginStart(ctx)
+	if err != nil {
 		return err
 	}
 
-	err := s.runStart(ctx)
+	err = s.runStart(startCtx)
 
 	// pointAfterStart: startDone is closed, so code here may call Shutdown().
 	return err
 }
 
 // beginStart moves the start phase from idle to starting.
-func (s *RootScope) beginStart() error {
+// It returns the Start-time context, derived from ctx and cancelled when
+// Start returns.
+func (s *RootScope) beginStart(ctx context.Context) (context.Context, error) {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
 
 	if s.closePhase != closeOpen {
-		return fmt.Errorf("DI: cannot start: %w", ErrStartAfterShutdown)
+		return nil, fmt.Errorf("DI: cannot start: %w", ErrStartAfterShutdown)
 	}
 	if s.startPhase != startIdle {
-		return ErrAlreadyStarted
+		return nil, ErrAlreadyStarted
 	}
 
+	startCtx, startCancel := context.WithCancelCause(ctx)
 	s.startPhase = startStarting
+	s.startCancel = startCancel
 	s.startDone = make(chan struct{})
 
-	return nil
+	return startCtx, nil
 }
 
 // runStart runs the pipeline. Its deferred finishStart runs even when the
 // pipeline panics, so the lifecycle state is always released.
-func (s *RootScope) runStart(ctx context.Context) (err error) {
+func (s *RootScope) runStart(startCtx context.Context) (err error) {
 	panicked := true
-	defer func() { s.finishStart(err, panicked) }()
+	defer func() { s.finishStart(startCtx, &err, panicked) }()
 
-	err = s.runStartPipeline(ctx)
+	err = s.runStartPipeline(startCtx)
 	panicked = false
 
 	return err
 }
 
-// finishStart records the outcome of Start and releases its waiters.
-func (s *RootScope) finishStart(err error, panicked bool) {
+// finishStart records the outcome of Start, ends the Start-time context and
+// releases its waiters. A Start that succeeded although Shutdown began after
+// its last abort check is reported as aborted.
+func (s *RootScope) finishStart(startCtx context.Context, err *error, panicked bool) {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
 
-	if err != nil || panicked {
+	if *err == nil && !panicked && s.closePhase != closeOpen {
+		*err = fmt.Errorf("DI: start aborted: %w", context.Cause(startCtx))
+	}
+
+	if *err != nil || panicked {
 		s.startPhase = startFailed
 	} else {
 		s.startPhase = startStarted
 	}
+	s.startCancel(nil)
 	close(s.startDone)
 }
 
@@ -113,10 +138,15 @@ type startCandidate struct {
 	instance any
 }
 
-func (s *RootScope) runStartPipeline(ctx context.Context) error {
+func (s *RootScope) runStartPipeline(startCtx context.Context) error {
+	// pointStarting
+	if err := checkAbort(startCtx); err != nil {
+		return err
+	}
+
 	candidates := s.discoverCandidates()
 
-	if err := buildCandidates(candidates); err != nil {
+	if err := buildCandidates(startCtx, candidates); err != nil {
 		return err
 	}
 
@@ -126,7 +156,17 @@ func (s *RootScope) runStartPipeline(ctx context.Context) error {
 		return err
 	}
 
-	return startStarters(ctx, s.orderByDependencies(starterCandidates(candidates)))
+	if err := startStarters(startCtx, s.orderByDependencies(starterCandidates(candidates))); err != nil {
+		return err
+	}
+
+	// pointStartersUp; StageAfterStart handlers will run here.
+
+	if err := checkAbort(startCtx); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (c *startCandidate) desc() ServiceDescription {
@@ -198,11 +238,16 @@ func (s *RootScope) newStartCandidate(scope *Scope, name string, depth int, serv
 }
 
 // buildCandidates invokes every candidate, keeping its instance.
-func buildCandidates(candidates []*startCandidate) error {
+func buildCandidates(startCtx context.Context, candidates []*startCandidate) error {
 	for _, candidate := range candidates {
+		if err := checkAbort(startCtx); err != nil {
+			return err
+		}
+
 		instance, err := invokeAnyByName(candidate.scope, candidate.name)
 		if err != nil {
-			return fmt.Errorf("DI: failed to build service `%s` in scope `%s`: %w", candidate.name, candidate.scope.Name(), err)
+			err = fmt.Errorf("DI: failed to build service `%s` in scope `%s`: %w", candidate.name, candidate.scope.Name(), err)
+			return withAbortCause(startCtx, err)
 		}
 		candidate.instance = instance
 	}
@@ -224,18 +269,23 @@ func starterCandidates(candidates []*startCandidate) []*startCandidate {
 
 // startStarters starts the Starter candidates in order, stopping at the
 // first error.
-func startStarters(ctx context.Context, candidates []*startCandidate) error {
+func startStarters(startCtx context.Context, candidates []*startCandidate) error {
 	for _, candidate := range candidates {
 		if !candidate.starter {
 			continue
+		}
+
+		if err := checkAbort(startCtx); err != nil {
+			return err
 		}
 
 		if !instanceIsStarter(candidate.instance) {
 			return fmt.Errorf("DI: service `%s` was opted in with AsStarter but does not implement any Starter interface", candidate.name)
 		}
 
-		if err := startInstance(ctx, candidate.instance); err != nil {
-			return wrapStartError(candidate.scope, candidate.name, err)
+		if err := startInstance(startCtx, candidate.instance); err != nil {
+			err = wrapStartError(candidate.scope, candidate.name, err)
+			return withAbortCause(startCtx, err)
 		}
 	}
 
@@ -288,4 +338,25 @@ func recoverAsError(r any) error {
 	}
 
 	return fmt.Errorf("DI: recovered panic: %v", r)
+}
+
+// checkAbort returns an error wrapping the cause when the Start-time context
+// is done: the caller's ctx.Err(), or ErrStartAfterShutdown when Shutdown
+// cancelled Start.
+func checkAbort(startCtx context.Context) error {
+	if startCtx.Err() != nil {
+		return fmt.Errorf("DI: start aborted: %w", context.Cause(startCtx))
+	}
+
+	return nil
+}
+
+// withAbortCause additionally wraps the abort cause into a step error when
+// the step failed while the Start-time context was done.
+func withAbortCause(startCtx context.Context, err error) error {
+	if startCtx.Err() != nil {
+		return fmt.Errorf("%w (start aborted: %w)", err, context.Cause(startCtx))
+	}
+
+	return err
 }

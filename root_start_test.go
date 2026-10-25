@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -716,4 +717,115 @@ func TestStart_ShutdownAfterFailure(t *testing.T) {
 	root.Shutdown()
 
 	is.ElementsMatch([]string{"a", "shutdown a", "shutdown b", "shutdown c"}, rec.list())
+}
+
+// ctxStarter runs fn with the context its Start(ctx) error receives.
+type ctxStarter struct {
+	fn func(ctx context.Context) error
+}
+
+func (s *ctxStarter) Start(ctx context.Context) error { return s.fn(ctx) }
+
+func TestStart_Context(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		ctx   func(ctx context.Context) (context.Context, context.CancelFunc)
+		a     func(ctx context.Context, cancel context.CancelFunc) error
+		cause error
+	}{
+		{
+			name: "already_cancelled",
+			ctx: func(ctx context.Context) (context.Context, context.CancelFunc) {
+				ctx, cancel := context.WithCancel(ctx)
+				cancel()
+				return ctx, cancel
+			},
+			a:     func(context.Context, context.CancelFunc) error { return nil },
+			cause: context.Canceled,
+		},
+		{
+			name: "deadline_while_a_blocks",
+			ctx: func(ctx context.Context) (context.Context, context.CancelFunc) {
+				return context.WithTimeout(ctx, 5*time.Second)
+			},
+			a: func(ctx context.Context, _ context.CancelFunc) error {
+				<-ctx.Done()
+				return ctx.Err()
+			},
+			cause: context.DeadlineExceeded,
+		},
+		{
+			name: "cancelled_while_a_runs",
+			ctx:  context.WithCancel,
+			a: func(_ context.Context, cancel context.CancelFunc) error {
+				cancel()
+				return nil
+			},
+			cause: context.Canceled,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			synctest.Test(t, func(t *testing.T) {
+				root := New()
+				rec := &callRecorder{}
+				ctx, cancel := tt.ctx(t.Context())
+				defer cancel()
+
+				ProvideNamed(root, "a", func(Injector) (*ctxStarter, error) {
+					return &ctxStarter{fn: func(ctx context.Context) error { return tt.a(ctx, cancel) }}, nil
+				})
+				provideRecordingStarter(root, rec, "b")
+
+				err := root.StartWithContext(ctx)
+
+				assert.ErrorIs(t, err, tt.cause)
+				assert.Empty(t, rec.list(), "b was not started")
+			})
+		})
+	}
+}
+
+func TestStart_NilContext(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	var received context.Context
+	ProvideNamed(root, "a", func(Injector) (*ctxStarter, error) {
+		return &ctxStarter{fn: func(ctx context.Context) error {
+			received = ctx
+			return nil
+		}}, nil
+	})
+
+	var err error
+	assert.NotPanics(t, func() {
+		err = root.StartWithContext(nil) //nolint:staticcheck // nil context is the case under test
+	})
+	assert.NoError(t, err)
+	assert.NotNil(t, received)
+}
+
+func TestStart_ContextEndsWithStart(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	var kept context.Context
+	ProvideNamed(root, "a", func(Injector) (*ctxStarter, error) {
+		return &ctxStarter{fn: func(ctx context.Context) error {
+			kept = ctx
+			return nil
+		}}, nil
+	})
+
+	require.NoError(t, root.Start())
+	require.NotNil(t, kept)
+	assert.ErrorIs(t, kept.Err(), context.Canceled)
 }

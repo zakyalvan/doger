@@ -139,7 +139,8 @@ type RootScope struct {
 	// which is never held while user code runs.
 	lifecycleMu sync.Mutex
 	startPhase  startPhase
-	startDone   chan struct{} // closed when the running Start returned
+	startCancel context.CancelCauseFunc // cancels the running Start's context
+	startDone   chan struct{}           // closed when the running Start returned
 	closePhase  closePhase
 	closeDone   chan struct{}   // closed when the winning Shutdown finished
 	closeReport *ShutdownReport // private copy of the winner's report

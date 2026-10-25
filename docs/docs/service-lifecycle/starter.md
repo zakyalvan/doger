@@ -98,6 +98,24 @@ Starters are started sequentially.
 
 A cycle that only exists once services are built, for example a [declared edge](../service-registration/declared-dependencies.md#declare-dependency) later closed by a provider's invocation, makes `Start` fail with an error matching `doger.ErrCircularDependency`, naming the chain, before any starter is started.
 
+## Context {#context}
+
+`StartWithContext(ctx)` derives its own cancellable context from `ctx`; `Start()` uses `context.Background()`, and a `nil` context is treated the same way.
+
+- `Start(ctx)` methods, kind handlers and runners receive the derived context.
+- The derived context is **cancelled when `Start` returns**. Do not keep it for long-running work: start your own goroutine with its own context in `Start`, and stop it in `Shutdown`.
+- `Start` checks the context before each build, each handler call and each starter. A cancelled or expired context stops `Start` with an error wrapping `ctx.Err()`, so `errors.Is(err, context.DeadlineExceeded)` works.
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancel()
+
+if err := root.StartWithContext(ctx); err != nil {
+	_ = root.Shutdown()
+	return err
+}
+```
+
 ## Errors {#errors}
 
 On the first failure, `Start` stops and returns an error that names the service and its scope and wraps the cause (`errors.Is` / `errors.As` work). A failure is:
