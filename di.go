@@ -614,6 +614,28 @@ func MustAsNamed[Initial any, Alias any](i Injector, initial string, alias strin
 }
 
 /////////////////////////////////////////////////////////////////////////////
+// 							Collections
+/////////////////////////////////////////////////////////////////////////////
+
+// InvokeAll invokes every visible service whose registered type is
+// assignable to T, and returns them as a slice. A nil injector means
+// [DefaultRootScope].
+//
+// Membership is decided by registered type, without building anything: a
+// service is a member when the type it was registered with is assignable to
+// T, so services of other types are never built. Eager values are members
+// as is. Beware InvokeAll[any]: every service matches, so every one is built.
+//
+// Invocation hooks fire once per member, with the member's name, as for N
+// calls to Invoke. The result is a snapshot: services registered later are
+// not added to it, and changing it does not affect later calls; transient
+// members give a new instance on every call. Resolve once and keep the
+// result outside hot loops.
+func InvokeAll[T any](i Injector) ([]T, error) {
+	return invokeAllByGenericType[T](i)
+}
+
+/////////////////////////////////////////////////////////////////////////////
 // 							Implicit aliases
 /////////////////////////////////////////////////////////////////////////////
 

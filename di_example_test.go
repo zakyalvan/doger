@@ -479,3 +479,35 @@ func ExampleMustInvokeAs() {
 	fmt.Println(service.GetName())
 	// Output: alias-test-service
 }
+
+type exampleNotifier interface{ Notify(msg string) string }
+
+type exampleEmailNotifier struct{}
+
+func (*exampleEmailNotifier) Notify(msg string) string { return "email: " + msg }
+
+type exampleSMSNotifier struct{}
+
+func (*exampleSMSNotifier) Notify(msg string) string { return "sms: " + msg }
+
+func ExampleInvokeAll() {
+	injector := New()
+	Provide(injector, func(Injector) (*exampleEmailNotifier, error) { return &exampleEmailNotifier{}, nil })
+	Provide(injector, func(Injector) (*exampleSMSNotifier, error) { return &exampleSMSNotifier{}, nil })
+	ProvideValue(injector, "not a notifier")
+
+	// Every service whose registered type implements exampleNotifier. With
+	// no match, the result is an empty slice.
+	notifiers, err := InvokeAll[exampleNotifier](injector)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	for _, notifier := range notifiers {
+		fmt.Println(notifier.Notify("deploy done"))
+	}
+	// Unordered output:
+	// email: deploy done
+	// sms: deploy done
+}

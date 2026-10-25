@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"unsafe"
@@ -174,34 +175,82 @@ func invokeByGenericType[T any](i Injector) (T, error) {
 		return empty[T](), serviceNotFound(injector, ErrServiceNotMatch, append(invokerChain, serviceAliasName))
 	}
 
-	if isVirtualScope {
-		if err := vScope.detectCircularDependency(serviceRealName); err != nil {
-			return empty[T](), err
-		}
-	}
-
-	injector.RootScope().opts.onBeforeInvocation(serviceScope, serviceAliasName)
-	instance, err := serviceInstance.(serviceWrapperGetInstanceAny).getInstanceAny( //nolint:errcheck,forcetypeassert
-		newVirtualScope(serviceScope, append(invokerChain, serviceRealName)),
-	)
-	injector.RootScope().opts.onAfterInvocation(serviceScope, serviceAliasName, err)
-
+	instance, err := invokeServiceInstance(injector, vScope, serviceAliasName, serviceRealName, serviceScope, serviceInstance)
 	if err != nil {
 		return empty[T](), err
 	}
 
-	if isVirtualScope {
-		// We chose to register the real service name in invocation chain, because using the
-		// interface name would break cycle detection.
+	return instance.(T), nil //nolint:errcheck,forcetypeassert
+}
 
-		vScope.addDependency(injector, serviceRealName, serviceScope, DependencySourceInvoked)
+// invokeServiceInstance invokes a service already selected by type. Hooks
+// and the log line report hookName; cycle detection, the invoker chain, the
+// dependency edge and invocation tracking use realName, because using a
+// type name there would break cycle detection. vScope is nil outside a
+// provider. The edge is recorded only after a successful build.
+func invokeServiceInstance(injector Injector, vScope *virtualScope, hookName, realName string, scope *Scope, service any) (any, error) {
+	var invokerChain []string
+	if vScope != nil {
+		invokerChain = vScope.invokerChain
+
+		if err := vScope.detectCircularDependency(realName); err != nil {
+			return nil, err
+		}
 	}
 
-	serviceScope.onServiceInvoke(serviceRealName)
+	injector.RootScope().opts.onBeforeInvocation(scope, hookName)
+	instance, err := service.(serviceWrapperGetInstanceAny).getInstanceAny( //nolint:errcheck,forcetypeassert
+		newVirtualScope(scope, append(slices.Clip(invokerChain), realName)),
+	)
+	injector.RootScope().opts.onAfterInvocation(scope, hookName, err)
+	if err != nil {
+		return nil, err
+	}
 
-	injector.RootScope().opts.Logf("DI: service %s invoked", serviceAliasName)
+	if vScope != nil {
+		vScope.addDependency(injector, realName, scope, DependencySourceInvoked)
+	}
 
-	return instance.(T), nil //nolint:errcheck,forcetypeassert
+	scope.onServiceInvoke(realName)
+
+	injector.RootScope().opts.Logf("DI: service %s invoked", hookName)
+
+	return instance, nil
+}
+
+// invokeAllByGenericType invokes every visible service whose registered
+// type is assignable to T, in iteration order.
+func invokeAllByGenericType[T any](i Injector) ([]T, error) {
+	injector := getInjectorOrDefault(i)
+
+	vScope, _ := injector.(*virtualScope)
+
+	type member struct {
+		scope   *Scope
+		service any
+	}
+	members := []member{}
+	injector.serviceForEachRec(func(_ string, scope *Scope, s any) bool {
+		if serviceCanCastToGeneric[T](s) {
+			members = append(members, member{scope: scope, service: s})
+		}
+		return true
+	})
+
+	result := make([]T, 0, len(members))
+	for _, m := range members {
+		realName := m.service.(serviceWrapperGetName).getName() //nolint:errcheck,forcetypeassert
+
+		instance, err := invokeServiceInstance(injector, vScope, realName, realName, m.scope, m.service)
+		if err != nil {
+			return nil, err
+		}
+
+		typed, _ := instance.(T)
+		result = append(result, typed)
+	}
+
+	return result, nil
 }
 
 // invokeByTag injects services into struct fields based on struct tags.

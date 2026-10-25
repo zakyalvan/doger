@@ -147,11 +147,11 @@ Rules:
 
 ## 21. Collect every visible service assignable to a type (Part K)
 
-- [ ] 21.1 RED: add `TestInvokeAll_Membership` (scenario "Membership by registered type", 4 rows), `TestInvokeAll_EagerMembers` (scenario "Eager values are members without a provider call"), `TestInvokeAll_NilInjector` (scenario "Nil injector uses the default root scope") and `TestInvokeAll_TypedNilMember` (scenario "Typed-nil member is returned as is"); verify `go test -race -run 'TestInvokeAll_(Membership|EagerMembers|NilInjector|TypedNilMember)' .` fails to compile only on the missing `InvokeAll`
-- [ ] 21.2 GREEN: add `InvokeAll[T]` in `di.go` backed by a pipeline in `invoke.go` that filters `serviceForEachRec` by `serviceCanCastToGeneric[T]` only and builds members sequentially, copying the per-member logic of `invokeByGenericType` with the member name for hooks (design D3); verify the 21.1 command passes and `make test` is green
-- [ ] 21.3 REFACTOR: *Extract Function* `invokeServiceInstance(injector, vScope, hookName, realName, scope, service)` (design D3) and call it from `invokeByGenericType` (hookName = type name) and the collection pipeline (hookName = member name); verify `go test -race -run 'TestInvokeAs|TestMustInvokeAs|TestInvokeByGenericType|TestInvokeAll' .`, `make test` and `make lint` pass
-- [ ] 21.4 Add `ExampleInvokeAll` (members by registered type) and godoc on `InvokeAll` (registered-type membership, the `InvokeAll[any]` sharp edge, per-member hooks, snapshot semantics); verify `go test -run ExampleInvokeAll$ .` passes
-- [ ] 21.5 Create `docs/docs/service-invocation/collection-invocation.md` with the membership section; verify `npm --prefix docs run build` succeeds
+- [x] 21.1 RED: add `TestInvokeAll_Membership` (scenario "Membership by registered type", 4 rows), `TestInvokeAll_EagerMembers` (scenario "Eager values are members without a provider call"), `TestInvokeAll_NilInjector` (scenario "Nil injector uses the default root scope") and `TestInvokeAll_TypedNilMember` (scenario "Typed-nil member is returned as is"); verify `go test -race -run 'TestInvokeAll_(Membership|EagerMembers|NilInjector|TypedNilMember)' .` fails to compile only on the missing `InvokeAll`
+- [x] 21.2 GREEN: add `InvokeAll[T]` in `di.go` backed by a pipeline in `invoke.go` that filters `serviceForEachRec` by `serviceCanCastToGeneric[T]` only and builds members sequentially, copying the per-member logic of `invokeByGenericType` with the member name for hooks (design D3); verify the 21.1 command passes and `make test` is green
+- [x] 21.3 REFACTOR: *Extract Function* `invokeServiceInstance(injector, vScope, hookName, realName, scope, service)` (design D3) and call it from `invokeByGenericType` (hookName = type name) and the collection pipeline (hookName = member name); verify `go test -race -run 'TestInvokeAs|TestMustInvokeAs|TestInvokeByGenericType|TestInvokeAll' .`, `make test` and `make lint` pass
+- [x] 21.4 Add `ExampleInvokeAll` (members by registered type) and godoc on `InvokeAll` (registered-type membership, the `InvokeAll[any]` sharp edge, per-member hooks, snapshot semantics); verify `go test -run ExampleInvokeAll$ .` passes
+- [x] 21.5 Create `docs/docs/service-invocation/collection-invocation.md` with the membership section; verify `npm --prefix docs run build` succeeds
 
 ## 22. Visibility, shadowing and alias exclusion (Part K)
 
