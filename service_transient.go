@@ -15,7 +15,8 @@ var (
 )
 
 type serviceTransient[T any] struct {
-	regIndex uint64 // registration order, unique per root container
+	opts     *serviceOptions // nil when registered without options
+	regIndex uint64          // registration order, unique per root container
 	name     string
 	typeName string
 
@@ -98,4 +99,12 @@ func (s *serviceTransient[T]) getRegistrationIndex() uint64 {
 
 func (s *serviceTransient[T]) setRegistrationIndex(index uint64) {
 	s.regIndex = index
+}
+
+func (s *serviceTransient[T]) getOptions() *serviceOptions {
+	return s.opts
+}
+
+func (s *serviceTransient[T]) setOptions(opts *serviceOptions) {
+	s.opts = opts
 }

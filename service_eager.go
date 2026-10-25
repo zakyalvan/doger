@@ -17,7 +17,8 @@ var (
 )
 
 type serviceEager[T any] struct {
-	regIndex uint64 // registration order, unique per root container
+	opts     *serviceOptions // nil when registered without options
+	regIndex uint64          // registration order, unique per root container
 	name     string
 	typeName string
 	instance T
@@ -173,4 +174,12 @@ func (s *serviceEager[T]) getRegistrationIndex() uint64 {
 
 func (s *serviceEager[T]) setRegistrationIndex(index uint64) {
 	s.regIndex = index
+}
+
+func (s *serviceEager[T]) getOptions() *serviceOptions {
+	return s.opts
+}
+
+func (s *serviceEager[T]) setOptions(opts *serviceOptions) {
+	s.opts = opts
 }

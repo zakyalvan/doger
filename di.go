@@ -54,9 +54,13 @@ func NameOf[T any]() string {
 //	doger.Provide(injector, func(i doger.Injector) (*MyService, error) {
 //	    return &MyService{...}, nil
 //	})
-func Provide[T any](i Injector, provider Provider[T]) {
+//
+// Options: opts attach opt-ins to the registration, such as [AsStarter] or
+// [DependsOnNamed]. A nil option is ignored, and a call without options
+// behaves exactly as before options existed.
+func Provide[T any](i Injector, provider Provider[T], opts ...ProvideOption) {
 	name := inferServiceName[T]()
-	ProvideNamed(i, name, provider)
+	ProvideNamed(i, name, provider, opts...)
 }
 
 // ProvideNamed registers a named service in the DI container.
@@ -75,10 +79,14 @@ func Provide[T any](i Injector, provider Provider[T]) {
 //	doger.ProvideNamed(injector, "backup-db", func(i doger.Injector) (*Database, error) {
 //	    return &Database{URL: "postgres://backup.acme.dev:5432/db"}, nil
 //	})
-func ProvideNamed[T any](i Injector, name string, provider Provider[T]) {
+//
+// Options: opts attach opt-ins to the registration, such as [AsStarter] or
+// [DependsOnNamed]. A nil option is ignored, and a call without options
+// behaves exactly as before options existed.
+func ProvideNamed[T any](i Injector, name string, provider Provider[T], opts ...ProvideOption) {
 	provide(i, name, provider, func(s string, a Provider[T]) serviceWrapper[T] {
 		return newServiceLazy(s, a)
-	})
+	}, opts)
 }
 
 // ProvideValue registers a value in the DI container, using type inference to determine the service name.
@@ -89,9 +97,13 @@ func ProvideNamed[T any](i Injector, name string, provider Provider[T]) {
 // Example:
 //
 //	ProvideValue(injector, &MyService{})
-func ProvideValue[T any](i Injector, value T) {
+//
+// Options: opts attach opt-ins to the registration, such as [AsStarter] or
+// [DependsOnNamed]. A nil option is ignored, and a call without options
+// behaves exactly as before options existed.
+func ProvideValue[T any](i Injector, value T, opts ...ProvideOption) {
 	name := inferServiceName[T]()
-	ProvideNamedValue(i, name, value)
+	ProvideNamedValue(i, name, value, opts...)
 }
 
 // ProvideNamedValue registers a named value in the DI container.
@@ -104,10 +116,14 @@ func ProvideValue[T any](i Injector, value T) {
 //
 //	doger.ProvideNamedValue(injector, "app-config", &Config{Port: 8080})
 //	doger.ProvideNamedValue(injector, "db-config", &Config{Port: 5432})
-func ProvideNamedValue[T any](i Injector, name string, value T) {
+//
+// Options: opts attach opt-ins to the registration, such as [AsStarter] or
+// [DependsOnNamed]. A nil option is ignored, and a call without options
+// behaves exactly as before options existed.
+func ProvideNamedValue[T any](i Injector, name string, value T, opts ...ProvideOption) {
 	provide(i, name, value, func(s string, a T) serviceWrapper[T] {
 		return newServiceEager(s, a)
-	})
+	}, opts)
 }
 
 // ProvideTransient registers a factory in the DI container, using type inference to determine the service name.
@@ -128,9 +144,13 @@ func ProvideNamedValue[T any](i Injector, name string, value T) {
 //	id2, _ := doger.Invoke[string](injector)
 //
 //	fmt.Println(id1 != id2) // Output: true
-func ProvideTransient[T any](i Injector, provider Provider[T]) {
+//
+// Options: opts attach opt-ins to the registration, such as [AsStarter] or
+// [DependsOnNamed]. A nil option is ignored, and a call without options
+// behaves exactly as before options existed.
+func ProvideTransient[T any](i Injector, provider Provider[T], opts ...ProvideOption) {
 	name := inferServiceName[T]()
-	ProvideNamedTransient(i, name, provider)
+	ProvideNamedTransient(i, name, provider, opts...)
 }
 
 // ProvideNamedTransient registers a named factory in the DI container.
@@ -152,10 +172,14 @@ func ProvideTransient[T any](i Injector, provider Provider[T]) {
 //	id2, _ := doger.InvokeNamed[string](injector, "request-id")
 //
 //	fmt.Println(id1 != id2) // Output: true
-func ProvideNamedTransient[T any](i Injector, name string, provider Provider[T]) {
+//
+// Options: opts attach opt-ins to the registration, such as [AsStarter] or
+// [DependsOnNamed]. A nil option is ignored, and a call without options
+// behaves exactly as before options existed.
+func ProvideNamedTransient[T any](i Injector, name string, provider Provider[T], opts ...ProvideOption) {
 	provide(i, name, provider, func(s string, a Provider[T]) serviceWrapper[T] {
 		return newServiceTransient(s, a)
-	})
+	}, opts)
 }
 
 // provide is an internal helper function that handles the common logic
@@ -164,7 +188,7 @@ func ProvideNamedTransient[T any](i Injector, name string, provider Provider[T])
 // - No duplicate service names are registered
 // - The service is properly created and stored
 // - Logging is performed for successful registration.
-func provide[T any, A any](i Injector, name string, valueOrProvider A, serviceCtor func(string, A) serviceWrapper[T]) {
+func provide[T any, A any](i Injector, name string, valueOrProvider A, serviceCtor func(string, A) serviceWrapper[T], opts []ProvideOption) {
 	_i := getInjectorOrDefault(i)
 	if _i.serviceExist(name) {
 		panic(fmt.Errorf("DI: service `%s` has already been declared", name))
@@ -172,6 +196,7 @@ func provide[T any, A any](i Injector, name string, valueOrProvider A, serviceCt
 
 	service := serviceCtor(name, valueOrProvider)
 	service.setRegistrationIndex(assignRegistrationIndex(_i, name))
+	service.setOptions(buildServiceOptions(opts))
 	_i.serviceSet(name, service)
 
 	_i.RootScope().opts.Logf("DI: service %s injected", name)
@@ -199,9 +224,13 @@ func assignRegistrationIndex(scope Injector, name string) uint64 {
 // resource leaks if the original service was already instantiated.
 //
 // Play: https://go.dev/play/p/g549GqBbj-n
-func Override[T any](i Injector, provider Provider[T]) {
+//
+// Options: opts attach opt-ins to the registration, such as [AsStarter] or
+// [DependsOnNamed]. A nil option is ignored, and a call without options
+// behaves exactly as before options existed.
+func Override[T any](i Injector, provider Provider[T], opts ...ProvideOption) {
 	name := inferServiceName[T]()
-	OverrideNamed(i, name, provider)
+	OverrideNamed(i, name, provider, opts...)
 }
 
 // OverrideNamed replaces the named service in the DI container.
@@ -211,10 +240,14 @@ func Override[T any](i Injector, provider Provider[T]) {
 // already been registered. Use with caution to avoid resource leaks.
 //
 // Play: https://go.dev/play/p/-gNF1BUEB5Q
-func OverrideNamed[T any](i Injector, name string, provider Provider[T]) {
+//
+// Options: opts attach opt-ins to the registration, such as [AsStarter] or
+// [DependsOnNamed]. A nil option is ignored, and a call without options
+// behaves exactly as before options existed.
+func OverrideNamed[T any](i Injector, name string, provider Provider[T], opts ...ProvideOption) {
 	override(i, name, provider, func(s string, a Provider[T]) serviceWrapper[T] {
 		return newServiceLazy(s, a)
-	})
+	}, opts)
 }
 
 // OverrideValue replaces the value in the DI container, using type inference to determine the service name.
@@ -224,9 +257,13 @@ func OverrideNamed[T any](i Injector, name string, provider Provider[T]) {
 // The old value will not be properly cleaned up if it was already instantiated.
 //
 // Play: https://go.dev/play/p/-gNF1BUEB5Q
-func OverrideValue[T any](i Injector, value T) {
+//
+// Options: opts attach opt-ins to the registration, such as [AsStarter] or
+// [DependsOnNamed]. A nil option is ignored, and a call without options
+// behaves exactly as before options existed.
+func OverrideValue[T any](i Injector, value T, opts ...ProvideOption) {
 	name := inferServiceName[T]()
-	OverrideNamedValue(i, name, value)
+	OverrideNamedValue(i, name, value, opts...)
 }
 
 // OverrideNamedValue replaces the named value in the DI container.
@@ -236,10 +273,14 @@ func OverrideValue[T any](i Injector, value T) {
 // Use with caution to avoid resource leaks.
 //
 // Play: https://go.dev/play/p/-gNF1BUEB5Q
-func OverrideNamedValue[T any](i Injector, name string, value T) {
+//
+// Options: opts attach opt-ins to the registration, such as [AsStarter] or
+// [DependsOnNamed]. A nil option is ignored, and a call without options
+// behaves exactly as before options existed.
+func OverrideNamedValue[T any](i Injector, name string, value T, opts ...ProvideOption) {
 	override(i, name, value, func(s string, a T) serviceWrapper[T] {
 		return newServiceEager(s, a)
-	})
+	}, opts)
 }
 
 // OverrideTransient replaces the factory in the DI container, using type inference to determine the service name.
@@ -250,9 +291,13 @@ func OverrideNamedValue[T any](i Injector, name string, value T) {
 // than overriding lazy or eager services.
 //
 // Play: https://go.dev/play/p/_wYwBADbCaN
-func OverrideTransient[T any](i Injector, provider Provider[T]) {
+//
+// Options: opts attach opt-ins to the registration, such as [AsStarter] or
+// [DependsOnNamed]. A nil option is ignored, and a call without options
+// behaves exactly as before options existed.
+func OverrideTransient[T any](i Injector, provider Provider[T], opts ...ProvideOption) {
 	name := inferServiceName[T]()
-	OverrideNamedTransient(i, name, provider)
+	OverrideNamedTransient(i, name, provider, opts...)
 }
 
 // OverrideNamedTransient replaces the named factory in the DI container.
@@ -263,21 +308,26 @@ func OverrideTransient[T any](i Injector, provider Provider[T]) {
 // than overriding lazy or eager services.
 //
 // Play: https://go.dev/play/p/_wYwBADbCaN
-func OverrideNamedTransient[T any](i Injector, name string, provider Provider[T]) {
+//
+// Options: opts attach opt-ins to the registration, such as [AsStarter] or
+// [DependsOnNamed]. A nil option is ignored, and a call without options
+// behaves exactly as before options existed.
+func OverrideNamedTransient[T any](i Injector, name string, provider Provider[T], opts ...ProvideOption) {
 	override(i, name, provider, func(s string, a Provider[T]) serviceWrapper[T] {
 		return newServiceTransient(s, a)
-	})
+	}, opts)
 }
 
 // override is an internal helper function that handles the common logic
 // for overriding services in the DI container. Unlike provide, it allows
 // replacing existing services without throwing an error.
-func override[T any, A any](i Injector, name string, valueOrProvider A, serviceCtor func(string, A) serviceWrapper[T]) {
+func override[T any, A any](i Injector, name string, valueOrProvider A, serviceCtor func(string, A) serviceWrapper[T], opts []ProvideOption) {
 	_i := getInjectorOrDefault(i)
 
 	// Note: We don't check if the service exists here, allowing override
 	service := serviceCtor(name, valueOrProvider)
 	service.setRegistrationIndex(assignRegistrationIndex(_i, name))
+	service.setOptions(buildServiceOptions(opts))
 	_i.serviceSet(name, service) // @TODO: should we unload/shutdown the previous service ?
 
 	_i.RootScope().opts.Logf("DI: service %s overridden", name)
@@ -527,7 +577,7 @@ func AsNamed[Initial any, Alias any](i Injector, initial string, alias string) e
 
 	provide(i, alias, nil, func(_ string, _ any) serviceWrapper[Alias] {
 		return newServiceAlias[Initial, Alias](alias, i, initial)
-	})
+	}, nil)
 
 	return nil
 }
@@ -663,9 +713,13 @@ func Package(services ...func(i Injector)) func(Injector) {
 //	    	return &Database{}, nil
 //		}),
 //	)
-func Lazy[T any](p Provider[T]) func(Injector) {
+//
+// Options: opts attach opt-ins to the registration, such as [AsStarter] or
+// [DependsOnNamed]. A nil option is ignored, and a call without options
+// behaves exactly as before options existed.
+func Lazy[T any](p Provider[T], opts ...ProvideOption) func(Injector) {
 	return func(injector Injector) {
-		Provide(injector, p)
+		Provide(injector, p, opts...)
 	}
 }
 
@@ -689,9 +743,13 @@ func Lazy[T any](p Provider[T]) func(Injector) {
 //	    	return &Database{}, nil
 //		}),
 //	)
-func LazyNamed[T any](serviceName string, p Provider[T]) func(Injector) {
+//
+// Options: opts attach opt-ins to the registration, such as [AsStarter] or
+// [DependsOnNamed]. A nil option is ignored, and a call without options
+// behaves exactly as before options existed.
+func LazyNamed[T any](serviceName string, p Provider[T], opts ...ProvideOption) func(Injector) {
 	return func(injector Injector) {
-		ProvideNamed(injector, serviceName, p)
+		ProvideNamed(injector, serviceName, p, opts...)
 	}
 }
 
@@ -712,9 +770,13 @@ func LazyNamed[T any](serviceName string, p Provider[T]) func(Injector) {
 //	var Package = doger.Package(
 //		doger.Eager[*Config](&Config{Port: 8080})
 //	)
-func Eager[T any](value T) func(Injector) {
+//
+// Options: opts attach opt-ins to the registration, such as [AsStarter] or
+// [DependsOnNamed]. A nil option is ignored, and a call without options
+// behaves exactly as before options existed.
+func Eager[T any](value T, opts ...ProvideOption) func(Injector) {
 	return func(injector Injector) {
-		ProvideValue(injector, value)
+		ProvideValue(injector, value, opts...)
 	}
 }
 
@@ -736,9 +798,13 @@ func Eager[T any](value T) func(Injector) {
 //	var Package = doger.Package(
 //		doger.EagerNamed[*Config]("app-config", &Config{Port: 8080})
 //	)
-func EagerNamed[T any](serviceName string, value T) func(Injector) {
+//
+// Options: opts attach opt-ins to the registration, such as [AsStarter] or
+// [DependsOnNamed]. A nil option is ignored, and a call without options
+// behaves exactly as before options existed.
+func EagerNamed[T any](serviceName string, value T, opts ...ProvideOption) func(Injector) {
 	return func(injector Injector) {
-		ProvideNamedValue(injector, serviceName, value)
+		ProvideNamedValue(injector, serviceName, value, opts...)
 	}
 }
 
@@ -761,9 +827,13 @@ func EagerNamed[T any](serviceName string, value T) func(Injector) {
 //	    	return &Logger{}, nil
 //		})
 //	)
-func Transient[T any](p Provider[T]) func(Injector) {
+//
+// Options: opts attach opt-ins to the registration, such as [AsStarter] or
+// [DependsOnNamed]. A nil option is ignored, and a call without options
+// behaves exactly as before options existed.
+func Transient[T any](p Provider[T], opts ...ProvideOption) func(Injector) {
 	return func(injector Injector) {
-		ProvideTransient(injector, p)
+		ProvideTransient(injector, p, opts...)
 	}
 }
 
@@ -787,9 +857,13 @@ func Transient[T any](p Provider[T]) func(Injector) {
 //	    	return &Logger{}, nil
 //		})
 //	)
-func TransientNamed[T any](serviceName string, p Provider[T]) func(Injector) {
+//
+// Options: opts attach opt-ins to the registration, such as [AsStarter] or
+// [DependsOnNamed]. A nil option is ignored, and a call without options
+// behaves exactly as before options existed.
+func TransientNamed[T any](serviceName string, p Provider[T], opts ...ProvideOption) func(Injector) {
 	return func(injector Injector) {
-		ProvideNamedTransient(injector, serviceName, p)
+		ProvideNamedTransient(injector, serviceName, p, opts...)
 	}
 }
 

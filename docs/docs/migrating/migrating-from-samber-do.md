@@ -88,8 +88,12 @@ To restore the old `(zero, nil)` result, run the program with `GODEBUG=panicnil=
 package main
 ```
 
+## Registration options and run-once root shutdown {#registration-options-and-root-shutdown}
+
+doger adds a trailing `...doger.ProvideOption` parameter to the registration functions and makes root `Shutdown()` run once per container. Calls compile unchanged; code that stores a registration function as a value, or relies on a second root `Shutdown()`, needs a small change. See [Upgrading to the Start lifecycle release](../upgrading/start-lifecycle.md).
+
 ## What stays the same {#what-stays-the-same}
 
 - The struct injection tag key is still `do` (`do:""`), and you can still override it with `InjectorOpts.StructTagKey`.
 - The messages of `ErrServiceNotFound`, `ErrServiceNotMatch`, `ErrCircularDependency` and `ErrHealthCheckTimeout` keep their `DI: ` prefix, and still match with `errors.Is`.
-- Every other exported identifier, signature, option and default.
+- Every other exported identifier, signature, option and default, apart from the additions above.

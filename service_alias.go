@@ -187,3 +187,11 @@ func (s *serviceAlias[Initial, Alias]) getRegistrationIndex() uint64 {
 func (s *serviceAlias[Initial, Alias]) setRegistrationIndex(index uint64) {
 	s.regIndex = index
 }
+
+// getOptions returns nil: an alias carries no opt-ins and does not inherit its target's.
+func (s *serviceAlias[Initial, Alias]) getOptions() *serviceOptions {
+	return nil
+}
+
+// setOptions ignores opts: an alias carries no opt-ins.
+func (s *serviceAlias[Initial, Alias]) setOptions(*serviceOptions) {}

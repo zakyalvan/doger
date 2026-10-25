@@ -18,7 +18,8 @@ var (
 )
 
 type serviceLazy[T any] struct {
-	regIndex uint64 // registration order, unique per root container
+	opts     *serviceOptions // nil when registered without options
+	regIndex uint64          // registration order, unique per root container
 	mu       sync.RWMutex
 	name     string
 	typeName string
@@ -250,4 +251,12 @@ func (s *serviceLazy[T]) getRegistrationIndex() uint64 {
 
 func (s *serviceLazy[T]) setRegistrationIndex(index uint64) {
 	s.regIndex = index
+}
+
+func (s *serviceLazy[T]) getOptions() *serviceOptions {
+	return s.opts
+}
+
+func (s *serviceLazy[T]) setOptions(opts *serviceOptions) {
+	s.opts = opts
 }
