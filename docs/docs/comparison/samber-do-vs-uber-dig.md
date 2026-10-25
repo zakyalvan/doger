@@ -12,7 +12,7 @@ sidebar_position: 3
 
 |                           | `doger`                                              | `uber/dig`                                |
 | ------------------------- | ---------------------------------------------------- | ----------------------------------------- |
-| **Mechanism**             | Go 1.18+ generics                                    | Reflection                                |
+| **Mechanism**             | Go generics (Go 1.27+)                               | Reflection                                |
 | **Type safety**           | Compile-time                                         | Runtime                                   |
 | **API style**             | Fluent, generic functions (`doger.Provide[T]`)       | Builder pattern (`container.Provide(fn)`) |
 | **Error handling**        | Errors from `Invoke()` (or panics with `MustInvoke`) | Errors from `Provide()` and `Invoke()`    |
