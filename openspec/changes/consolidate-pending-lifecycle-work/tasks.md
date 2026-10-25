@@ -23,9 +23,9 @@ Rules:
 
 ## 2. mergeShutdownReports reports success correctly (defect fix; design F2)
 
-- [ ] 2.1 RED: add `TestMergeShutdownReports_Succeed` to `errors_test.go` (no reports, two successful, one failing); verify `go test -race -run TestMergeShutdownReports_Succeed .` fails on the successful rows (`Succeed` false)
-- [ ] 2.2 GREEN: set `Succeed = len(out.Errors) == 0` (design F2); verify the 2.1 command passes and `make test` is green
-- [ ] 2.3 REFACTOR: none needed, a one-line fix; verify `make test` and `make lint` pass
+- [x] 2.1 RED: add `TestMergeShutdownReports_Succeed` to `errors_test.go` (no reports, two successful, one failing); verify `go test -race -run TestMergeShutdownReports_Succeed .` fails on the successful rows (`Succeed` false)
+- [x] 2.2 GREEN: set `Succeed = len(out.Errors) == 0` (design F2); verify the 2.1 command passes and `make test` is green
+- [x] 2.3 REFACTOR: none needed, a one-line fix; verify `make test` and `make lint` pass
 
 ## 3. The default Runnable handler is implicit (design F4)
 

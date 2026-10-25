@@ -88,7 +88,7 @@ func mergeShutdownReports(reports ...*ShutdownReport) *ShutdownReport {
 		out.ShutdownTime += r.ShutdownTime
 	}
 
-	out.Succeed = len(out.Errors) > 0
+	out.Succeed = len(out.Errors) == 0
 
 	return &out
 }

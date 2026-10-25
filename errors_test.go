@@ -85,3 +85,41 @@ func TestScope_ShutdownWithContext_ReportTimings(t *testing.T) {
 	is.True(ok)
 	is.Greater(dt, time.Duration(0))
 }
+
+func TestMergeShutdownReports_Succeed(t *testing.T) {
+	t.Parallel()
+
+	desc := ServiceDescription{ScopeID: "sid", ScopeName: "sname", Service: "svc"}
+	ok := func() *ShutdownReport {
+		return &ShutdownReport{
+			Succeed:             true,
+			Services:            []ServiceDescription{desc},
+			Errors:              map[ServiceDescription]error{},
+			ServiceShutdownTime: map[ServiceDescription]time.Duration{},
+		}
+	}
+	failing := &ShutdownReport{
+		Succeed:             false,
+		Services:            []ServiceDescription{desc},
+		Errors:              map[ServiceDescription]error{desc: assert.AnError},
+		ServiceShutdownTime: map[ServiceDescription]time.Duration{},
+	}
+
+	tests := []struct {
+		name    string
+		reports []*ShutdownReport
+		succeed bool
+	}{
+		{name: "no reports", reports: nil, succeed: true},
+		{name: "two successful", reports: []*ShutdownReport{ok(), ok()}, succeed: true},
+		{name: "one failing", reports: []*ShutdownReport{ok(), failing}, succeed: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.succeed, mergeShutdownReports(tt.reports...).Succeed)
+		})
+	}
+}
