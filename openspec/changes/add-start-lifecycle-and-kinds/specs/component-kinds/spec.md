@@ -69,7 +69,7 @@ Examples:
 <!-- cases: N/A 10 compatibility: new API -->
 
 ### Requirement: One handler per kind, staged around Starters
-`kind.Handle(root, stage, handler)` SHALL register the kind's handler on the root container. A later call for the same kind SHALL replace both handler and stage. `StageBeforeStart` handlers SHALL run after all candidates are built and before any Starter starts. `StageAfterStart` handlers SHALL run after all Starters have started.
+`kind.Handle(root, stage, handler)` SHALL register the kind's handler on the root container. A nil root SHALL mean `DefaultRootScope`, as a nil `Injector` does elsewhere in the library. A later call for the same kind SHALL replace both handler and stage. `StageBeforeStart` handlers SHALL run after all candidates are built and before any Starter starts. `StageAfterStart` handlers SHALL run after all Starters have started.
 
 #### Scenario: Handler stage relative to Starters
 ```gherkin
@@ -94,6 +94,17 @@ When the consumer calls Start()
 Then only "second" was recorded, after all Starters started
 ```
 
+#### Scenario: Nil root uses the default root scope
+```gherkin
+Given DefaultRootScope replaced by a new root scope and restored in t.Cleanup
+And k := doger.NewKind[Job, Spec]("k")
+And lazy "job" of type *CleanupJob registered on DefaultRootScope with k.With(Spec{})
+And k.Handle(nil, StageBeforeStart, handler recording names)
+When the consumer calls DefaultRootScope.Start()
+Then Start returns nil
+And the handler received "job"
+```
+
 #### Scenario: Kind without a handler
 ```gherkin
 Given lazy "job" opted into kind k and no handler registered for k
@@ -102,7 +113,7 @@ Then Start returns nil
 And "job" was built
 ```
 
-<!-- cases: 3 zero values: a nil handler and an invalid stage are rows of "Invalid kind values panic" -->
+<!-- cases: 3 zero values: a nil handler and an invalid stage are rows of "Invalid kind values panic"; a nil root is covered by "Nil root uses the default root scope" -->
 <!-- cases: N/A 4 boundaries: 0, 1 and many components per kind follow the same loop; covered by the ordering scenario -->
 <!-- cases: N/A 8 concurrency: handlers run sequentially on the Start goroutine -->
 <!-- cases: N/A 10 compatibility: new API -->

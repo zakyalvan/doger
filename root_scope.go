@@ -2,9 +2,16 @@ package doger
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"maps"
 	"os"
 	"os/signal"
+	"slices"
+	"sync"
+	"sync/atomic"
 	"syscall"
+	"time"
 
 	"github.com/jonboulle/clockwork"
 )
@@ -86,6 +93,12 @@ func NewWithOpts(opts *InjectorOpts, packages ...func(Injector)) *RootScope {
 	if opts.HookAfterShutdown == nil {
 		opts.HookAfterShutdown = []func(*Scope, string, error){}
 	}
+	if opts.HookBeforeStart == nil {
+		opts.HookBeforeStart = []func(*Scope, string){}
+	}
+	if opts.HookAfterStart == nil {
+		opts.HookAfterStart = []func(*Scope, string, error){}
+	}
 	if opts.Clock == nil {
 		opts.Clock = clockwork.NewRealClock()
 	}
@@ -97,6 +110,9 @@ func NewWithOpts(opts *InjectorOpts, packages ...func(Injector)) *RootScope {
 		healthCheckPool: nil,
 	}
 	root.self.rootScope = root
+
+	// The built-in Runnable kind is an ordinary kind with a default handler.
+	runnableKind.Handle(root, StageAfterStart, runRunner)
 
 	if opts.HealthCheckParallelism > 0 {
 		root.healthCheckPool = newJobPool[error](opts.HealthCheckParallelism)
@@ -129,7 +145,32 @@ type RootScope struct {
 	opts            *InjectorOpts   // Configuration options
 	dag             *DAG            // Dependency graph for service relationships
 	healthCheckPool *jobPool[error] // Pool for parallel health check operations
+
+	nextRegIndex atomic.Uint64 // next registration index, shared by every scope of this container
+	declareMu    sync.Mutex    // serializes DeclareDependency (cycle check plus add)
+
+	kindsMu sync.Mutex
+	kinds   []kindEntry // kind handlers, in order of first Handle
+
+	// Lifecycle state. Phases change only by compare-and-set under lifecycleMu,
+	// which is never held while user code runs.
+	lifecycleMu sync.Mutex
+	startPhase  startPhase
+	startCancel context.CancelCauseFunc // cancels the running Start's context
+	startDone   chan struct{}           // closed when the running Start returned
+	closePhase  closePhase
+	closeDone   chan struct{}   // closed when the winning Shutdown finished
+	closeReport *ShutdownReport // private copy of the winner's report
 }
+
+// closePhase is the shutdown state of a root container.
+type closePhase int
+
+const (
+	closeOpen closePhase = iota
+	closeClosing
+	closeClosed
+)
 
 // Pass-through methods that delegate to the underlying scope
 // These methods provide the same interface as Scope but operate on the root level
@@ -173,19 +214,205 @@ func (s *RootScope) HealthCheckWithContext(ctx context.Context) map[string]error
 }
 
 // Shutdown gracefully shuts down the root scope and all its descendant scopes.
+// It runs once per root container; see [RootScope.ShutdownWithContext].
 func (s *RootScope) Shutdown() *ShutdownReport { return s.ShutdownWithContext(context.Background()) }
 
 // ShutdownWithContext gracefully shuts down the root scope and all its descendant scopes with context support.
 // This method ensures proper cleanup of the health check pool and all registered services.
+//
+// Root shutdown runs once per root container:
+//   - The first caller shuts the services down. Concurrent and later callers
+//     do not shut anything down again; they wait for the first caller and
+//     return a copy of its report. Each caller owns its copy: changing it
+//     affects neither the stored report nor other callers.
+//   - A caller that arrives after the shutdown completed always gets the
+//     first report, even if its own context has already ended.
+//   - A caller still waiting when its context ends returns a failed report
+//     whose only error is keyed by the root scope with an empty service name
+//     and wraps ctx.Err(). The first caller's shutdown keeps running.
+//   - If the first caller panics before producing a report (for example in
+//     a custom Logf), the panic propagates to it, and every other caller gets
+//     a failed report containing "DI: root shutdown did not complete".
+//   - A nil ctx is treated as context.Background().
+//   - Services registered on the root after the first Shutdown are not shut
+//     down by a later root Shutdown.
+//
+// A Shutdown that begins while [RootScope.StartWithContext] runs cancels
+// Start, with cause [ErrStartAfterShutdown], and waits for it to return
+// before shutting services down. If ctx ends first, the report fails with a
+// root-scope error wrapping ctx.Err(), and shutdown proceeds while Start is
+// still running. Never call Shutdown synchronously from a Starter, handler,
+// runner, provider or hook running during Start: it would wait for itself.
+//
+// Only the [RootScope] methods follow this model. A shutdown reached through
+// the root's *Scope (a provider's injector, or [Injector.Shutdown] on a
+// virtual scope) and Scope.Shutdown on child scopes bypass it and behave as
+// before.
 func (s *RootScope) ShutdownWithContext(ctx context.Context) *ShutdownReport {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	ticket := s.beginClose()
+	if !ticket.winner {
+		return s.waitForClose(ctx, ticket.done)
+	}
+
+	report := s.shutdownAsWinner(ctx, ticket)
+
+	// pointClosed: closeDone is closed, so code here may call Shutdown().
+	return report
+}
+
+// waitForClose waits for the winning Shutdown, bounded by ctx, and returns a
+// copy of its report.
+func (s *RootScope) waitForClose(ctx context.Context, done <-chan struct{}) *ShutdownReport {
+	if awaitDone(done, ctx) {
+		s.lifecycleMu.Lock()
+		defer s.lifecycleMu.Unlock()
+		return cloneShutdownReport(s.closeReport)
+	}
+
+	return s.rootFailureReport(fmt.Errorf("DI: waiting for root shutdown: %w", ctx.Err()))
+}
+
+// shutdownAsWinner shuts the container down. Its deferred finishClose runs
+// even when this goroutine panics, so waiters are always released.
+func (s *RootScope) shutdownAsWinner(ctx context.Context, ticket closeTicket) (report *ShutdownReport) {
+	defer func() { s.finishClose(report) }()
 	defer func() {
+		// Only the winner touches the pool.
 		if s.healthCheckPool != nil {
 			s.healthCheckPool.stop()
 			s.healthCheckPool = nil
 		}
 	}()
 
-	return s.self.ShutdownWithContext(ctx)
+	startErr := waitForStart(ctx, ticket)
+
+	// pointClosing
+
+	report = s.self.ShutdownWithContext(ctx)
+	if startErr != nil {
+		report.Errors[newServiceDescription(s.ID(), s.Name(), "")] = startErr
+		report.Succeed = false
+	}
+
+	return report
+}
+
+// waitForStart cancels a Start that was running when the close phase began,
+// with cause ErrStartAfterShutdown, and waits for it to return, bounded by
+// ctx. It returns an error when ctx ended first.
+func waitForStart(ctx context.Context, ticket closeTicket) error {
+	if !ticket.inFlight {
+		return nil
+	}
+
+	ticket.startCancel(ErrStartAfterShutdown)
+	if !awaitDone(ticket.startDone, ctx) {
+		return fmt.Errorf("DI: waiting for start: %w", ctx.Err())
+	}
+
+	return nil
+}
+
+// closeTicket is what a Shutdown caller learns when it enters the close phase.
+type closeTicket struct {
+	done   chan struct{} // closed when the winner finished
+	winner bool          // this caller runs the shutdown
+
+	// winner only: a Start running when the close phase began
+	inFlight    bool
+	startCancel context.CancelCauseFunc
+	startDone   chan struct{}
+}
+
+// beginClose moves the close phase from open to closing. The caller that
+// does it is the winner and runs the shutdown; any other caller waits on done.
+func (s *RootScope) beginClose() closeTicket {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+
+	if s.closePhase != closeOpen {
+		return closeTicket{done: s.closeDone}
+	}
+
+	s.closePhase = closeClosing
+	s.closeDone = make(chan struct{})
+
+	return closeTicket{
+		done:        s.closeDone,
+		winner:      true,
+		inFlight:    s.startPhase == startStarting,
+		startCancel: s.startCancel,
+		startDone:   s.startDone,
+	}
+}
+
+// finishClose stores a private copy of the winner's report and releases the
+// waiters. A nil report means the winner panicked before producing one.
+func (s *RootScope) finishClose(report *ShutdownReport) {
+	stored := cloneShutdownReport(report)
+	if report == nil {
+		stored = s.rootFailureReport(errors.New("DI: root shutdown did not complete"))
+	}
+
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+
+	s.closePhase = closeClosed
+	s.closeReport = stored
+	close(s.closeDone)
+}
+
+// rootFailureReport returns a failed report whose only error is keyed by the
+// root scope with an empty service name.
+func (s *RootScope) rootFailureReport(err error) *ShutdownReport {
+	return &ShutdownReport{
+		Succeed:             false,
+		Services:            []ServiceDescription{},
+		Errors:              map[ServiceDescription]error{newServiceDescription(s.ID(), s.Name(), ""): err},
+		ShutdownTime:        0,
+		ServiceShutdownTime: map[ServiceDescription]time.Duration{},
+	}
+}
+
+// awaitDone waits until done is closed or ctx ends, and prefers completion:
+// it reports true whenever done is closed, even if ctx has ended too.
+func awaitDone(done <-chan struct{}, ctx context.Context) bool { //nolint:revive // done first mirrors the design
+	select {
+	case <-done:
+		return true
+	default:
+	}
+
+	select {
+	case <-done:
+		return true
+	case <-ctx.Done():
+		select {
+		case <-done:
+			return true
+		default:
+			return false
+		}
+	}
+}
+
+// cloneShutdownReport deep-copies a report, so callers cannot alter each other's copy.
+func cloneShutdownReport(report *ShutdownReport) *ShutdownReport {
+	if report == nil {
+		return nil
+	}
+
+	return &ShutdownReport{
+		Succeed:             report.Succeed,
+		Services:            slices.Clone(report.Services),
+		Errors:              maps.Clone(report.Errors),
+		ShutdownTime:        report.ShutdownTime,
+		ServiceShutdownTime: maps.Clone(report.ServiceShutdownTime),
+	}
 }
 
 func (s *RootScope) clone(root *RootScope, parent *Scope) *Scope { return s.self.clone(root, parent) }
@@ -296,6 +523,18 @@ func (s *RootScope) AddAfterShutdownHook(hook func(*Scope, string, error)) {
 	s.opts.HookAfterShutdown = append(s.opts.HookAfterShutdown, hook)
 }
 
+// AddBeforeStartHook adds a hook that will be called by Start just before a
+// service's Start method.
+func (s *RootScope) AddBeforeStartHook(hook func(*Scope, string)) {
+	s.opts.HookBeforeStart = append(s.opts.HookBeforeStart, hook)
+}
+
+// AddAfterStartHook adds a hook that will be called by Start just after a
+// service's Start method, with the error the method returned.
+func (s *RootScope) AddAfterStartHook(hook func(*Scope, string, error)) {
+	s.opts.HookAfterStart = append(s.opts.HookAfterStart, hook)
+}
+
 // Clone clones injector with provided services but not with invoked instances.
 //
 // Play: https://go.dev/play/p/DqIlXhZ8c4t
@@ -309,6 +548,9 @@ func (s *RootScope) Clone() *RootScope {
 func (s *RootScope) CloneWithOpts(opts *InjectorOpts) *RootScope {
 	clone := NewWithOpts(opts)
 	clone.self = s.clone(clone, nil)
+	// Read after copying: every copied wrapper got its index before it was
+	// stored, so later registrations in the clone come after all of them.
+	clone.nextRegIndex.Store(s.nextRegIndex.Load())
 
 	s.opts.Logf("DI: injector cloned")
 

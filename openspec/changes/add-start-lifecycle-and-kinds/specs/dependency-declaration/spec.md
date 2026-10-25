@@ -152,6 +152,30 @@ And no Starter was started
 <!-- cases: N/A 9 panics: no panic paths; all failures are returned errors -->
 <!-- cases: N/A 10 compatibility: new API -->
 
+### Requirement: Clones do not copy declared edges
+A clone SHALL NOT copy edges declared with `DeclareDependency`. Static `DependsOn` edges SHALL be recorded again when the clone builds the dependent.
+
+#### Scenario: Clones do not copy declared edges
+```gherkin
+Given a root scope with lazy "scheduler", lazy "job" and lazy "worker" registered with DependsOnNamed("job")
+And DeclareDependency(root, "scheduler", "job") returned nil
+And "worker" was invoked on the root scope
+When the consumer clones the root scope and invokes "<invoked>" on the clone
+Then ExplainNamedService(clone, "<invoked>") lists dependencies <deps>
+
+Examples:
+  | invoked   | deps |
+  | scheduler | none |
+  | worker    | job  |
+```
+
+<!-- cases: N/A 2 overrides: re-declare edges on the clone, e.g. from a kind handler, which runs again when the clone starts -->
+<!-- cases: N/A 3 zero values, 4 boundaries, 5 errors: no inputs beyond the scenario -->
+<!-- cases: 7 lifecycle: the two rows cover a declared edge and a static edge -->
+<!-- cases: N/A 8 concurrency: Clone keeps the existing scope locking -->
+<!-- cases: N/A 9 panics: none -->
+<!-- cases: N/A 10 compatibility: Clone never copied the dependency graph -->
+
 ### Requirement: Declared edges order shutdown
 Shutdown SHALL treat declared edges, static and dynamic, exactly like invoked dependencies: a dependent is shut down before the services it depends on.
 

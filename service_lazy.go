@@ -19,6 +19,8 @@ var (
 )
 
 type serviceLazy[T any] struct {
+	opts     *serviceOptions // nil when registered without options
+	regIndex uint64          // registration order, unique per root container
 	mu       sync.RWMutex
 	name     string
 	typeName string
@@ -101,6 +103,10 @@ func (s *serviceLazy[T]) getInstance(i Injector) (T, error) {
 func (s *serviceLazy[T]) build(i Injector) (err error) {
 	clock := injectorClock(i)
 	start := clock.Now()
+
+	if err := resolveDeclaredDependencies(i, s.opts); err != nil {
+		return err
+	}
 
 	instance, err := handleProviderPanic(s.provider, i)
 	if err != nil {
@@ -227,6 +233,8 @@ func (s *serviceLazy[T]) clone(newScope Injector) any {
 	return &serviceLazy[T]{
 		mu:       sync.RWMutex{},
 		name:     s.name,
+		regIndex: s.regIndex,
+		opts:     s.opts,
 		typeName: s.typeName,
 
 		built:     false,
@@ -252,4 +260,20 @@ func (s *serviceLazy[T]) source() (stacktrace.Frame, []stacktrace.Frame) {
 
 func (s *serviceLazy[T]) getBuildTime() (time.Duration, bool) {
 	return s.buildTime, s.built
+}
+
+func (s *serviceLazy[T]) getRegistrationIndex() uint64 {
+	return s.regIndex
+}
+
+func (s *serviceLazy[T]) setRegistrationIndex(index uint64) {
+	s.regIndex = index
+}
+
+func (s *serviceLazy[T]) getOptions() *serviceOptions {
+	return s.opts
+}
+
+func (s *serviceLazy[T]) setOptions(opts *serviceOptions) {
+	s.opts = opts
 }

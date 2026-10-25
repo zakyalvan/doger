@@ -167,7 +167,7 @@ Examples:
 <!-- cases: 10 compatibility: Clone/Override/As behave as before for registrations without options -->
 
 ### Requirement: Registration order is kept by override and clone
-Wherever this change orders services by registration (ties in discovery, start and kind handling), a service SHALL keep the position of its first registration in its own scope when it is overridden there. A clone SHALL keep its source's positions, and services registered later in the clone SHALL come after them.
+Wherever this change orders services by registration (ties in discovery, start and kind handling), a service SHALL keep the position of its first registration in its own scope when it is overridden there. A clone SHALL keep its source's positions, and services registered later in the clone SHALL come after them. Positions SHALL stay distinct within a container, including in a clone made while services are being registered on its source.
 
 #### Scenario: Registration order survives override and clone
 ```gherkin
@@ -190,5 +190,5 @@ Examples:
 <!-- cases: N/A 5 errors: ordering cannot fail -->
 <!-- cases: N/A 9 panics: none -->
 <!-- cases: 6 duplicates: overriding in a child scope registers a new, later service in that scope (third row: root "a", then "request" "a") -->
-<!-- cases: 8 concurrency: concurrent registrations from many goroutines get distinct positions; checked by the internal race test TestRegistrationIndex_ConcurrentUnique listed in design.md -->
+<!-- cases: 8 concurrency: concurrent registrations from many goroutines get distinct positions, including registrations racing a Clone; checked by the internal race tests TestRegistrationIndex_ConcurrentUnique and TestRegistrationIndex_CloneDuringRegistration listed in design.md -->
 <!-- cases: N/A 10 compatibility: existing APIs did not promise an order -->

@@ -17,6 +17,8 @@ var (
 )
 
 type serviceEager[T any] struct {
+	opts     *serviceOptions // nil when registered without options
+	regIndex uint64          // registration order, unique per root container
 	name     string
 	typeName string
 	instance T
@@ -25,6 +27,10 @@ type serviceEager[T any] struct {
 	invokationFrames        map[stacktrace.Frame]struct{} // map garanties uniqueness
 	invokationFramesMu      sync.RWMutex
 	invokationFramesCounter uint32
+
+	// declared dependencies, resolved on the first successful invocation
+	depsMu       sync.Mutex
+	depsResolved bool
 }
 
 func newServiceEager[T any](name string, instance T) *serviceEager[T] {
@@ -73,6 +79,19 @@ func (s *serviceEager[T]) getInstance(i Injector) (T, error) {
 			s.invokationFrames[frame] = struct{}{}
 		}
 		s.invokationFramesMu.Unlock()
+	}
+
+	if s.opts != nil && len(s.opts.dependsOn) > 0 {
+		s.depsMu.Lock()
+		defer s.depsMu.Unlock()
+
+		// set only on success, so a failed resolution is retried on the next invocation
+		if !s.depsResolved {
+			if err := resolveDeclaredDependencies(i, s.opts); err != nil {
+				return empty[T](), err
+			}
+			s.depsResolved = true
+		}
 	}
 
 	return s.instance, nil
@@ -144,6 +163,8 @@ func (s *serviceEager[T]) shutdown(ctx context.Context) error {
 func (s *serviceEager[T]) clone(newScope Injector) any {
 	return &serviceEager[T]{
 		name:     s.name,
+		regIndex: s.regIndex,
+		opts:     s.opts,
 		typeName: s.typeName,
 		instance: s.instance,
 
@@ -163,4 +184,20 @@ func (s *serviceEager[T]) source() (stacktrace.Frame, []stacktrace.Frame) {
 	s.invokationFramesMu.RUnlock()
 
 	return s.providerFrame, invokationFrames
+}
+
+func (s *serviceEager[T]) getRegistrationIndex() uint64 {
+	return s.regIndex
+}
+
+func (s *serviceEager[T]) setRegistrationIndex(index uint64) {
+	s.regIndex = index
+}
+
+func (s *serviceEager[T]) getOptions() *serviceOptions {
+	return s.opts
+}
+
+func (s *serviceEager[T]) setOptions(opts *serviceOptions) {
+	s.opts = opts
 }

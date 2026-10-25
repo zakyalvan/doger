@@ -69,6 +69,8 @@ injector := doger.NewWithOpts(&doger.InjectorOpts{
     HookAfterInvocation:    []func(scope *doger.Scope, serviceName string, err error){},
     HookBeforeShutdown:     []func(scope *doger.Scope, serviceName string){},
     HookAfterShutdown:      []func(scope *doger.Scope, serviceName string, err error){},
+    HookBeforeStart:        []func(scope *doger.Scope, serviceName string){},
+    HookAfterStart:         []func(scope *doger.Scope, serviceName string, err error){},
 
     Logf: func(format string, args ...any) {
         // ...
@@ -79,6 +81,7 @@ injector := doger.NewWithOpts(&doger.InjectorOpts{
     HealthCheckTimeout:       100 * time.Millisecond,
 
     Clock: nil, // nil: the real clock
+    DisableStarterAutoDetection: false, // true: Start only starts AsStarter() services
 })
 ```
 
@@ -107,9 +110,13 @@ clock.Advance(5 * time.Second) // a check still running now times out
 With a fake clock, a context the container creates for a health check blocks on `ctx.Err()` until it is done (clockwork behavior). In a `HealthCheck(ctx)` method, wait on `<-ctx.Done()` instead of polling `ctx.Err()`.
 :::
 
+### Start hooks {#start-hooks}
+
+`HookBeforeStart` and `HookAfterStart` run around each service's `Start` method when the container [starts](../service-lifecycle/starter.md), in the order they were added. `HookAfterStart` receives the error the method returned, **unwrapped**: `nil` on success, or the recovered panic as an error. No start hook runs for an `AsStarter()` service whose instance has no `Start` method, since no method is called. A panicking hook propagates out of `Start`, as a panicking shutdown hook does.
+
 ### Add hooks at runtime {#add-hooks-at-runtime}
 
-Hooks can also be registered after the injector is created using helper methods on the root scope. These append to the corresponding hook lists in `doger.InjectorOpts` and apply to subsequent registrations/invocations/shutdowns.
+Hooks can also be registered after the injector is created using helper methods on the root scope. These append to the corresponding hook lists in `doger.InjectorOpts` and apply to subsequent registrations/invocations/starts/shutdowns.
 
 ```go
 import "github.com/kartaladev/doger"
@@ -129,6 +136,14 @@ injector.AddBeforeInvocationHook(func(scope *doger.Scope, serviceName string) {
     // ...
 })
 injector.AddAfterInvocationHook(func(scope *doger.Scope, serviceName string, err error) {
+    // ...
+})
+
+// Start hooks
+injector.AddBeforeStartHook(func(scope *doger.Scope, serviceName string) {
+    // ...
+})
+injector.AddAfterStartHook(func(scope *doger.Scope, serviceName string, err error) {
     // ...
 })
 
