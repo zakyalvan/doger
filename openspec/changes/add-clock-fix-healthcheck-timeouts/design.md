@@ -2,7 +2,7 @@
 
 ## Context
 
-See proposal.md (Why, Defect) for the motivation, and `specs/health-check-timeouts/spec.md` and `specs/container-clock/spec.md` for the required behavior. This change builds on `upgrade-go-1-27` (Go 1.27 floor, so `testing/synctest` and `sync.WaitGroup.Go` are available).
+See proposal.md (Why, Defect) for the motivation, and `specs/health-check-timeouts/spec.md` and `specs/container-clock/spec.md` for the required behavior. This change builds on the archived `upgrade-go-1-27` (#2: Go 1.27 floor, so `testing/synctest` and `sync.WaitGroup.Go` are available).
 
 **How a health check is decided today**
 - Scope-wide checks: `(*Scope).HealthCheckWithContext` optionally wraps the context in `context.WithTimeout(HealthCheckGlobalTimeout)`. It then calls `(*RootScope).queueServiceHealthcheck` for each service.

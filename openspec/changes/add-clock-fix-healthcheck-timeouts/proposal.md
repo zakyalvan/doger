@@ -38,7 +38,7 @@ None. `module-identity` requires `ErrHealthCheckTimeout`'s message to stay `DI: 
 - `go.mod`/`go.sum` of the root module. Every workspace module's `go.sum` (and `go.mod` indirect block) after `go mod tidy`.
 - Tests: `root_scope_test.go`, `scope_test.go`, new `healthcheck_timeout_test.go`, `clock_test.go`, and `Example*` tests for the option.
 - Docs: `README.md`, `docs/docs/getting-started.md`, `docs/docs/about.md`, `docs/docs/comparison/samber-do-vs-uber-fx.md` (dependency statements), and the health-check page for the clock option and the timeout rule.
-- Depends on `upgrade-go-1-27` (`testing/synctest` needs `go 1.25` or later). Developed on `fix/healthcheck-timeout-flake`, branched from `feat/upgrade-go-1-27`.
+- Builds on `upgrade-go-1-27` (merged in #2): `testing/synctest` needs `go 1.25` or later.
 
 ## Defaults & Control
 

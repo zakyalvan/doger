@@ -1,6 +1,6 @@
 # Tasks
 
-Specs: `specs/health-check-timeouts/spec.md`, `specs/container-clock/spec.md`. Read design.md before each group: the checkbox lines carry only the summary. Develop on `fix/healthcheck-timeout-flake` (branched from `feat/upgrade-go-1-27`). Commands run from the repository root unless a task names a module. Fake-clock and bubble tests follow design D5: `synctest.Test`, `synctest.Wait()` before each `Advance`, no `testWithTimeout` inside a bubble, and a trailing bubble `time.Sleep` to let abandoned checks finish.
+Specs: `specs/health-check-timeouts/spec.md`, `specs/container-clock/spec.md`. Read design.md before each group: the checkbox lines carry only the summary. Develop on a branch from `main` (which carries `upgrade-go-1-27` since #2). Commands run from the repository root unless a task names a module. Fake-clock and bubble tests follow design D5: `synctest.Test`, `synctest.Wait()` before each `Advance`, no `testWithTimeout` inside a bubble, and a trailing bubble `time.Sleep` to let abandoned checks finish.
 
 ## 1. Baseline
 
@@ -35,6 +35,5 @@ Specs: `specs/health-check-timeouts/spec.md`, `specs/container-clock/spec.md`. R
 
 ## Workflow follow-up
 
-- Merge `upgrade-go-1-27` first, then rebase `fix/healthcheck-timeout-flake` onto `main`.
 - Run `/opsx:verify`, then archive after review.
 - Separate decision: whether `HealthCheckTimeout`/`HealthCheckGlobalTimeout` should also apply to the per-service `HealthCheck*` functions (design Non-Goals).
