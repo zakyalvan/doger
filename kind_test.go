@@ -632,3 +632,64 @@ func TestRunnable_ReassignedVariable(t *testing.T) {
 	require.NoError(t, root.Start())
 	assert.Equal(t, []string{"run job"}, events.list())
 }
+
+func TestKind_CloneCopiesHandlers(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		clone func(*RootScope) *RootScope
+	}{
+		{name: "Clone()", clone: (*RootScope).Clone},
+		{name: "CloneWithOpts(&InjectorOpts{})", clone: func(root *RootScope) *RootScope { return root.CloneWithOpts(&InjectorOpts{}) }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+
+			root := New()
+			events := &callRecorder{}
+			k := NewKind[Job, Spec]("k")
+			ProvideNamed(root, "job", func(Injector) (*CleanupJob, error) { return &CleanupJob{name: "job"}, nil }, k.With(Spec{}))
+			provideRunner(root, events, "migrate", nil, AsRunnable())
+			k.Handle(root, StageBeforeStart, func(_ context.Context, c Component[Job, Spec]) error {
+				events.record("k " + c.Name)
+				return nil
+			})
+			Runnable.Handle(root, StageAfterStart, func(_ context.Context, c Component[Runner, struct{}]) error {
+				events.record("custom " + c.Name)
+				return nil
+			})
+
+			clone := tt.clone(root)
+
+			require.NoError(t, clone.Start())
+			assert.Equal(t, []string{"k job", "custom migrate"}, events.list())
+		})
+	}
+}
+
+func TestKind_CloneReplaceIsolated(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	events := &callRecorder{}
+	k := NewKind[Job, Spec]("k")
+	ProvideNamed(root, "job", func(Injector) (*CleanupJob, error) { return &CleanupJob{name: "job"}, nil }, k.With(Spec{}))
+	k.Handle(root, StageBeforeStart, func(context.Context, Component[Job, Spec]) error {
+		events.record("source")
+		return nil
+	})
+
+	clone := root.Clone()
+	k.Handle(clone, StageBeforeStart, func(context.Context, Component[Job, Spec]) error {
+		events.record("clone")
+		return nil
+	})
+
+	require.NoError(t, root.Start())
+	assert.Equal(t, []string{"source"}, events.list())
+}

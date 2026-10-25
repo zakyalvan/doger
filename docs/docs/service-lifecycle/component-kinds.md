@@ -67,7 +67,7 @@ Edges declared with `DeclareDependency` during `StageBeforeStart` order the star
 - The first handler error, or a recovered handler panic, stops `Start` with an error naming the kind and the service and wrapping the cause.
 - The handler receives the Start-time context, cancelled when `Start` returns or when `Shutdown` begins.
 - `Handle` panics on a zero `Kind` (not created with `NewKind`), an unknown stage, or a `nil` handler.
-- Clones get only the default handlers; re-register custom handlers on a clone.
+- Clones copy the kind handlers, replaced `Runnable` handlers included, with their stages and order. Handling a kind on a clone replaces its handler on that clone only.
 
 ## The built-in Runnable kind {#runnable}
 

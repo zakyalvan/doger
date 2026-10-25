@@ -120,10 +120,10 @@ Rules:
 
 ## 17. Clones copy kind handlers (component-kinds; design Q1)
 
-- [ ] 17.1 RED: add `TestKind_CloneCopiesHandlers` (scenario "Clone keeps replaced handlers", 2 rows) and `TestKind_CloneReplaceIsolated` (scenario "Replacing a handler on the clone leaves the source unchanged") to `kind_test.go`; verify `go test -race -run 'TestKind_Clone' .` fails on both rows (clone runs the default Runnable handler and no k handler); record that `CloneReplaceIsolated` passes on arrival and show it can fail by temporarily sharing the source's `kinds` slice with the clone (not committed)
-- [ ] 17.2 GREEN: copy `s.kinds` under `kindsMu` into the clone in `CloneWithOpts` (design Q1); verify the 17.1 command passes and `make test` is green
-- [ ] 17.3 REFACTOR: *Extract Function* `(*RootScope).copyKindsTo(clone)`; verify `make test` and `make lint` pass
-- [ ] 17.4 Update the `Clone`/`CloneWithOpts` godoc, the component-kinds page (clones), and an upgrading-page entry; verify the docs lint and build pass
+- [x] 17.1 RED: add `TestKind_CloneCopiesHandlers` (scenario "Clone keeps replaced handlers", 2 rows) and `TestKind_CloneReplaceIsolated` (scenario "Replacing a handler on the clone leaves the source unchanged") to `kind_test.go`; verify `go test -race -run 'TestKind_Clone' .` fails on both rows (clone runs the default Runnable handler and no k handler); record that `CloneReplaceIsolated` passes on arrival and show it can fail by temporarily sharing the source's `kinds` slice with the clone (not committed)
+- [x] 17.2 GREEN: copy `s.kinds` under `kindsMu` into the clone in `CloneWithOpts` (design Q1); verify the 17.1 command passes and `make test` is green
+- [x] 17.3 REFACTOR: *Extract Function* `(*RootScope).copyKindsTo(clone)`; verify `make test` and `make lint` pass
+- [x] 17.4 Update the `Clone`/`CloneWithOpts` godoc, the component-kinds page (clones), and an upgrading-page entry; verify the docs lint and build pass
 
 ## 18. Start failures are StartError values (container-start; design Q2)
 

@@ -56,3 +56,9 @@ Behavior changes:
 - `ShutdownNamed` on an alias name removes the alias and no longer shuts its target down.
 
 Migration: shut the target down by its own name, or through its own scope.
+
+## Clones copy kind handlers {#clone-kind-handlers}
+
+`Clone()` and `CloneWithOpts()` now copy the source's kind handlers, including a replaced `Runnable` handler, with their stages and order. A clone used to get only the default `Runnable` handler, so custom kinds had no handler on it.
+
+Migration: none if you re-registered the same handlers on the clone. To use a different handler on a clone, call `Kind.Handle` on the clone; it replaces the handler on the clone only.

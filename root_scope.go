@@ -581,6 +581,9 @@ func (s *RootScope) AddContainerClosedHook(hook func(context.Context, *RootScope
 }
 
 // Clone clones injector with provided services but not with invoked instances.
+// The clone keeps the options, hooks included, and the kind handlers
+// (including a replaced Runnable handler), but not the lifecycle state: it
+// starts and shuts down independently.
 //
 // Play: https://go.dev/play/p/DqIlXhZ8c4t
 func (s *RootScope) Clone() *RootScope {
@@ -588,11 +591,16 @@ func (s *RootScope) Clone() *RootScope {
 }
 
 // CloneWithOpts clones injector with provided services but not with invoked instances, with options.
+// The clone uses only opts (hooks included), and keeps the source's kind
+// handlers, in order. Handling a kind on the clone replaces its handler on
+// the clone only.
 //
 // Play: https://go.dev/play/p/fT-v63fbFk5
 func (s *RootScope) CloneWithOpts(opts *InjectorOpts) *RootScope {
 	clone := NewWithOpts(opts)
 	clone.self = s.clone(clone, nil)
+	s.copyKindsTo(clone)
+
 	// Read after copying: every copied wrapper got its index before it was
 	// stored, so later registrations in the clone come after all of them.
 	clone.nextRegIndex.Store(s.nextRegIndex.Load())
@@ -600,6 +608,18 @@ func (s *RootScope) CloneWithOpts(opts *InjectorOpts) *RootScope {
 	s.opts.Logf("DI: injector cloned")
 
 	return clone
+}
+
+// copyKindsTo copies the kind handler entries, in their order, into clone.
+// Entries do not depend on the container, so they can be shared.
+func (s *RootScope) copyKindsTo(clone *RootScope) {
+	s.kindsMu.Lock()
+	kinds := slices.Clone(s.kinds)
+	s.kindsMu.Unlock()
+
+	clone.kindsMu.Lock()
+	clone.kinds = kinds
+	clone.kindsMu.Unlock()
 }
 
 // ShutdownOnSignals listens for the provided signals in order to gracefully stop services.
