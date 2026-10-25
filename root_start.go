@@ -15,6 +15,7 @@ const (
 	startIdle startPhase = iota
 	startStarting
 	startStarted
+	startReady // every Started hook returned
 	startFailed
 )
 
@@ -86,7 +87,30 @@ func (s *RootScope) StartWithContext(ctx context.Context) error {
 	err = s.runStart(startCtx)
 
 	// pointAfterStart: startDone is closed, so code here may call Shutdown().
+	if err == nil {
+		s.runObserverHooks(ctx, s.opts.HookContainerStarted)
+		s.markReady()
+		s.runObserverHooks(ctx, s.opts.HookContainerReady)
+	}
+
 	return err
+}
+
+// runObserverHooks runs container hooks in order, on a copy of the list.
+func (s *RootScope) runObserverHooks(ctx context.Context, hooks []func(context.Context, *RootScope)) {
+	for _, hook := range slices.Clone(hooks) {
+		hook(ctx, s)
+	}
+}
+
+// markReady moves the start phase from started to ready.
+func (s *RootScope) markReady() {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+
+	if s.startPhase == startStarted {
+		s.startPhase = startReady
+	}
 }
 
 // beginStart moves the start phase from idle to starting.

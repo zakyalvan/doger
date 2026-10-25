@@ -8,9 +8,12 @@ sidebar_position: 5
 
 Container hooks run container-wide logic once per root container: when it starts, when it is ready, when its start fails, and around its shutdown. They complement the per-service hooks (`HookBeforeStart`, `HookAfterShutdown`…), which run once per service.
 
-| Hook                    | Signature                                 | Fires                                   |
-| ----------------------- | ----------------------------------------- | --------------------------------------- |
-| `HookContainerStarting` | `func(context.Context, *RootScope) error` | first `Start`, before anything is built |
+| Hook                    | Signature                                  | Fires                                      |
+| ----------------------- | ------------------------------------------ | ------------------------------------------ |
+| `HookContainerStarting` | `func(context.Context, *RootScope) error`  | first `Start`, before anything is built    |
+| `HookContainerStarted`  | `func(context.Context, *RootScope)`        | first `Start`, once its pipeline succeeded |
+| `HookContainerReady`    | `func(context.Context, *RootScope)`        | first `Start`, after every Started hook    |
+| `HookContainerFailed`   | `func(context.Context, *RootScope, error)` | first `Start`, when it fails               |
 
 Each hook list is a field of `doger.InjectorOpts`, and has a matching `RootScope.AddContainer<State>Hook` method.
 
@@ -56,3 +59,24 @@ err := root.Start()
 ```
 
 Because Starting hooks run before the context check, they run even when the context passed to `StartWithContext` is already cancelled. `Start` then fails with an error matching `context.Canceled`.
+
+## Started and Ready {#started-and-ready}
+
+When the start pipeline succeeds, `Start` runs every `HookContainerStarted` hook, then every `HookContainerReady` hook, on the goroutine that called `Start`, and then returns nil. Both receive the context passed to `StartWithContext`.
+
+- **Started** means "the pipeline succeeded". Use it for last wiring, such as registering routes or warming caches.
+- **Ready** means "every Started hook has returned". Use it to signal readiness to an orchestrator.
+
+Started fires **after** the runnables: the pipeline builds every candidate, starts the Starters, then runs the `StageAfterStart` handlers, including the built-in `Runnable` handler, and only then fires Started. For a Starter "server" and a Runnable "migrate", the order is:
+
+```text
+starting-hook, server.Start, migrate.Run, started-hook, ready-hook
+```
+
+Started and Ready also fire for a container with no services.
+
+```go
+root.AddContainerReadyHook(func(ctx context.Context, root *doger.RootScope) {
+    readiness.Store(true) // the readiness probe now reports healthy
+})
+```

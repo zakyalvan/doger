@@ -127,3 +127,71 @@ func TestContainerStartingHook_ReceivesContext(t *testing.T) {
 	is.Equal("abc", gotValue)
 	is.Same(root, gotRoot)
 }
+
+// recordingStarterRec is a Starter recording "<name>.Start".
+type recordingStarterRec struct {
+	name string
+	rec  *callRecorder
+}
+
+func (s *recordingStarterRec) Start() error {
+	s.rec.record(s.name + ".Start")
+	return nil
+}
+
+// recordingRunner is a Runner recording "<name>.Run".
+type recordingRunner struct {
+	name string
+	rec  *callRecorder
+}
+
+func (r *recordingRunner) Run(context.Context) error {
+	r.rec.record(r.name + ".Run")
+	return nil
+}
+
+// addRecordingContainerHooks registers one hook per given point, each
+// recording "<point>-hook".
+func addRecordingContainerHooks(root *RootScope, rec *callRecorder, points ...string) {
+	for _, point := range points {
+		label := point + "-hook"
+		switch point {
+		case "starting":
+			root.AddContainerStartingHook(func(context.Context, *RootScope) error { rec.record(label); return nil })
+		case "started":
+			root.AddContainerStartedHook(func(context.Context, *RootScope) { rec.record(label) })
+		case "ready":
+			root.AddContainerReadyHook(func(context.Context, *RootScope) { rec.record(label) })
+		case "failed":
+			root.AddContainerFailedHook(func(context.Context, *RootScope, error) { rec.record(label) })
+		default:
+			panic("unknown hook point " + point)
+		}
+	}
+}
+
+func TestContainerHooks_StartOrder(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	rec := &callRecorder{}
+	ProvideNamedValue(root, "server", &recordingStarterRec{name: "server", rec: rec})
+	ProvideNamedValue(root, "migrate", &recordingRunner{name: "migrate", rec: rec}, AsRunnable())
+	addRecordingContainerHooks(root, rec, "starting", "started", "ready")
+
+	require.NoError(t, root.Start())
+	assert.Equal(t, []string{"starting-hook", "server.Start", "migrate.Run", "started-hook", "ready-hook"}, rec.list())
+}
+
+func TestContainerHooks_EmptyContainer(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	rec := &callRecorder{}
+	addRecordingContainerHooks(root, rec, "starting", "started", "ready", "failed")
+
+	require.NoError(t, root.Start())
+	assert.Equal(t, []string{"starting-hook", "started-hook", "ready-hook"}, rec.list())
+}

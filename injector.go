@@ -148,6 +148,22 @@ type InjectorOpts struct {
 	// deadline: Shutdown waits for the running Start, which waits for the hook.
 	HookContainerStarting []func(ctx context.Context, scope *RootScope) error
 
+	// HookContainerStarted is called by the first Start once its pipeline
+	// succeeded: after every Starter and every StageAfterStart handler,
+	// including the Runnable handler. It receives the context passed to
+	// Start. Use it for last wiring, such as route registration.
+	HookContainerStarted []func(ctx context.Context, scope *RootScope)
+
+	// HookContainerReady is called by the first Start after every Started
+	// hook has returned, with the context passed to Start. Use it to signal
+	// readiness to an orchestrator.
+	HookContainerReady []func(ctx context.Context, scope *RootScope)
+
+	// HookContainerFailed is called by the first Start when it fails after
+	// its one-shot guard, with the context passed to Start and the exact
+	// error Start returns.
+	HookContainerFailed []func(ctx context.Context, scope *RootScope, err error)
+
 	// Logf is the logging function used by the DI container for internal logging.
 	// If not provided, no logging will occur. This function should handle the format
 	// string and arguments similar to fmt.Printf.
@@ -213,6 +229,38 @@ func (o *InjectorOpts) copy() *InjectorOpts {
 
 		DisableStarterAutoDetection: o.DisableStarterAutoDetection,
 		EnableRunnerAutoDetection:   o.EnableRunnerAutoDetection,
+	}
+}
+
+// initDefaults replaces unset options with their defaults: a no-op Logf,
+// empty hook lists and the real clock.
+func (o *InjectorOpts) initDefaults() {
+	if o.Logf == nil {
+		o.Logf = noOpLogf
+	}
+
+	emptyIfNil(&o.HookBeforeRegistration)
+	emptyIfNil(&o.HookAfterRegistration)
+	emptyIfNil(&o.HookBeforeInvocation)
+	emptyIfNil(&o.HookAfterInvocation)
+	emptyIfNil(&o.HookBeforeShutdown)
+	emptyIfNil(&o.HookAfterShutdown)
+	emptyIfNil(&o.HookBeforeStart)
+	emptyIfNil(&o.HookAfterStart)
+	emptyIfNil(&o.HookContainerStarting)
+	emptyIfNil(&o.HookContainerStarted)
+	emptyIfNil(&o.HookContainerReady)
+	emptyIfNil(&o.HookContainerFailed)
+
+	if o.Clock == nil {
+		o.Clock = clockwork.NewRealClock()
+	}
+}
+
+// emptyIfNil replaces a nil slice with an empty one.
+func emptyIfNil[T any](s *[]T) {
+	if *s == nil {
+		*s = []T{}
 	}
 }
 

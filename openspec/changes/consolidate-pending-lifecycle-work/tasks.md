@@ -46,11 +46,11 @@ Rules:
 
 ## 6. Started and Ready hooks mark a successful start (Part H)
 
-- [ ] 6.1 RED: add `TestContainerHooks_StartOrder` (scenario "Hook order relative to the start pipeline") and `TestContainerHooks_EmptyContainer` (scenario "Started and Ready fire for an empty container"); verify `go test -race -run 'TestContainerHooks_(StartOrder|EmptyContainer)' .` fails to compile only on the missing Started/Ready/Failed fields and adders
-- [ ] 6.2 GREEN: add `HookContainerStarted`, `HookContainerReady` and `HookContainerFailed` (field only) with init and adders; at `pointAfterStart` on `startStarted` fire Started, CAS `startStarted → startReady`, then fire Ready (design D1, D5, D7); verify the 6.1 command passes and `make test` is green
-- [ ] 6.3 REFACTOR: *Extract Function* `runObserverHooks(ctx, point, hooks)` shared by Started and Ready; verify `make test` and `make lint` pass
-- [ ] 6.4 Add `ExampleRootScope_AddContainerReadyHook` (signals readiness after runners complete) and godoc on the Started/Ready fields and adders (D7 meaning); verify `go test -run ExampleRootScope_AddContainerReadyHook .` passes
-- [ ] 6.5 Add the Started/Ready section to the docs page, including "Started fires after runnables" (D7); verify `npm --prefix docs run build` succeeds
+- [x] 6.1 RED: add `TestContainerHooks_StartOrder` (scenario "Hook order relative to the start pipeline") and `TestContainerHooks_EmptyContainer` (scenario "Started and Ready fire for an empty container"); verify `go test -race -run 'TestContainerHooks_(StartOrder|EmptyContainer)' .` fails to compile only on the missing Started/Ready/Failed fields and adders
+- [x] 6.2 GREEN: add `HookContainerStarted`, `HookContainerReady` and `HookContainerFailed` (field only) with init and adders; at `pointAfterStart` on `startStarted` fire Started, CAS `startStarted → startReady`, then fire Ready (design D1, D5, D7); verify the 6.1 command passes and `make test` is green
+- [x] 6.3 REFACTOR: *Extract Function* `runObserverHooks(ctx, point, hooks)` shared by Started and Ready; verify `make test` and `make lint` pass
+- [x] 6.4 Add `ExampleRootScope_AddContainerReadyHook` (signals readiness after runners complete) and godoc on the Started/Ready fields and adders (D7 meaning); verify `go test -run ExampleRootScope_AddContainerReadyHook .` passes
+- [x] 6.5 Add the Started/Ready section to the docs page, including "Started fires after runnables" (D7); verify `npm --prefix docs run build` succeeds
 
 ## 7. Failed hooks observe a failed start (Part H)
 

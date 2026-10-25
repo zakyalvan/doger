@@ -71,40 +71,7 @@ func NewWithOpts(opts *InjectorOpts, packages ...func(Injector)) *RootScope {
 		opts = &InjectorOpts{}
 	}
 
-	if opts.Logf == nil {
-		opts.Logf = noOpLogf
-	}
-
-	if opts.HookBeforeRegistration == nil {
-		opts.HookBeforeRegistration = []func(*Scope, string){}
-	}
-	if opts.HookAfterRegistration == nil {
-		opts.HookAfterRegistration = []func(*Scope, string){}
-	}
-	if opts.HookBeforeInvocation == nil {
-		opts.HookBeforeInvocation = []func(*Scope, string){}
-	}
-	if opts.HookAfterInvocation == nil {
-		opts.HookAfterInvocation = []func(*Scope, string, error){}
-	}
-	if opts.HookBeforeShutdown == nil {
-		opts.HookBeforeShutdown = []func(*Scope, string){}
-	}
-	if opts.HookAfterShutdown == nil {
-		opts.HookAfterShutdown = []func(*Scope, string, error){}
-	}
-	if opts.HookBeforeStart == nil {
-		opts.HookBeforeStart = []func(*Scope, string){}
-	}
-	if opts.HookAfterStart == nil {
-		opts.HookAfterStart = []func(*Scope, string, error){}
-	}
-	if opts.HookContainerStarting == nil {
-		opts.HookContainerStarting = []func(context.Context, *RootScope) error{}
-	}
-	if opts.Clock == nil {
-		opts.Clock = clockwork.NewRealClock()
-	}
+	opts.initDefaults()
 
 	root := &RootScope{
 		self:            newScope(DefaultRootScopeName, nil, nil),
@@ -545,6 +512,25 @@ func (s *RootScope) AddAfterStartHook(hook func(*Scope, string, error)) {
 // [InjectorOpts.HookContainerStarting].
 func (s *RootScope) AddContainerStartingHook(hook func(context.Context, *RootScope) error) {
 	s.opts.HookContainerStarting = append(s.opts.HookContainerStarting, hook)
+}
+
+// AddContainerStartedHook adds a hook that will be called by the first Start
+// once its pipeline succeeded. See [InjectorOpts.HookContainerStarted].
+func (s *RootScope) AddContainerStartedHook(hook func(context.Context, *RootScope)) {
+	s.opts.HookContainerStarted = append(s.opts.HookContainerStarted, hook)
+}
+
+// AddContainerReadyHook adds a hook that will be called by the first Start
+// after every Started hook returned. See [InjectorOpts.HookContainerReady].
+func (s *RootScope) AddContainerReadyHook(hook func(context.Context, *RootScope)) {
+	s.opts.HookContainerReady = append(s.opts.HookContainerReady, hook)
+}
+
+// AddContainerFailedHook adds a hook that will be called by the first Start
+// when it fails, with the error Start returns. See
+// [InjectorOpts.HookContainerFailed].
+func (s *RootScope) AddContainerFailedHook(hook func(context.Context, *RootScope, error)) {
+	s.opts.HookContainerFailed = append(s.opts.HookContainerFailed, hook)
 }
 
 // Clone clones injector with provided services but not with invoked instances.
