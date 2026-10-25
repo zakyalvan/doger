@@ -25,4 +25,6 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
+          # built with Go 1.27; bump together with Go releases
+          version: v2.15.0
           args: --timeout 120s --max-same-issues 50 --config=.golangci.yml
