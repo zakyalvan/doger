@@ -25,7 +25,7 @@ Specs: `specs/toolchain-support/spec.md`, `specs/provider-panic-handling/spec.md
 ## 3. Helper bodies and shutdown fan-outs (behavior-preserving refactorings)
 
 - [x] 3.1 *Substitute Algorithm*: make `reverseSlice` call `slices.Reverse(s)` and `coalesce` return `cmp.Or(v...)` (design D2), leaving call sites and `utils_test.go` unchanged; verify `go test -race -run 'TestUtils|Explain|InvokeStruct' .`, `make test` and `make lint` pass.
-- [ ] 3.2 *Substitute Algorithm*: rewrite the fan-out in `(*Scope).shutdownChildrenInParallel` to `wg.Go`, capturing the per-iteration variables (design D3); verify `go test -race -count=3 -run Shutdown .`, `make test` (goleak clean) and `make lint` pass.
+- [x] 3.2 *Substitute Algorithm*: rewrite the fan-out in `(*Scope).shutdownChildrenInParallel` to `wg.Go`, capturing the per-iteration variables (design D3); verify `go test -race -count=3 -run Shutdown .`, `make test` (goleak clean) and `make lint` pass.
 - [ ] 3.3 *Substitute Algorithm*: rewrite the fan-out in `(*Scope).shutdownServicesWithoutDependenciesInParallel` to `wg.Go` the same way; verify the same commands as 3.2 pass.
 
 ## 4. CI (design D5)

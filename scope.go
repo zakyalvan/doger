@@ -403,12 +403,9 @@ func (s *Scope) shutdownChildrenInParallel(ctx context.Context) *ShutdownReport 
 
 	var wg sync.WaitGroup
 	for index, child := range children {
-		wg.Add(1)
-
-		go func(c *Scope, i int) {
-			reports[i] = c.ShutdownWithContext(ctx)
-			wg.Done()
-		}(child, index)
+		wg.Go(func() {
+			reports[index] = child.ShutdownWithContext(ctx)
+		})
 	}
 	wg.Wait()
 
