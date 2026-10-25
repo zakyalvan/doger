@@ -24,9 +24,9 @@ Specs: `specs/health-check-timeouts/spec.md`, `specs/container-clock/spec.md`. R
 
 ## 4. Deterministic timing tests (design D5)
 
-- [ ] 4.1 Wrap `TestRootScope_queueServiceHealthcheck` in `synctest.Test`, dropping `testWithTimeout` and adding the trailing bubble `time.Sleep`, with fixtures and assertions unchanged; verify `go test -race -count=1000 -run '^TestRootScope_queueServiceHealthcheck$' .` reports 0 failures and `make test` is green.
-- [ ] 4.2 Wrap the five `TestScope_HealthCheckWithContextExpiration_*` tests in `synctest.Test` the same way, with fixtures and assertions unchanged; verify `go test -race -count=200 -run 'TestScope_HealthCheckWithContextExpiration' .` reports 0 failures and `make test` is green.
-- [ ] 4.3 Wrap `tests/service_types_test.go: TestMixedServiceTypesPerformance` in `synctest.Test`, dropping `testWithTimeout`, with providers and assertions unchanged (design D5, proposal Defect 5); first show `go test -race -count=1000 -run '^TestMixedServiceTypesPerformance$' ./tests` fails at least once on the unconverted test, then verify it reports 0 failures after, and `make test` is green.
+- [x] 4.1 Wrap `TestRootScope_queueServiceHealthcheck` in `synctest.Test`, dropping `testWithTimeout` and adding the trailing bubble `time.Sleep`, with fixtures and assertions unchanged; verify `go test -race -count=1000 -run '^TestRootScope_queueServiceHealthcheck$' .` reports 0 failures and `make test` is green.
+- [x] 4.2 Wrap the five `TestScope_HealthCheckWithContextExpiration_*` tests in `synctest.Test` the same way, with fixtures and assertions unchanged; verify `go test -race -count=200 -run 'TestScope_HealthCheckWithContextExpiration' .` reports 0 failures and `make test` is green.
+- [x] 4.3 Wrap `tests/service_types_test.go: TestMixedServiceTypesPerformance` in `synctest.Test`, dropping `testWithTimeout`, with providers and assertions unchanged (design D5, proposal Defect 5); first show `go test -race -count=1000 -run '^TestMixedServiceTypesPerformance$' ./tests` fails at least once on the unconverted test, then verify it reports 0 failures after, and `make test` is green.
 
 ## 5. Integration checks
 

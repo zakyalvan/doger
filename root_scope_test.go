@@ -3,6 +3,7 @@ package doger
 import (
 	"context"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -94,73 +95,77 @@ func TestRootScope_Ancestors(t *testing.T) {
 }
 
 func TestRootScope_queueServiceHealthcheck(t *testing.T) {
-	testWithTimeout(t, 200*time.Millisecond)
-	is := assert.New(t)
+	// Bubble time: the 20ms checks and 10ms/50ms timeouts no longer depend on scheduling.
+	synctest.Test(t, func(t *testing.T) {
+		is := assert.New(t)
 
-	// no timeout
-	i := New()
-	ProvideValue(i, &lazyTestHeathcheckerOKTimeout{foobar: "foobar"})
-	ProvideValue(i, &lazyTestHeathcheckerOK{})
+		// no timeout
+		i := New()
+		ProvideValue(i, &lazyTestHeathcheckerOKTimeout{foobar: "foobar"})
+		ProvideValue(i, &lazyTestHeathcheckerOK{})
 
-	err1 := i.queueServiceHealthcheck(context.Background(), i.self, NameOf[*lazyTestHeathcheckerOKTimeout]())
-	err2 := i.queueServiceHealthcheck(context.Background(), i.self, NameOf[*lazyTestHeathcheckerOK]())
-	is.NoError(<-err1)
-	is.NoError(<-err2)
+		err1 := i.queueServiceHealthcheck(context.Background(), i.self, NameOf[*lazyTestHeathcheckerOKTimeout]())
+		err2 := i.queueServiceHealthcheck(context.Background(), i.self, NameOf[*lazyTestHeathcheckerOK]())
+		is.NoError(<-err1)
+		is.NoError(<-err2)
 
-	// with 10ms individual timeout
-	i = NewWithOpts(&InjectorOpts{
-		HealthCheckTimeout: 10 * time.Millisecond,
-	})
-	ProvideValue(i, &lazyTestHeathcheckerOKTimeout{})
-	ProvideValue(i, &lazyTestHeathcheckerOK{})
+		// with 10ms individual timeout
+		i = NewWithOpts(&InjectorOpts{
+			HealthCheckTimeout: 10 * time.Millisecond,
+		})
+		ProvideValue(i, &lazyTestHeathcheckerOKTimeout{})
+		ProvideValue(i, &lazyTestHeathcheckerOK{})
 
-	err1 = i.queueServiceHealthcheck(context.Background(), i.self, NameOf[*lazyTestHeathcheckerOKTimeout]())
-	err2 = i.queueServiceHealthcheck(context.Background(), i.self, NameOf[*lazyTestHeathcheckerOK]())
-	is.EqualError(<-err1, "DI: health check timeout: context deadline exceeded")
-	is.NoError(<-err2)
+		err1 = i.queueServiceHealthcheck(context.Background(), i.self, NameOf[*lazyTestHeathcheckerOKTimeout]())
+		err2 = i.queueServiceHealthcheck(context.Background(), i.self, NameOf[*lazyTestHeathcheckerOK]())
+		is.EqualError(<-err1, "DI: health check timeout: context deadline exceeded")
+		is.NoError(<-err2)
 
-	// with 10ms global timeout
-	i = NewWithOpts(&InjectorOpts{
-		HealthCheckGlobalTimeout: 10 * time.Millisecond,
-	})
-	ProvideValue(i, &lazyTestHeathcheckerOKTimeout{})
-	ProvideValue(i, &lazyTestHeathcheckerOK{})
+		// with 10ms global timeout
+		i = NewWithOpts(&InjectorOpts{
+			HealthCheckGlobalTimeout: 10 * time.Millisecond,
+		})
+		ProvideValue(i, &lazyTestHeathcheckerOKTimeout{})
+		ProvideValue(i, &lazyTestHeathcheckerOK{})
 
-	errAll := i.HealthCheckWithContext(context.Background())
-	is.Len(errAll, 2)
-	is.EqualError(errAll[NameOf[*lazyTestHeathcheckerOKTimeout]()], "DI: health check timeout: context deadline exceeded")
-	is.NoError(errAll[NameOf[*lazyTestHeathcheckerOK]()])
+		errAll := i.HealthCheckWithContext(context.Background())
+		is.Len(errAll, 2)
+		is.EqualError(errAll[NameOf[*lazyTestHeathcheckerOKTimeout]()], "DI: health check timeout: context deadline exceeded")
+		is.NoError(errAll[NameOf[*lazyTestHeathcheckerOK]()])
 
-	// with 10ms global timeout with sequential healthchecks
-	i = NewWithOpts(&InjectorOpts{
-		HealthCheckParallelism:   1,
-		HealthCheckGlobalTimeout: 50 * time.Millisecond,
-	})
-	defer i.Shutdown() //nolint: errcheck
+		// with 10ms global timeout with sequential healthchecks
+		i = NewWithOpts(&InjectorOpts{
+			HealthCheckParallelism:   1,
+			HealthCheckGlobalTimeout: 50 * time.Millisecond,
+		})
+		defer i.Shutdown() //nolint: errcheck
 
-	ProvideNamedValue(i, "a", &lazyTestHeathcheckerOKTimeout{})
-	ProvideNamedValue(i, "b", &lazyTestHeathcheckerOKTimeout{})
-	ProvideNamedValue(i, "c", &lazyTestHeathcheckerOKTimeout{})
-	ProvideNamedValue(i, "d", &lazyTestHeathcheckerOKTimeout{})
-	ProvideValue(i, &lazyTestHeathcheckerOK{})
+		ProvideNamedValue(i, "a", &lazyTestHeathcheckerOKTimeout{})
+		ProvideNamedValue(i, "b", &lazyTestHeathcheckerOKTimeout{})
+		ProvideNamedValue(i, "c", &lazyTestHeathcheckerOKTimeout{})
+		ProvideNamedValue(i, "d", &lazyTestHeathcheckerOKTimeout{})
+		ProvideValue(i, &lazyTestHeathcheckerOK{})
 
-	errAll = i.HealthCheckWithContext(context.Background())
-	errors := []error{}
-	for _, err := range errAll {
-		if err != nil {
-			errors = append(errors, err)
+		errAll = i.HealthCheckWithContext(context.Background())
+		errors := []error{}
+		for _, err := range errAll {
+			if err != nil {
+				errors = append(errors, err)
+			}
 		}
-	}
 
-	is.Len(errAll, 5)
-	// i do not check the exact number of errors due to sleep randomness
-	is.NotEmpty(errors)
-	is.Less(len(errors), 5)
-	if len(errors) == 3 {
-		is.EqualError(errors[0], "DI: health check timeout: context deadline exceeded")
-	}
-	// because executed last
-	// is.EqualError(errAll[NameOf[*lazyTestHeathcheckerOK]()], "DI: health check timeout: context deadline exceeded")
+		is.Len(errAll, 5)
+		// i do not check the exact number of errors due to sleep randomness
+		is.NotEmpty(errors)
+		is.Less(len(errors), 5)
+		if len(errors) == 3 {
+			is.EqualError(errors[0], "DI: health check timeout: context deadline exceeded")
+		}
+		// because executed last
+		// is.EqualError(errAll[NameOf[*lazyTestHeathcheckerOK]()], "DI: health check timeout: context deadline exceeded")
+
+		time.Sleep(50 * time.Millisecond) // let abandoned checks return
+	})
 }
 
 func TestRootScope_Clone(t *testing.T) {

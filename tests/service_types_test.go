@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/kartaladev/doger"
@@ -244,54 +245,57 @@ func TestMixedServiceTypesNestedScopes(t *testing.T) {
 
 // TestMixedServiceTypesPerformance tests performance characteristics of different service types
 func TestMixedServiceTypesPerformance(t *testing.T) {
-	testWithTimeout(t, 450*time.Millisecond)
-	is := assert.New(t)
+	// Bubble time: only the providers' sleeps advance the clock, so the
+	// comparisons below hold on every run.
+	synctest.Test(t, func(t *testing.T) {
+		is := assert.New(t)
 
-	root := doger.New()
+		root := doger.New()
 
-	// Create services of different types
-	doger.ProvideNamedValue(root, "eager-perf", "eager-value")
+		// Create services of different types
+		doger.ProvideNamedValue(root, "eager-perf", "eager-value")
 
-	doger.ProvideNamed(root, "lazy-perf", func(i doger.Injector) (string, error) {
-		time.Sleep(1 * time.Millisecond) // Simulate initialization cost
-		return "lazy-value", nil
+		doger.ProvideNamed(root, "lazy-perf", func(i doger.Injector) (string, error) {
+			time.Sleep(1 * time.Millisecond) // Simulate initialization cost
+			return "lazy-value", nil
+		})
+
+		doger.ProvideNamedTransient(root, "transient-perf", func(i doger.Injector) (string, error) {
+			time.Sleep(1 * time.Millisecond) // Simulate creation cost
+			return "transient-value", nil
+		})
+
+		// Measure performance of multiple invocations
+		const numInvocations = 100
+
+		// Eager service should be fastest (no initialization cost)
+		start := time.Now()
+		for range numInvocations {
+			_, err := doger.InvokeNamed[string](root, "eager-perf")
+			is.NoError(err)
+		}
+		eagerDuration := time.Since(start)
+
+		// Lazy service should be slower on first invocation, then fast
+		start = time.Now()
+		for range numInvocations {
+			_, err := doger.InvokeNamed[string](root, "lazy-perf")
+			is.NoError(err)
+		}
+		lazyDuration := time.Since(start)
+
+		// Transient service should be slowest (creation cost on every invocation)
+		start = time.Now()
+		for range numInvocations {
+			_, err := doger.InvokeNamed[string](root, "transient-perf")
+			is.NoError(err)
+		}
+		transientDuration := time.Since(start)
+
+		// Verify performance characteristics
+		is.Less(eagerDuration, lazyDuration)
+		is.Less(lazyDuration, transientDuration)
 	})
-
-	doger.ProvideNamedTransient(root, "transient-perf", func(i doger.Injector) (string, error) {
-		time.Sleep(1 * time.Millisecond) // Simulate creation cost
-		return "transient-value", nil
-	})
-
-	// Measure performance of multiple invocations
-	const numInvocations = 100
-
-	// Eager service should be fastest (no initialization cost)
-	start := time.Now()
-	for range numInvocations {
-		_, err := doger.InvokeNamed[string](root, "eager-perf")
-		is.NoError(err)
-	}
-	eagerDuration := time.Since(start)
-
-	// Lazy service should be slower on first invocation, then fast
-	start = time.Now()
-	for range numInvocations {
-		_, err := doger.InvokeNamed[string](root, "lazy-perf")
-		is.NoError(err)
-	}
-	lazyDuration := time.Since(start)
-
-	// Transient service should be slowest (creation cost on every invocation)
-	start = time.Now()
-	for range numInvocations {
-		_, err := doger.InvokeNamed[string](root, "transient-perf")
-		is.NoError(err)
-	}
-	transientDuration := time.Since(start)
-
-	// Verify performance characteristics
-	is.Less(eagerDuration, lazyDuration)
-	is.Less(lazyDuration, transientDuration)
 }
 
 // TestMixedServiceTypesMemoryUsage tests memory usage patterns of different service types
