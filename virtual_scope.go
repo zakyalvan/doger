@@ -45,11 +45,10 @@ func newVirtualScope(predecessor Injector, invokerChain []string) *virtualScope 
 // one virtual scope, and a stored injector keeps O(depth) memory alive.
 type virtualScope struct {
 	self     Injector
-	name     string        // the service this invocation builds; with base, a detached read's holder
+	name     string        // the service this invocation builds; unused when base is set
 	parent   *virtualScope // the virtual scope of the invoking provider, if any
 	base     []string      // the whole invoker chain, for a scope not built by an invocation
 	returned atomic.Bool   // its provider returned, or its invocation is over
-	detached bool          // a live-collection read after its provider returned: records no edge
 }
 
 // newChildVirtualScope returns the virtual scope of an invocation of name
@@ -68,12 +67,7 @@ func (s *virtualScope) invokerChain() []string {
 	}
 	slices.Reverse(names)
 	if v != nil {
-		var holder []string
-		if v.detached {
-			// in messages, the holder links the running chain to the members
-			holder = []string{v.name}
-		}
-		names = slices.Concat(v.base, holder, names)
+		names = slices.Concat(v.base, names)
 	}
 
 	return names
@@ -198,10 +192,6 @@ func (s *virtualScope) chainContains(name string) bool {
 // This ensures that during shutdown, dependencies are shut down before the services
 // that depend on them.
 func (s *virtualScope) addDependency(injector Injector, name string, serviceScope *Scope, source DependencySource) {
-	if s.detached {
-		return
-	}
-
 	last, ok := s.getLastInvokerName()
 	if !ok {
 		// This should never happen, but we'll handle it gracefully
