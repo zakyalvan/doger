@@ -407,22 +407,22 @@ func selectByType(injector Injector, target reflect.Type) (collectionCandidate, 
 	var selected collectionCandidate
 	var found bool
 
-	invokingDepth := scopeDepth(injectorScope(injector))
 	injector.serviceForEachRec(func(name string, scope *Scope, s any) bool {
+		// scopes come nearest first, each one whole: once a scope had a match,
+		// a farther scope cannot win, so the walk stops there
+		if found && scope != selected.scope {
+			return false
+		}
+
 		service, ok := s.(serviceWrapperAny)
-		if !ok || !serviceCanCastToType(s, target) {
+		if !ok || !typeCanCastToType(service.getReflectType(), target) {
 			return true
 		}
 
-		candidate := collectionCandidate{
-			name:     name,
-			scope:    scope,
-			depth:    invokingDepth - scopeDepth(scope), // distance from the invoking scope
-			regIndex: service.getRegistrationIndex(),
-			service:  s,
-		}
-		if !found || cmp.Or(cmp.Compare(candidate.depth, selected.depth), cmp.Compare(candidate.regIndex, selected.regIndex), cmp.Compare(candidate.name, selected.name)) < 0 {
-			selected, found = candidate, true
+		regIndex := service.getRegistrationIndex()
+		if !found || cmp.Or(cmp.Compare(regIndex, selected.regIndex), cmp.Compare(name, selected.name)) < 0 {
+			selected = collectionCandidate{name: name, scope: scope, regIndex: regIndex, service: s}
+			found = true
 		}
 		return true
 	})
