@@ -57,6 +57,14 @@ func (s *RootScope) startIncremental(ctx context.Context, root *Scope) (closing 
 	defer func() { s.finishIncremental(incCtx, &err) }()
 
 	if root != s.self {
+		// a scope shutting down starts nothing and runs no scope hook
+		s.lifecycleMu.Lock()
+		closing := closingInLine(root)
+		s.lifecycleMu.Unlock()
+		if closing {
+			return true, nil
+		}
+
 		if err := s.runScopeStartingHooks(incCtx, root); err != nil {
 			return false, err
 		}
@@ -170,6 +178,11 @@ func (s *Scope) Start() error {
 // [ErrStartAfterShutdown] once root Shutdown began,
 // calls serialized with Refresh, and never call it synchronously from code
 // running during a Refresh or Scope.Start.
+//
+// On a child scope, the [InjectorOpts.HookScopeStarting] hooks run first and
+// can veto it, and the [InjectorOpts.HookScopeStarted] hooks run once its
+// services started. When the scope, or one of its ancestors, is shutting
+// down, it starts nothing, runs no scope hook and returns nil.
 func (s *Scope) StartWithContext(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()

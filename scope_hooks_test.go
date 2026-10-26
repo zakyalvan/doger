@@ -203,6 +203,63 @@ func TestScopeStartedHook_SkippedWhileClosing(t *testing.T) {
 	}
 }
 
+func TestScopeStartingHook_SkippedWhileClosing(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		closing string // the scope whose shutdown is held in its Closing hook
+	}{
+		{name: "the scope itself", closing: "tenant"},
+		{name: "its parent", closing: "parent"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+			is := assert.New(t)
+
+			entered := make(chan struct{})
+			release := make(chan struct{})
+			var starting, started atomic.Int32
+			root := New()
+			root.AddScopeStartingHook(func(context.Context, *Scope) error {
+				starting.Add(1)
+				return nil
+			})
+			root.AddScopeStartedHook(func(context.Context, *Scope) { started.Add(1) })
+			root.AddScopeClosingHook(func(_ context.Context, scope *Scope) {
+				if scope.Name() == tt.closing {
+					close(entered)
+					<-release
+				}
+			})
+			require.NoError(t, root.Start())
+			parent := root.Scope("parent")
+			tenant := parent.Scope("tenant")
+			starts := &countingStarters{}
+			provideCountedStarter(tenant, starts, "w")
+			shuttingDown := map[string]*Scope{"parent": parent, "tenant": tenant}[tt.closing]
+
+			shutdownDone := make(chan struct{})
+			go func() {
+				defer close(shutdownDone)
+				shuttingDown.Shutdown()
+			}()
+			<-entered
+
+			is.NoError(tenant.Start())
+
+			close(release)
+			<-shutdownDone
+			is.Zero(starts.count("w"), "w was started")
+			is.Equal(int32(0), starting.Load(), "HookScopeStarting ran")
+			is.Equal(int32(0), started.Load(), "HookScopeStarted ran")
+		})
+	}
+}
+
 func TestScopeStartedHook_ShutdownBeforeClaim(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, time.Second)

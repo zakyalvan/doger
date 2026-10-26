@@ -109,6 +109,12 @@ Migration: none for code that checks `errors.Is(err, doger.ErrStartAfterShutdown
 
 Migration: none for shutdowns that happen after start. Code running during a start (a starter, kind handler, provider or hook) must not synchronously shut down a scope that this start is starting: it would wait for itself. Shut the scope down after the start returned, or bound the wait with `ShutdownWithContext`.
 
+## Scope.Start skips a scope that is shutting down {#scope-start-while-closing}
+
+`scope.Start()` on a child scope that is shutting down, or whose ancestor is, now runs no `HookScopeStarting` hook; it starts nothing and returns nil, as before. The Starting hooks used to run, although nothing of the scope was started and `HookScopeStarted` did not run.
+
+Migration: none, unless a Starting hook counted on running for every `scope.Start()` call; use a `HookScopeClosing` hook to observe the shutdown.
+
 ## New exported struct fields {#new-struct-fields}
 
 **BREAKING (unkeyed literals only).** These exported structs gain fields:

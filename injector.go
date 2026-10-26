@@ -213,8 +213,10 @@ type InjectorOpts struct {
 
 	// HookScopeStarting is called by Scope.Start on a child scope, after its
 	// phase check and before anything starts, with the scope. A non-nil error
-	// or a panic vetoes Scope.Start, which returns an error wrapping it. The
-	// root's own scope never fires scope hooks.
+	// or a panic vetoes Scope.Start, which returns an error wrapping it. It is
+	// not called when the scope, or one of its ancestors, is shutting down:
+	// Scope.Start then starts nothing and returns nil. The root's own scope
+	// never fires scope hooks.
 	HookScopeStarting []func(ctx context.Context, scope *Scope) error
 
 	// HookScopeStarted is called by Scope.Start on a child scope once its
