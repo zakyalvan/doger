@@ -52,3 +52,4 @@ Each was shown to fail with a temporary, uncommitted mutation:
 | `BenchmarkInvokeAll/100` | 42,024 | 24,408 | 224 |
 | `BenchmarkInvokeAll/1000` | 594,513 | 293,626 | 2,424 |
 | `BenchmarkInvokeAllParallel` (100) | 46,748 | 24,406 | 224 |
+- 31.1 `TestInvokeAllMap_IgnoresOrdered` passes on arrival; running the ordering pass in `InvokeAllMap` fails it. `TestMustInvokeAll_OrderPanic` also passes on arrival, because the raw escaping panic value is the error itself; after 31.2 it is the wrapped error naming the member.

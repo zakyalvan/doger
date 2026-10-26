@@ -110,6 +110,10 @@ doger.ProvideValue(injector, vendor.NewRateLimiter(), doger.WithOrder(-1))
 
 `WithOrder` has no effect outside collections: `Invoke` ignores it.
 
+### Order() panics {#order-panics}
+
+If `Order()` panics, `InvokeAll` returns no collection and an error naming the member, wrapping the panic value when it is an error. `MustInvokeAll` panics with that error.
+
 ### Maps are unordered {#maps-are-unordered}
 
 `InvokeAllMap` never calls `Order()`: a map has no order.

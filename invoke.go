@@ -245,7 +245,11 @@ func invokeAllByGenericType[T any](i Injector) ([]T, error) {
 	// a separate pass once every member is built, stable over the default order
 	members := make([]orderedMember, 0, len(built))
 	for _, b := range built {
-		members = append(members, orderedMember{member: b.member, order: orderValue(b.member, b.candidate.options())})
+		order, err := orderValue(b.candidate.name, b.member, b.candidate.options())
+		if err != nil {
+			return nil, err
+		}
+		members = append(members, orderedMember{member: b.member, order: order})
 	}
 	slices.SortStableFunc(members, func(a, b orderedMember) int { return cmp.Compare(a.order, b.order) })
 
@@ -260,16 +264,25 @@ func invokeAllByGenericType[T any](i Injector) ([]T, error) {
 // orderValue returns the collection order of a built member: its WithOrder
 // value when set (Order() is then not called), otherwise its Order() when it
 // implements Ordered, otherwise 0.
-func orderValue(instance any, opts *serviceOptions) int {
+// A panicking Order() is reported as an error naming the member, wrapping
+// the panic value when it is an error.
+func orderValue(name string, instance any, opts *serviceOptions) (order int, err error) {
 	if opts != nil && opts.order != nil {
-		return *opts.order
+		return *opts.order, nil
 	}
 
-	if ordered, ok := instance.(Ordered); ok {
-		return ordered.Order()
+	ordered, ok := instance.(Ordered)
+	if !ok {
+		return 0, nil
 	}
 
-	return 0
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("DI: Order() of collection member `%s` panicked: %w", name, recoverAsError(r))
+		}
+	}()
+
+	return ordered.Order(), nil
 }
 
 // invokeAllMapByGenericType invokes every collection member for T, keyed

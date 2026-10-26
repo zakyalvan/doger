@@ -1,6 +1,7 @@
 package doger
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -298,4 +299,92 @@ func TestWithOrder_NoEffectOnInvoke(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, "a", handler.HandlerName())
+}
+
+var errOrderBroken = errors.New("order broken")
+
+func TestInvokeAll_OrderPanic(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		bad   func(Injector) (EventHandler, error)
+		match func(t *testing.T, err error)
+	}{
+		{
+			name: "error ErrOrderBroken",
+			bad: func(Injector) (EventHandler, error) {
+				return &panickingOrder{handlerBase: handlerBase{"bad"}, value: errOrderBroken}, nil
+			},
+			match: func(t *testing.T, err error) { t.Helper(); assert.ErrorIs(t, err, errOrderBroken) },
+		},
+		{
+			name: "string boom",
+			bad: func(Injector) (EventHandler, error) {
+				return &panickingOrder{handlerBase: handlerBase{"bad"}, value: "boom"}, nil
+			},
+			match: func(t *testing.T, err error) { t.Helper(); assert.ErrorContains(t, err, "boom") },
+		},
+		{
+			name: "Order() on a nil *Handler",
+			bad: func(Injector) (EventHandler, error) {
+				return (*orderedHandler)(nil), nil
+			},
+			match: func(t *testing.T, err error) { t.Helper(); assert.ErrorContains(t, err, "nil pointer") },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+
+			root := New()
+			provideHandler(root, "ok", func(n string) *orderedHandler { return &orderedHandler{handlerBase: handlerBase{n}} })
+			ProvideNamed(root, "bad", tt.bad)
+
+			var handlers []EventHandler
+			var err error
+			require.NotPanics(t, func() { handlers, err = InvokeAll[EventHandler](root) })
+
+			assert.Nil(t, handlers)
+			assert.ErrorContains(t, err, "bad")
+			tt.match(t, err)
+		})
+	}
+}
+
+func TestMustInvokeAll_OrderPanic(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	provideHandler(root, "bad", func(n string) *panickingOrder {
+		return &panickingOrder{handlerBase: handlerBase{n}, value: errOrderBroken}
+	})
+
+	var recovered any
+	func() {
+		defer func() { recovered = recover() }()
+		MustInvokeAll[EventHandler](root)
+	}()
+
+	err, ok := recovered.(error)
+	require.True(t, ok, "the call panics with an error")
+	assert.ErrorIs(t, err, errOrderBroken)
+}
+
+func TestInvokeAllMap_IgnoresOrdered(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	provideHandler(root, "bad", func(n string) *panickingOrder {
+		return &panickingOrder{handlerBase: handlerBase{n}, value: errOrderBroken}
+	})
+
+	handlers, err := InvokeAllMap[EventHandler](root)
+
+	require.NoError(t, err)
+	assert.Contains(t, handlers, "bad")
 }

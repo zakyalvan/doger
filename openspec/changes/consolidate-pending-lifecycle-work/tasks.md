@@ -215,9 +215,9 @@ Rules:
 
 ## 31. Order() panic and map-collection independence (Part K)
 
-- [ ] 31.1 RED: add `TestInvokeAll_OrderPanic` (scenario "Panicking Order()", 3 rows), `TestMustInvokeAll_OrderPanic` (scenario "MustInvokeAll surfaces the Order() panic as its panic") and `TestInvokeAllMap_IgnoresOrdered` (scenario "Order() not called for map collections"); verify `go test -race -run 'TestInvokeAll_OrderPanic|TestMustInvokeAll_OrderPanic|TestInvokeAllMap_IgnoresOrdered' .` fails because the panic escapes `InvokeAll`; IgnoresOrdered passes on arrival, so record that and show it can fail by temporarily running the ordering pass in `InvokeAllMap` (not committed)
-- [ ] 31.2 GREEN: recover inside `orderValue`, wrapping error panics with `%w` and stringifying others, both naming the member (design D4); verify the 31.1 command passes and `make test` is green
-- [ ] 31.3 REFACTOR: reuse start-lifecycle's existing `recoverAsError(r any) error` inside `orderValue` (same `%w`/`%v` rule as start-lifecycle D11) instead of a local recover-to-error block; add no new helper; verify `make test` and `make lint` pass
+- [x] 31.1 RED: add `TestInvokeAll_OrderPanic` (scenario "Panicking Order()", 3 rows), `TestMustInvokeAll_OrderPanic` (scenario "MustInvokeAll surfaces the Order() panic as its panic") and `TestInvokeAllMap_IgnoresOrdered` (scenario "Order() not called for map collections"); verify `go test -race -run 'TestInvokeAll_OrderPanic|TestMustInvokeAll_OrderPanic|TestInvokeAllMap_IgnoresOrdered' .` fails because the panic escapes `InvokeAll`; IgnoresOrdered passes on arrival, so record that and show it can fail by temporarily running the ordering pass in `InvokeAllMap` (not committed)
+- [x] 31.2 GREEN: recover inside `orderValue`, wrapping error panics with `%w` and stringifying others, both naming the member (design D4); verify the 31.1 command passes and `make test` is green
+- [x] 31.3 REFACTOR: reuse start-lifecycle's existing `recoverAsError(r any) error` inside `orderValue` (same `%w`/`%v` rule as start-lifecycle D11) instead of a local recover-to-error block; add no new helper; verify `make test` and `make lint` pass
 
 ## 32. Ordering never affects lifecycle order (Part K)
 
