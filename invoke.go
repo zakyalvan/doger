@@ -223,16 +223,42 @@ func invokeServiceInstance(injector Injector, vScope *virtualScope, hookName, re
 func invokeAllByGenericType[T any](i Injector) ([]T, error) {
 	injector := getInjectorOrDefault(i)
 
+	type orderedMember struct {
+		member T
+		order  int
+	}
+
 	candidates := collectionCandidates[T](injector)
-	result := make([]T, 0, len(candidates))
+	members := make([]orderedMember, 0, len(candidates))
 	err := buildMembers(injector, candidates, func(_ string, member T) {
-		result = append(result, member)
+		members = append(members, orderedMember{member: member})
 	})
 	if err != nil {
 		return nil, err
 	}
 
+	// a separate pass once every member is built, stable over the default order
+	for index := range members {
+		members[index].order = orderValue(members[index].member)
+	}
+	slices.SortStableFunc(members, func(a, b orderedMember) int { return cmp.Compare(a.order, b.order) })
+
+	result := make([]T, 0, len(members))
+	for _, m := range members {
+		result = append(result, m.member)
+	}
+
 	return result, nil
+}
+
+// orderValue returns the collection order of a built member: its Order()
+// when it implements Ordered, 0 otherwise.
+func orderValue(instance any) int {
+	if ordered, ok := instance.(Ordered); ok {
+		return ordered.Order()
+	}
+
+	return 0
 }
 
 // invokeAllMapByGenericType invokes every collection member for T, keyed

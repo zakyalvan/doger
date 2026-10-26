@@ -97,3 +97,93 @@ func TestInvokeAll_DefaultOrderClone(t *testing.T) {
 		assert.Equal(t, []string{"a", "b", "c"}, collectNames(t, clone))
 	}
 }
+
+// orderedHandler is an EventHandler implementing Ordered.
+type orderedHandler struct {
+	handlerBase
+	order int
+}
+
+func (h *orderedHandler) Order() int { return h.order }
+
+var _ Ordered = (*orderedHandler)(nil)
+
+func TestInvokeAll_Ordered(t *testing.T) {
+	t.Parallel()
+
+	// nil means the member does not implement Ordered
+	value := func(v int) *int { return &v }
+
+	tests := []struct {
+		name   string
+		values []*int // for "a", "b", "c", "d"
+		order  []string
+	}{
+		{name: "none ordered", values: []*int{nil, nil, nil, nil}, order: []string{"a", "b", "c", "d"}},
+		{name: "3, 1, 2, 0", values: []*int{value(3), value(1), value(2), value(0)}, order: []string{"d", "b", "c", "a"}},
+		{name: "1, -, -1, -", values: []*int{value(1), nil, value(-1), nil}, order: []string{"c", "b", "d", "a"}},
+		{name: "all equal", values: []*int{value(5), value(5), value(5), value(5)}, order: []string{"a", "b", "c", "d"}},
+		{name: "int extremes", values: []*int{value(-2147483648), value(2147483647), value(0), nil}, order: []string{"a", "c", "d", "b"}},
+		{name: "zeros and missing", values: []*int{value(0), nil, value(0), nil}, order: []string{"a", "b", "c", "d"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+
+			root := New()
+			for i, name := range []string{"a", "b", "c", "d"} {
+				if tt.values[i] == nil {
+					provideHandler(root, name, newConsole)
+					continue
+				}
+				order := *tt.values[i]
+				provideHandler(root, name, func(n string) *orderedHandler {
+					return &orderedHandler{handlerBase: handlerBase{n}, order: order}
+				})
+			}
+
+			assert.Equal(t, tt.order, collectNames(t, root))
+		})
+	}
+}
+
+func TestInvokeAll_OrderedTransient(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		call  int
+		order []string
+	}{
+		{name: "call_1", call: 1, order: []string{"flip", "fixed"}},
+		{name: "call_2", call: 2, order: []string{"fixed", "flip"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+
+			root := New()
+			provideHandler(root, "fixed", func(n string) *orderedHandler { return &orderedHandler{handlerBase: handlerBase{n}} })
+			calls := 0
+			ProvideNamedTransient(root, "flip", func(Injector) (*orderedHandler, error) {
+				calls++
+				order := -1 // call 1
+				if calls == 2 {
+					order = 1
+				}
+				return &orderedHandler{handlerBase: handlerBase{"flip"}, order: order}, nil
+			})
+
+			var names []string
+			for range tt.call {
+				names = collectNames(t, root)
+			}
+
+			assert.Equal(t, tt.order, names)
+		})
+	}
+}

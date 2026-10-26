@@ -165,6 +165,16 @@ type StarterWithContextAndError interface {
 	Start(context.Context) error
 }
 
+// Ordered positions a member in the slices returned by InvokeAll: lower
+// values come first, and a member that does not implement Ordered counts as
+// 0. The sort is stable, so members with equal values keep the default
+// order (ancestors first, then registration order). Ordered affects only
+// collections: never construction, start or shutdown order. A WithOrder
+// registration option takes precedence over it.
+type Ordered interface {
+	Order() int
+}
+
 // HealthCheck returns a service status, using type inference to determine the service name.
 // This function performs a health check on a service by inferring its name from the type T.
 // The service must implement either Healthchecker or HealthcheckerWithContext interface.

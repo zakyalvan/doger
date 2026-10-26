@@ -530,3 +530,27 @@ func ExampleInvokeAllMap() {
 	// sms: deploy done
 	// 2
 }
+
+type exampleMiddleware struct {
+	name  string
+	order int
+}
+
+func (m *exampleMiddleware) Order() int { return m.order }
+
+func ExampleOrdered() {
+	injector := New()
+	ProvideNamedValue(injector, "logging", &exampleMiddleware{name: "logging", order: 10})
+	ProvideNamedValue(injector, "recover", &exampleMiddleware{name: "recover"})
+	ProvideNamedValue(injector, "auth", &exampleMiddleware{name: "auth"})
+
+	// Lowest Order() first; equal values keep registration order.
+	middlewares := MustInvokeAll[*exampleMiddleware](injector)
+	for _, middleware := range middlewares {
+		fmt.Println(middleware.name, middleware.Order())
+	}
+	// Output:
+	// recover 0
+	// auth 0
+	// logging 10
+}

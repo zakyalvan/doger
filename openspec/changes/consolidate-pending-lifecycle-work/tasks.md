@@ -201,10 +201,10 @@ Rules:
 
 ## 29. Ordered members sort ascending and stably (Part K)
 
-- [ ] 29.1 RED: add `TestInvokeAll_Ordered` (scenario "Ordered values", 6 rows) and `TestInvokeAll_OrderedTransient` (scenario "Order is read from each transient instance", 2 rows); verify `go test -race -run 'TestInvokeAll_Ordered' .` fails to compile only on the missing `Ordered`
-- [ ] 29.2 GREEN: add `type Ordered interface{ Order() int }` (in `di_lifecycle.go` or a new `ordered.go`) and the stable ordering pass for `InvokeAll` only, with `Ordered` > `0` (design D4); verify the 29.1 command passes and `make test` is green
-- [ ] 29.3 REFACTOR: *Extract Function* `orderValue(name, instance, opts) (int, error)` and *Replace Loop with Pipeline* using `slices.SortStableFunc`; verify `make test` and `make lint` pass
-- [ ] 29.4 Add `ExampleOrdered` and godoc on `Ordered` (ascending, missing = 0, stable, collection-only); verify `go test -run ExampleOrdered .` passes
+- [x] 29.1 RED: add `TestInvokeAll_Ordered` (scenario "Ordered values", 6 rows) and `TestInvokeAll_OrderedTransient` (scenario "Order is read from each transient instance", 2 rows); verify `go test -race -run 'TestInvokeAll_Ordered' .` fails to compile only on the missing `Ordered`
+- [x] 29.2 GREEN: add `type Ordered interface{ Order() int }` (in `di_lifecycle.go` or a new `ordered.go`) and the stable ordering pass for `InvokeAll` only, with `Ordered` > `0` (design D4); verify the 29.1 command passes and `make test` is green
+- [x] 29.3 REFACTOR: *Extract Function* `orderValue(name, instance, opts) (int, error)` and *Replace Loop with Pipeline* using `slices.SortStableFunc`; verify `make test` and `make lint` pass
+- [x] 29.4 Add `ExampleOrdered` and godoc on `Ordered` (ascending, missing = 0, stable, collection-only); verify `go test -run ExampleOrdered .` passes
 
 ## 30. WithOrder is a registration option for every registration style (Part K)
 
