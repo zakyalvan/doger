@@ -502,6 +502,117 @@ And tmp.Shutdown() returned a successful report while Start was running
 <!-- cases: N/A 9 panics: hook panics during the wait follow scope-lifecycle-hooks -->
 <!-- cases: 10 compatibility: BEHAVIOR CHANGE (flagged) - a child scope Shutdown no longer races a running start; Start-time code that shuts down a scope the run is starting deadlocks -->
 
+### Requirement: A run skips services shut down before it claims them
+A Start, Refresh or Scope.Start SHALL NOT build, handle or start a service that its scope no longer holds when the run claims its candidates, such as one removed by a child scope shutdown that ran entirely after the run collected it. Such a service SHALL NOT fail the run, and a same-name service of an ancestor scope SHALL NOT be started again through it.
+
+#### Scenario: A child shutdown completes between collection and claim
+```gherkin
+Given a started root container with <ancestor>
+And child scope "tenant" with lazy Starter "w", registered after Start
+And <run> is running in another goroutine and has collected "w", but has not claimed its candidates
+When tenant.Shutdown() runs to completion
+And <run> continues
+Then <run> returns nil
+And tenant's "w" was started 0 times
+And the root's "w" was started <root_starts> times
+
+Examples:
+  | ancestor                     | run            | root_starts |
+  | no service "w"               | root.Refresh() | 0           |
+  | lazy Starter "w" in the root | root.Refresh() | 1           |
+  | no service "w"               | tenant.Start() | 0           |
+  | lazy Starter "w" in the root | tenant.Start() | 1           |
+```
+
+<!-- cases: N/A 1 default, 2 overrides: there is no option -->
+<!-- cases: N/A 3 zero values: an empty scope has nothing to claim -->
+<!-- cases: 4 boundaries: the shutdown completes after collection and before the claim; a shutdown still running at the claim is covered by "Child scope shutdown waits for a start that is starting its services" -->
+<!-- cases: 5 errors: the run returns nil instead of a build error matching ErrServiceNotFound -->
+<!-- cases: 6 duplicates: a same-name ancestor Starter is not started twice -->
+<!-- cases: 7 lifecycle: Refresh and Scope.Start rows; Start cannot race a child scope created before it in this way without a test seam, and shares the claim -->
+<!-- cases: 8 concurrency: the subject; the test pauses collection deterministically; runs under -race with goleak -->
+<!-- cases: N/A 9 panics: none -->
+<!-- cases: N/A 10 compatibility: fixes a race; no behavior that worked before changes -->
+
+### Requirement: An aborted run matches ErrStartAfterShutdown when the caller cancelled first
+When the caller's context was cancelled before root Shutdown began, a Start, Refresh or Scope.Start that returns after Shutdown began SHALL return an error matching `ErrStartAfterShutdown` and the caller's cause, whether its pipeline failed or returned nil. A cause SHALL appear once in the message.
+
+#### Scenario: Caller cancellation, then Shutdown
+```gherkin
+Given a root container inside synctest.Test created with StartParallelism <n>
+And lazy Starter "a" whose Start blocks until released, then returns <outcome>, registered <when>
+And <operation> is running with a cancellable context ctx and "a" has entered Start
+When the consumer cancels ctx, then calls Shutdown() in another goroutine, waits until it is blocked, and releases "a"
+Then <operation> returns an error matching ErrStartAfterShutdown and context.Canceled
+And <check>
+
+Examples:
+  | n | outcome | when                       | operation             | check                                        |
+  | 1 | errBoom | before Start               | StartWithContext(ctx)   | it matches errBoom                           |
+  | 1 | errBoom | after Start() returned nil | RefreshWithContext(ctx) | it matches errBoom                           |
+  | 4 | errBoom | before Start               | StartWithContext(ctx)   | it matches errBoom                           |
+  | 4 | errBoom | after Start() returned nil | RefreshWithContext(ctx) | it matches errBoom                           |
+  | 1 | nil     | before Start               | StartWithContext(ctx)   | its message contains "context canceled" once |
+  | 1 | nil     | after Start() returned nil | RefreshWithContext(ctx) | its message contains "context canceled" once |
+```
+
+#### Scenario: The abort outcome rule
+```gherkin
+Given a run whose context was cancelled with cause <cause>, after which Shutdown began
+When the run's outcome is <result>
+Then the returned error is <returned>
+
+Examples:
+  | cause                 | result                                    | returned                                                                  |
+  | ErrStartAfterShutdown | nil                                       | "DI: start aborted: DI: container is shut down"                           |
+  | context.Canceled      | nil                                       | "DI: start aborted: DI: container is shut down: context canceled"          |
+  | ErrStartAfterShutdown | errBoom                                   | "boom (start aborted: DI: container is shut down)"                        |
+  | context.Canceled      | errBoom                                   | "boom (start aborted: DI: container is shut down: context canceled)"       |
+  | context.Canceled      | "boom (start aborted: context canceled)"  | "boom (start aborted: context canceled) (start aborted: DI: container is shut down)" |
+  | context.Canceled      | an error already matching ErrStartAfterShutdown | that error unchanged                                                |
+```
+
+<!-- cases: N/A 1 default, 2 overrides: there is no option -->
+<!-- cases: N/A 3 zero values: a nil outcome is a row -->
+<!-- cases: N/A 4 boundaries: one cancellation and one Shutdown -->
+<!-- cases: 5 errors: the subject; both causes match -->
+<!-- cases: 6 duplicates: a cause already carried is not wrapped again -->
+<!-- cases: 7 lifecycle: Start and Refresh rows; Scope.Start shares finishIncremental with Refresh -->
+<!-- cases: 8 concurrency: sequential and parallel rows; synctest bubble; runs under -race with goleak -->
+<!-- cases: N/A 9 panics: covered by container-lifecycle-hooks "Shutdown during an in-flight Start" -->
+<!-- cases: N/A 10 compatibility: messages are unchanged when Shutdown's cause came first -->
+
+### Requirement: Incremental start uses the caller's context
+`RefreshWithContext(ctx)` and `Scope.StartWithContext(ctx)` SHALL derive the run's context from ctx: its values SHALL reach Starters, kind handlers and scope Starting hooks, its cancellation SHALL abort the run with an error matching `context.Canceled`, and a nil ctx SHALL be treated as `context.Background()`.
+
+#### Scenario: The caller's context reaches the run
+```gherkin
+Given a started root container and lazy Starter "a", registered after Start in <scope>, whose Start(ctx) records ctx
+And a HookScopeStarting hook recording its context
+When the consumer calls <operation> with <ctx>
+Then <result>
+
+Examples:
+  | scope                         | operation          | ctx                                   | result                                                                        |
+  | the root                      | RefreshWithContext | a context holding value "v" for key k | it returns nil and "a" recorded a context holding "v" for k                    |
+  | child scope "tenant"          | tenant.StartWithContext | a context holding value "v" for key k | it returns nil and "a" and the Starting hook recorded a context holding "v" for k |
+  | the root                      | RefreshWithContext | an already cancelled context          | it returns an error matching context.Canceled and "a" was started 0 times      |
+  | child scope "tenant"          | tenant.StartWithContext | an already cancelled context     | it returns an error matching context.Canceled and "a" was started 0 times      |
+  | the root                      | RefreshWithContext | nil                                   | it returns nil and "a" recorded a non-nil context                              |
+  | child scope "tenant"          | tenant.StartWithContext | nil                              | it returns nil and "a" recorded a non-nil context                              |
+```
+
+<!-- cases: 1 default: Refresh() and Scope.Start() use context.Background() -->
+<!-- cases: 2 overrides: the caller's context is the subject -->
+<!-- cases: 3 zero values: the nil rows -->
+<!-- cases: N/A 4 boundaries: one Starter per row -->
+<!-- cases: 5 errors: the cancelled rows -->
+<!-- cases: N/A 6 duplicates: none -->
+<!-- cases: 7 lifecycle: Refresh and Scope.Start rows -->
+<!-- cases: N/A 8 concurrency: covered by "Concurrent Refresh calls are serialized" -->
+<!-- cases: N/A 9 panics: none -->
+<!-- cases: N/A 10 compatibility: new API -->
+
 ### Requirement: A child shutdown wait is bounded by its context
 If the context of a child scope's `ShutdownWithContext` ends while it waits for a running start, the report SHALL fail with an error keyed by the scope with an empty service name wrapping `ctx.Err()`, and the shutdown SHALL proceed.
 

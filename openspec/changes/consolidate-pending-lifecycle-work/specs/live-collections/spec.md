@@ -97,7 +97,8 @@ Examples:
 Given lazy "app" implementing "EventHandler" whose provider invokes "bus", then calls All() on bus's collection and returns its error
 And lazy "bus" implementing "EventHandler" whose provider stores c := InvokeCollection[EventHandler](i)
 When the consumer invokes "app" within 1s
-Then the invocation returns an error matching ErrCircularDependency that names "app"
+Then the invocation returns an error matching ErrCircularDependency
+And its message contains "`app` -> `bus` -> `app`", naming the holder
 ```
 
 #### Scenario: A read while the holder's provider runs

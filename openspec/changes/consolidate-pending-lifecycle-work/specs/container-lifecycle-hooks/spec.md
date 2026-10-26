@@ -355,6 +355,21 @@ Examples:
   | lazy Starter "scheduler", lazy Starter "job" whose provider invokes "scheduler", DeclareDependency(root, "scheduler", "job") before Start, and a StageBeforeStart handler of kind "k" for lazy "j" that starts Shutdown in a goroutine, waits until it is blocked and returns nil, so the cycle check fails |
 ```
 
+#### Scenario: A pipeline panic after Shutdown began
+```gherkin
+Given a root container inside synctest.Test created with StartParallelism <n>, with a Failed hook recording its error
+And a HookAfterStart hook that panics with errBoom for "a"
+And lazy Starter "a" whose Start(ctx) blocks until ctx.Done() and returns nil, <others>
+When the consumer calls Start, and Shutdown() is called in another goroutine once "a" has entered Start
+Then Start panics with errBoom
+And the Failed hook received an error matching both errBoom and ErrStartAfterShutdown
+
+Examples:
+  | n | others                                  |
+  | 1 | and no other service                    |
+  | 4 | and lazy Starter "b" that returns nil   |
+```
+
 #### Scenario: A start finishing as Shutdown begins
 ```gherkin
 Given 20000 fresh root containers, each with a StageAfterStart handler of kind "k" for lazy "j" that signals another goroutine to call Shutdown() and then returns nil

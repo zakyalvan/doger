@@ -89,8 +89,49 @@ Examples:
 <!-- cases: N/A 9 panics: none -->
 <!-- cases: N/A 10 compatibility: new API -->
 
+#### Scenario: A shutdown that completed before Scope.Start claimed the scope
+```gherkin
+Given a started root container and child scope "tenant" with lazy Starter "w", registered after Start
+And a counting HookScopeStarted hook
+And tenant.Start() is running in another goroutine and has collected "w", but has not claimed its candidates
+When tenant.Shutdown() runs to completion
+And tenant.Start() continues
+Then it returns nil
+And "w" was started 0 times
+And the Started hook ran 1 time, as for a tenant.Start() called after tenant.Shutdown() returned
+```
+
+### Requirement: Scope Starting hooks skip a scope that is shutting down
+`Scope.Start` on a child scope SHALL check, before its Starting hooks run, whether the scope or one of its ancestors is shutting down. If so, it SHALL run no scope hook, start nothing and return nil.
+
+#### Scenario: Scope.Start during the scope's shutdown fires no scope hook
+```gherkin
+Given a started root container and child scope "tenant" with lazy Starter "w", registered after Start
+And counting HookScopeStarting and HookScopeStarted hooks
+And <shutting-down>.Shutdown() is running in another goroutine, blocked in a HookScopeClosing hook
+When the consumer calls tenant.Start()
+Then it returns nil
+And "w" was started 0 times
+And the Starting hook ran 0 times and the Started hook ran 0 times
+
+Examples:
+  | shutting-down                                  |
+  | tenant                                         |
+  | "parent", the scope "tenant" was created under |
+```
+
+<!-- cases: N/A 1 default, 2 overrides: there is no option -->
+<!-- cases: N/A 3 zero values: covered by the veto requirement -->
+<!-- cases: 4 boundaries: the scope itself and an ancestor -->
+<!-- cases: N/A 5 errors: Scope.Start returns nil -->
+<!-- cases: N/A 6 duplicates: a Scope.Start after the shutdown returned runs the hooks again -->
+<!-- cases: 7 lifecycle: the subject; a shutdown that begins after the check is covered by "Scope Started hooks skip a scope that is shutting down" -->
+<!-- cases: 8 concurrency: the shutdown runs in another goroutine; runs under -race with goleak -->
+<!-- cases: N/A 9 panics: no hook runs -->
+<!-- cases: 10 compatibility: BEHAVIOR CHANGE (flagged) - before, Starting hooks ran for a scope that was shutting down -->
+
 ### Requirement: Scope hooks receive a non-nil context
-Every scope hook SHALL receive a non-nil context: a nil context passed to `Scope.ShutdownWithContext` or `Scope.StartWithContext` SHALL reach the hooks as `context.Background()`, as for container hooks.
+Every scope hook SHALL receive a non-nil context: a nil context passed to `Scope.ShutdownWithContext` or `Scope.StartWithContext` SHALL reach the hooks as a non-nil context derived from `context.Background()`, as for container hooks.
 
 #### Scenario: Nil context reaches scope hooks as non-nil
 ```gherkin

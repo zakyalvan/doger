@@ -261,7 +261,7 @@ A third `/opsx:verify` and a `/code-review` reproduced five defects with probe t
 
 **V34. Examples** for `AddScopeStartingHook`, `AddScopeStartedHook`, `ErrNotStarted`, `MustInvokeAllMap` and `DependencySource.UnmarshalText`.
 
-**V35. Out of scope.** The `/code-review` finding that a child scope could shut down between `discoverCandidates` and `claimCandidates` was not reproduced; no change is made (CLAUDE.md rule 5). Wrapping the AsStarter-without-Start error with the abort cause was suggested for consistency only, and its probe was invalid; it is now covered by V25.
+**V35. Out of scope (corrected by V37).** The `/code-review` finding that a child scope could shut down between `discoverCandidates` and `claimCandidates` was not reproduced in the third round, so no change was made then (CLAUDE.md rule 5). The fourth verification reproduced it with a probe; V37 fixes it. Wrapping the AsStarter-without-Start error with the abort cause was suggested for consistency only, and its probe was invalid; it is now covered by V25.
 
 **V36. Code-review cleanups (refactors, behavior unchanged).**
 - The unreachable non-Starter check in `startStarters` goes.
@@ -270,6 +270,50 @@ A third `/opsx:verify` and a `/code-review` reproduced five defects with probe t
 - One `placement` comparator (depth, registration index, name) serves start discovery, parallel scheduling and collections. The name never decides for start, because registration indexes are unique in a container. `Scope.Ancestors` reuses `scopeDepth`.
 - `root.kinds` starts as a shared one-entry slice holding `defaultRunnableEntry` (no allocation; `New` stays at 11 allocs). `Kind.Handle` copies the list before writing, so `Handle` and `runStage` lose their special cases.
 - A virtual scope stores its own name and a link to its invoker's virtual scope, and derives the invoker chain by walking up. A scope built from an explicit chain (`newVirtualScope`, a detached read) stores that chain as its base. Each invocation then allocates one object instead of two, and a stored injector retains O(depth) memory instead of O(depth²). White-box tests read the chain through an accessor; their expected values are unchanged.
+
+### Part V4 — Fourth verification
+
+A fourth `/opsx:verify` reproduced four defects with probe tests (V37–V40) and asked for one more decision (V41), plus tests that could not fail, documentation drift and suggestions. The user chose the recommended option for every warning and asked to apply every suggestion.
+
+**V37. A run skips services shut down before it claims them (fixes the V35 finding).** A child scope shutdown that runs entirely between `discoverCandidates` and `claimCandidates` is unseen: `runScopes` is still empty, so it does not wait, and `closing` is back at 0 at the claim. The stale candidate then failed its build with `ErrServiceNotFound` or, when an ancestor registers the same name, built and started the ancestor's already-started Starter again. `claimCandidates` now also drops a candidate whose scope no longer holds its wrapper (`stillRegistered`). This is sound: `closing++` happens under `lifecycleMu` before the shutdown removes a service, so at the claim a candidate's scope is either closing, or still holds the wrapper, or has removed it. `scope.mu` is only read-locked under `lifecycleMu`; nothing takes `lifecycleMu` while holding `scope.mu`. The regression test blocks discovery deterministically with a white-box wrapper whose `getServiceType` waits, placed in a scope visited after the target scope.
+
+**V38. An aborted run always matches `ErrStartAfterShutdown`.** When the caller cancelled its context before Shutdown's `cancel(ErrStartAfterShutdown)`, `context.Cause` is the caller's cause, so `abortOutcome` wrapped `context.Canceled` only. Once the close phase is not open, `abortOutcome` now wraps an abort cause that always matches `ErrStartAfterShutdown`: the context cause when it already does, otherwise `ErrStartAfterShutdown` joined with it (`DI: container is shut down: context canceled`). A failure that already matches `ErrStartAfterShutdown` is returned as is; one that already carries the caller's cause gets only `ErrStartAfterShutdown`, so nothing is wrapped twice. Messages are unchanged when Shutdown's cause came first.
+
+**V39. The Failed error after a pipeline panic carries the abort cause.** `runStart` recovers the pipeline panic itself and turns it into `recoverAsError(value)` before its deferred `finishStart`, which then applies the V38 outcome as for any failure. `StartWithContext` runs the Failed hooks with that error and re-panics with the original value. `runStartRecovering` goes, and `finishStart` loses its `panicked` parameter.
+
+**V40. `InvokeAs` skips aliases of the invoking service.** V27 skipped only the invoking service's own name, so an alias of it, registered before the service it decorates, was selected and failed with `ErrCircularDependency`. `selectByType` now also skips an alias whose target chain resolves to the invoking service's name. It follows the chain only for alias matches, through the alias's scope as alias invocation does, and stops on a loop. The struct fallback uses `selectByType`, so it inherits the rule. Aliases of other services stay candidates.
+
+**V41. Scope Starting hooks skip a scope that is shutting down (user decision).** `Scope.Start` on a child scope checks `closingInLine` under `lifecycleMu` before the Starting hooks run. When the scope or an ancestor is shutting down, it runs no scope hook and no pipeline (which would claim nothing of that subtree anyway) and returns nil. A shutdown that begins after this check is handled as before (V30).
+
+**V42. Tests that could not fail.** Each is strengthened and checked with the mutation the verifier used (recorded in notes.md):
+- `RefreshWithContext` and `Scope.StartWithContext` pass the caller's context: a value from it reaches a Starter, cancelling it aborts the run, and a nil context reaches Starters and hooks as non-nil.
+- `TestContainerHooks_ObserverContexts`: Started, Ready and Failed receive the caller's context itself, not cancelled.
+- Collections: a child-scope member registered before a root member still comes after it (scope depth); 13 equal-order members keep registration order (stable sort; pdqsort is stable up to 12); `InvokeStruct` with `do:"e"` and `InvokeAs` mark their invocation over (V24); a detached read records no edge, and a member built by a detached read keeps the running chain through the `parent` link.
+- `InvokeAs`: an alias that is the only match is selected; a clone keeps each wrapper's registration index (register "b" then "a", clone, expect "b").
+
+**V43. Documentation drift.**
+- proposal.md: F4 describes the shared default kind list and copy-on-write `Handle`; What Changes flags V27, V28, V38–V41; assumption 6 says edges are recorded only while the provider runs.
+- design.md: the flagged list and X4 add V27, V28, the explain `String()`/JSON `Source` change and the unkeyed-literal break; V23 and Q1 describe the parent-link chain (V36) and the shared, copy-on-write kind list; Test Strategy row counts are current.
+
+**V44. Godoc, upgrading page and examples.**
+- `HookBeforeStart`, `HookAfterStart`, `AddBeforeStartHook` and `AddAfterStartHook` fire for Start, Refresh and Scope.Start. `AddAfterBuildHook` is configuration-time only, like the other adders. `InvokeAs` notes that a provider's stored injector still skips its holder after the provider returned.
+- The upgrading page replaces the "+9%" `InvokeAs` figure with the latest measurement, and flags V38–V41.
+- Examples: `ExampleInvokeAs_decorator`, `ExampleMustInvokeAll`, `ExampleRootScope_AddContainerStartedHook`, `ExampleRootScope_AddContainerClosingHook`, `ExampleRootScope_AddContainerClosedHook`, `ExampleRootScope_AddScopeClosedHook`, `ExampleRootScope_RefreshWithContext` and `ExampleScope_StartWithContext`.
+
+**V45. Suggestion tests.**
+- `TestStart_ParallelHookPanic` "n=4, HookAfterStart": "b" returns at once while "a" and "c" sleep, so the assertion that the panic waits for running Starters can fail.
+- The V21 guard in `runStage` (`stillRegistered` before `markHandled`) gets a test.
+- Parallel dependency order for Refresh and Scope.Start.
+- `assert.Same` in the eager and lazy build-hook rows.
+- `MustInvokeAs` called from a provider; an edge recorded both as depends-on and invoked; `PhaseStarted.String()` and `PhaseClosing.String()`; the scope nil-entry test starts the root, as its scenario says; per-member `HookBeforeInvocation` for collections.
+
+**V46. Spec wording.** A nil context passed to a scope operation reaches scope hooks as "a non-nil context derived from `context.Background()`" (the Starting hooks receive the run's derived context).
+
+**V47. The cycle message of a live-collection read names the holder.** A read during an outer provider fails with `app -> app`. The detached read's virtual scope keeps the holder for messages only: `invokerChain` appends it after the running chain, so the message reads `app -> bus -> app`. Cycle detection (`chainContains`) and edges are unchanged, so existing assertions hold.
+
+**V48. Observer hook panics carry their subject.** `hookPanic` stores its subject ("container" or "scope") set by the loop that recovered it, and `logHookPanic` formats from it instead of parsing the `scope-` prefix of the point. Messages and the points passed to `HookContainerPanic` are unchanged (refactor).
+
+**V49. Accepted, out of scope.** `TestInvokeByName` panicking with `-count>1` (pre-existing), the two live-collection hazards documented on `Collection`, `HealthCheckTimeout` bounding single checks without a separate opt-out, and the `InvokeAs`/`New` time costs accepted in task 48.1.
 
 ### Part H — Container lifecycle hooks (folded from `add-container-lifecycle-hooks`)
 
@@ -678,6 +722,16 @@ All tests run under `go test -race` with goleak (`TestMain`). Tests that could h
 | scope-lifecycle-hooks | Observer scope hook panics (scope-closing and default-policy Started rows) | `scope_hooks_test.go: TestScopeHooks_ObserverPanic/<row>`, `TestScopeStartedHook_PanicDefault` | table (V32) |
 | collection-ordering | Panicking Order() (string row: exact message) | `invoke_all_order_test.go: TestInvokeAll_OrderPanic/<row>` | table (regression, V31) |
 | container-lifecycle-hooks | Observer hooks receive the operation's context (5 rows) | `container_hooks_test.go: TestContainerHooks_ObserverContexts/<hook>` | table (V32) |
+| container-start | A child shutdown completes between collection and claim (4 rows) | `root_start_test.go: TestStart_ShutdownBetweenCollectAndClaim/<row>` | table (regression, V37) |
+| scope-lifecycle-hooks | A shutdown that completed before Scope.Start claimed the scope | `scope_hooks_test.go: TestScopeStartedHook_ShutdownBeforeClaim` | unit (regression, V37) |
+| container-start | Caller cancellation, then Shutdown (6 rows) | `root_start_test.go: TestStart_CallerCancelThenShutdown/<row>` | synctest (regression, V38) |
+| container-start | The abort outcome rule (6 rows) | `root_start_internal_test.go: TestAbortOutcome/<row>` | table (regression, V38) |
+| container-lifecycle-hooks | A pipeline panic after Shutdown began (2 rows) | `container_hooks_test.go: TestContainerFailedHook_PipelinePanicAfterShutdown/<n>` | synctest (regression, V39) |
+| type-resolution | The invoking service is not a candidate (alias rows) | `invoke_test.go: TestInvokeAs_SkipsInvoker/<row>`, `TestInvokeStruct_FallbackSkipsInvokerAlias` | table (regression, V40) |
+| type-resolution | Selection among several matches (alias and clone rows) | `invoke_test.go: TestInvokeAs_Deterministic/<row>` | table (V42) |
+| scope-lifecycle-hooks | Scope.Start during the scope's shutdown fires no scope hook (2 rows) | `scope_hooks_test.go: TestScopeStartingHook_SkippedWhileClosing/<row>` | table (regression, V41) |
+| container-start | The caller's context reaches the run (6 rows) | `root_refresh_test.go: TestIncrementalStart_CallerContext/<row>` | table (V42) |
+| live-collections | A read while an outer provider still runs (holder in the message) | `collection_test.go: TestCollection_ReadDuringOuterProvider` | unit (regression, V47) |
 
 Finding tests without a spec scenario (F2, F4, F5, V12):
 - `root_refresh_test.go: TestRootScope_ForgetsShutDownServices` (group 49) and `TestRootScope_ForgetsOverriddenServices` (regression, V12, internal);
