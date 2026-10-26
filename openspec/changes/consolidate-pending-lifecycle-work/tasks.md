@@ -646,11 +646,11 @@ Each test that passes on arrival is checked with a temporary mutation (reverted)
 - [x] 95.1 proposal.md: F4, What Changes (V27, V28, V38–V41 flagged), assumption 6
 - [x] 95.2 design.md: the flagged list, X4, V23, Q1 and the Test Strategy row counts
 - [x] 95.3 Godoc: `HookBeforeStart`, `HookAfterStart`, `AddBeforeStartHook`, `AddAfterStartHook` (Start, Refresh and Scope.Start), `AddAfterBuildHook` (configuration-time), `InvokeAs` (a stored injector still skips its holder)
-- [ ] 95.4 Upgrading page: the latest `InvokeAs` measurement replaces "+9%"; verify the docs lint and build pass
+- [x] 95.4 Upgrading page: the latest `InvokeAs` measurement replaces "+9%"; verify the docs lint and build pass
 
 ## 96. Examples (design V44)
 
-- [ ] 96.1 Add `ExampleInvokeAs_decorator`, `ExampleMustInvokeAll`, `ExampleRootScope_AddContainerStartedHook`, `ExampleRootScope_AddContainerClosingHook`, `ExampleRootScope_AddContainerClosedHook`, `ExampleRootScope_AddScopeClosedHook`, `ExampleRootScope_RefreshWithContext` and `ExampleScope_StartWithContext`; verify `go test -race -run Example .` passes
+- [x] 96.1 Add `ExampleInvokeAs_decorator`, `ExampleMustInvokeAll`, `ExampleRootScope_AddContainerStartedHook`, `ExampleRootScope_AddContainerClosingHook`, `ExampleRootScope_AddContainerClosedHook`, `ExampleRootScope_AddScopeClosedHook`, `ExampleRootScope_RefreshWithContext` and `ExampleScope_StartWithContext`; verify `go test -race -run Example .` passes
 
 ## 97. Integration checks after the fourth verification
 
