@@ -144,6 +144,24 @@ The design's Risks section required the `started`/`handled` entries of a scope's
 
 ## Part V: verification fixes (groups 50-64)
 
+Each defect was first reproduced by a probe in a scratch copy of the repo during `/opsx:verify`, then by the in-repo RED test below. User decisions: V3 fail fast, V4 wait for the run, V5 drop the stale chain, V6 exact `map[string]`, V10 hook after unlock, V14 apply shadowing.
+
+| Group | RED (seen before GREEN) | Notes |
+|---|---|---|
+| 50 | `TestContainerHooks_ShutdownCauseRace`: 259 and 278 of 20000 runs per row returned `DI: start aborted: %!w(<nil>)` | |
+| 51 | `TestStart_ParallelHookPanic`: the test binary crashed with `panic: hook-boom`, created by `startStartersParallel` | |
+| 52 | `TestIncrementalStart_DuringStart`: all 3 rows timed out (deadlock) | The task line expected the goroutine row to return nil; the scenario has a's Start await that goroutine, so it deadlocks as well. Unawaited, the verify probe saw nil after Start returned. |
+| 53 | `TestScopeShutdown_WaitsForStart` (Shutdown returned while "w" was starting), `TestScopeShutdown_LaterStartSkips` ("w" started 1 time), `TestScopeShutdown_WaitBounded` (returned at 0s with a successful report) | `TestScopeShutdown_CreatedDuringStart` passed on arrival (it guards against waiting too much; its mutation check follows the benchmarks). The closing mark became a counter that lasts while the shutdown runs, because a directly shut-down child scope stays attached and may be reused; spec and design wording were aligned. The extracted functions are `beginClosing`/`endClosing` (the task named `awaitRunForScope`). |
+| 54 | `TestCollection_AfterProviderReturned`: `circular dependency detected: app -> bus -> app`; `TestCollection_HeldByProvider`: edges [audit console] recorded | The HeldByProvider assertion changed with the agreed scenario: reads after the provider returned record no edge. |
+| 55 | string-kinded key row: no error returned | |
+| 56 | n/a: `TestStartError_Incremental`, `TestScopeStart_AncestorsNotStarted`, `TestStart_ParallelIncremental` passed on arrival | Mutations, each reverted: `StartError.Scope` forced to the root scope fails all 3 StartError rows; `Scope.Start` run on the root scope fails AncestorsNotStarted (db started 1 time); parallel start disabled fails both ParallelIncremental rows (3s instead of 1s). |
+| 57 | `TestAfterBuildHook_ReentersService`: all 3 rows timed out (deadlock) | |
+| 58 | `TestDependencySource_UnmarshalText`: `json: cannot unmarshal string into Go struct field ... of type doger.DependencySource` | |
+| 59 | `TestRootScope_ForgetsOverriddenServices`: 6 started entries instead of 1 | |
+| 60 | `TestStart_Parallel/18446744073709551615`: Start returned at 0s with no Starter started | The `nolint:gosec` is gone; the clamped conversion no longer triggers it. |
+| 61 | `TestInvokeAs_Shadowing`: both shadowed rows returned the hidden root service | Writing the test showed that the struct fallback returns `ErrServiceNotFound` when no service matches (its error path is unchanged), so that spec row was corrected from `ErrServiceNotMatch`. |
+| 62, 63 | refactors | Suites unchanged before and after each step. |
+
 ### 61.4 InvokeAs after shadowing
 
 Interleaved against `ed65bdc` (20 alternating runs) with shadowing in place: `InvokeAs` +6.9% (p=0.001, 1.229µs → 1.314µs), 937 → 961 B/op, 11 → 9 allocs/op; `InvokeAlias` -5.8%. The shadow check runs only for matching candidates and walks parent pointers, so it adds no allocation and no measurable time over the +9.2% accepted in 48.1.
