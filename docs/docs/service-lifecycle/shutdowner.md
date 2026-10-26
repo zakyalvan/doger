@@ -59,6 +59,8 @@ If no signal is passed to `injector.ShutdownOnSignals(...)`, both `syscall.SIGTE
 - A `nil` context is treated as `context.Background()`.
 - Services registered on the root after the first shutdown are not shut down by a later root `Shutdown()`.
 
+Child scopes follow a similar rule while a shutdown of them runs: a concurrent `scope.Shutdown()`, or root `Shutdown()` reaching that scope, waits for the running shutdown (bounded by its context) and gets a copy of its report. Once that shutdown has finished, a later `scope.Shutdown()` runs again.
+
 :::caution
 
 Only the root scope methods follow this rule. `Shutdown()` on a child scope, and a shutdown reached through the root's `*Scope` (for example the injector a provider receives), run the per-scope shutdown directly, as before.

@@ -2,6 +2,7 @@ package doger
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"reflect"
@@ -387,6 +388,17 @@ func (s *Scope) Shutdown() *ShutdownReport {
 // shut down, synchronously from code running in such a start, a scope that
 // the start is starting: it would wait for itself.
 //
+// A child scope is shut down once at a time: a call that finds a shutdown of
+// it running, its own or root Shutdown's, waits for that shutdown and
+// returns a copy of its report, so services and scope hooks run once. If
+// ctx ends first, the report fails with an error keyed by this scope with an
+// empty service name, wrapping ctx.Err(), and the running shutdown goes on.
+// If the running shutdown panics before producing a report (for example in a
+// custom Logf), the joined calls get a failed report containing "DI: scope
+// shutdown did not complete". Never shut a scope down synchronously from its
+// own Closing or Closed hooks, or from its services' Shutdown: it would wait
+// for itself.
+//
 // Parameters:
 //   - ctx: Context for cancellation and timeout control
 //
@@ -474,8 +486,13 @@ func (s *Scope) joinClose() (run *scopeCloseRun, winner bool) {
 }
 
 // finishScopeClose publishes the report of the winning shutdown and releases
-// the shutdowns that joined it.
+// the shutdowns that joined it. A nil report means the winner panicked
+// before producing one, for example in a custom Logf.
 func (s *Scope) finishScopeClose(run *scopeCloseRun, report *ShutdownReport) {
+	if report == nil {
+		report = s.failureReport(errors.New("DI: scope shutdown did not complete"))
+	}
+
 	root := s.rootScope
 	root.lifecycleMu.Lock()
 	defer root.lifecycleMu.Unlock()
@@ -494,7 +511,12 @@ func (s *Scope) waitForScopeClose(ctx context.Context, run *scopeCloseRun) *Shut
 		return cloneShutdownReport(run.report)
 	}
 
-	err := fmt.Errorf("DI: waiting for scope shutdown: %w", ctx.Err())
+	return s.failureReport(fmt.Errorf("DI: waiting for scope shutdown: %w", ctx.Err()))
+}
+
+// failureReport returns a failed report whose only error, err, is keyed by
+// the scope with an empty service name.
+func (s *Scope) failureReport(err error) *ShutdownReport {
 	return &ShutdownReport{
 		Succeed:             false,
 		Services:            []ServiceDescription{},

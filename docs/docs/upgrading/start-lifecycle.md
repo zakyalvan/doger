@@ -44,7 +44,7 @@ Behavior changes:
 - It no longer shuts down services registered on the root after the first shutdown. Create a new container instead of reusing a shut-down one.
 - A `nil` context is treated as `context.Background()`; it used to panic once a built service had a `Shutdown` method.
 
-`Shutdown()` on child scopes is unchanged. See [Root shutdown runs once](../service-lifecycle/shutdowner.md#root-shutdown-runs-once).
+Concurrent `Shutdown()` calls on one child scope join each other too: see [Concurrent child scope shutdowns join](#child-shutdown-joins). See [Root shutdown runs once](../service-lifecycle/shutdowner.md#root-shutdown-runs-once).
 
 ## An alias never shuts its target down {#alias-shutdown}
 
@@ -78,6 +78,7 @@ Migration: none for decorators; code that checked for `ErrCircularDependency` in
 **Cycle detection compares services, not names.** A service invoked while another service with the same name, registered in a different scope, is being built (for example, a child scope's `x` invokes a root aggregator that resolves the root's `x`, by name or as an `InvokeAll` member) used to fail with `ErrCircularDependency`. It is now built. A service that really depends on itself still fails as before. Migration: none, unless code relied on that error.
 
 **The struct fallback decides by name (BREAKING, edge cases).** An empty `do:""` tag falls back to resolution by type only when no service is registered under the field type, or when the only one is the service whose provider calls `InvokeStruct`.
+
 - A service registered under the field type that fails with an error matching `ErrServiceNotFound` (for example, its own provider could not find a dependency) used to make the field silently fall back to another assignable service. That error is now returned.
 - A decorator registered under the field type (`doger.Provide[Logger]` whose provider calls `InvokeStruct` with a `Logger` field) used to fail with `ErrCircularDependency`; it now receives the service it wraps. With no other match, it still fails with `ErrCircularDependency`.
 
@@ -116,6 +117,12 @@ Migration: none for code that checks `errors.Is(err, doger.ErrStartAfterShutdown
 `Scope.Shutdown()` and `Scope.ShutdownWithContext(ctx)` on a child scope now wait for a `Start`, `Refresh` or `Scope.Start` that is starting services of that scope before shutting it down, bounded by `ctx`. They used to run concurrently with it, so a service could start after its scope had been shut down and keep running. A run that begins while the scope shuts down now skips it.
 
 Migration: none for shutdowns that happen after start. Code running during a start (a starter, kind handler, provider or hook) must not synchronously shut down a scope that this start is starting: it would wait for itself. Shut the scope down after the start returned, or bound the wait with `ShutdownWithContext`.
+
+## Concurrent child scope shutdowns join {#child-shutdown-joins}
+
+A `Shutdown()` or `ShutdownWithContext(ctx)` of a child scope that finds a shutdown of the same scope running (another direct call, or root `Shutdown()` reaching it) now waits for it, bounded by `ctx`, and returns a **copy of its report**. Both calls used to walk the scope: `HookScopeClosing` and `HookScopeClosed` ran twice, and each call reported the services the other had already removed as `ErrServiceNotFound`, so `Succeed` was false although every service shut down once. A shutdown of the scope that begins after the running one finished runs again, as before.
+
+Migration: none, unless code shuts a scope down synchronously from its own `HookScopeClosing` or `HookScopeClosed` hook, or from one of its services' `Shutdown` method: that call used to run a nested shutdown and now waits for itself. Shut the scope down from elsewhere, or bound the wait with `ShutdownWithContext`.
 
 ## Scope.Start skips a scope that is shutting down {#scope-start-while-closing}
 

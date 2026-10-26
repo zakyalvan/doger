@@ -379,6 +379,47 @@ func TestScopeShutdown_JoinBoundedByContext(t *testing.T) {
 	})
 }
 
+func TestScopeShutdown_JoinedWinnerPanics(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		is := assert.New(t)
+
+		entered, release := make(chan struct{}), make(chan struct{})
+		var panicked atomic.Bool
+		root := NewWithOpts(&InjectorOpts{
+			// the winning shutdown panics after its services shut down
+			Logf: func(format string, _ ...any) {
+				if format == "DI <scope=tenant>: shut down services" && panicked.CompareAndSwap(false, true) {
+					panic("log-boom")
+				}
+			},
+		})
+		root.AddScopeClosingHook(func(context.Context, *Scope) {
+			close(entered)
+			<-release
+		})
+		tenant := root.Scope("tenant")
+		firstPanic := make(chan any, 1)
+		go func() {
+			defer func() { firstPanic <- recover() }()
+			tenant.Shutdown()
+		}()
+		<-entered
+		secondDone := make(chan *ShutdownReport, 1)
+		go func() { secondDone <- tenant.Shutdown() }()
+		synctest.Wait()
+		close(release)
+
+		is.Equal("log-boom", <-firstPanic)
+		second := <-secondDone
+		if is.NotNil(second) {
+			is.False(second.Succeed)
+			is.ErrorContains(second.Errors[newServiceDescription(tenant.ID(), tenant.Name(), "")], "DI: scope shutdown did not complete")
+		}
+	})
+}
+
 func TestScopeShutdown_CreatedDuringStart(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, time.Second)

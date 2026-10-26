@@ -205,7 +205,7 @@ Scope hooks run logic when a **child** scope starts or shuts down, for example p
 | `HookScopeClosing`  | `func(context.Context, *Scope)`       | the scope shuts down, after its children and before its services       |
 | `HookScopeClosed`   | `func(context.Context, *Scope)`       | the scope shut down                                                    |
 
-- Closing and Closed fire whether the child scope shuts down directly or as part of its parent's shutdown, children before their parent. A child scope shut down directly stays attached to its parent, so a later parent shutdown fires its hooks again.
+- Closing and Closed fire whether the child scope shuts down directly or as part of its parent's shutdown, children before their parent. A child scope shut down directly stays attached to its parent, so a later parent shutdown fires its hooks again. Shutdowns of one scope that overlap run it once: a later caller waits for the running one and gets a copy of its report, so the hooks fire once.
 - Sibling scopes shut down in parallel, so their hooks may run concurrently.
 - The root's own scope never fires scope hooks: use container hooks for the root container. `Refresh` fires no scope hook for new child scopes; only an explicit `scope.Start()` does.
 - Starting and Started do not fire when the scope, or one of its ancestors, is shutting down when `scope.Start()` is called: it then starts nothing and returns nil. Started is also skipped when the shutdown begins after the Starting hooks ran and before the scope's services are collected.
