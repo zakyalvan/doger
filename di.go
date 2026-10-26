@@ -626,6 +626,14 @@ func MustAsNamed[Initial any, Alias any](i Injector, initial string, alias strin
 // T, so services of other types are never built. Eager values are members
 // as is. Beware InvokeAll[any]: every service matches, so every one is built.
 //
+// Visibility follows scope ancestry: services of the invoking scope and of
+// its ancestors, never of siblings or children. When a name exists in
+// several of these scopes, only the nearest service is considered, even if
+// it is not assignable to T: it then hides the ancestor's, as InvokeNamed
+// would. Inside a provider, the invoking scope is the scope the provider's
+// service is registered in. Aliases (As, Bind) are never members: their
+// target represents itself.
+//
 // Invocation hooks fire once per member, with the member's name, as for N
 // calls to Invoke. The result is a snapshot: services registered later are
 // not added to it, and changing it does not affect later calls; transient

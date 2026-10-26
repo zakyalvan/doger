@@ -218,30 +218,16 @@ func invokeServiceInstance(injector Injector, vScope *virtualScope, hookName, re
 	return instance, nil
 }
 
-// invokeAllByGenericType invokes every visible service whose registered
-// type is assignable to T, in iteration order.
+// invokeAllByGenericType invokes every collection member for T.
 func invokeAllByGenericType[T any](i Injector) ([]T, error) {
 	injector := getInjectorOrDefault(i)
 
 	vScope, _ := injector.(*virtualScope)
 
-	type member struct {
-		scope   *Scope
-		service any
-	}
-	members := []member{}
-	injector.serviceForEachRec(func(_ string, scope *Scope, s any) bool {
-		if serviceCanCastToGeneric[T](s) {
-			members = append(members, member{scope: scope, service: s})
-		}
-		return true
-	})
-
-	result := make([]T, 0, len(members))
-	for _, m := range members {
-		realName := m.service.(serviceWrapperGetName).getName() //nolint:errcheck,forcetypeassert
-
-		instance, err := invokeServiceInstance(injector, vScope, realName, realName, m.scope, m.service)
+	candidates := collectionCandidates[T](injector)
+	result := make([]T, 0, len(candidates))
+	for _, candidate := range candidates {
+		instance, err := invokeServiceInstance(injector, vScope, candidate.name, candidate.name, candidate.scope, candidate.service)
 		if err != nil {
 			return nil, err
 		}
@@ -251,6 +237,55 @@ func invokeAllByGenericType[T any](i Injector) ([]T, error) {
 	}
 
 	return result, nil
+}
+
+// collectionCandidate is a member of a collection, before it is built.
+type collectionCandidate struct {
+	name     string
+	scope    *Scope
+	depth    int    // scope depth from the root scope (root = 0)
+	regIndex uint64 // registration index
+	service  any
+}
+
+// collectionCandidates returns the members of a collection for T, visible
+// from injector: the nearest service of each name (even when it is not
+// assignable to T, it shadows its ancestors), without aliases, whose
+// registered type is assignable to T.
+func collectionCandidates[T any](injector Injector) []collectionCandidate {
+	candidates := []collectionCandidate{}
+	seen := map[string]struct{}{}
+	injector.serviceForEachRec(func(name string, scope *Scope, s any) bool {
+		if _, ok := seen[name]; ok {
+			return true
+		}
+		seen[name] = struct{}{}
+
+		service, ok := s.(serviceWrapperAny)
+		if !ok || service.getServiceType() == ServiceTypeAlias || !serviceCanCastToGeneric[T](s) {
+			return true
+		}
+
+		candidates = append(candidates, collectionCandidate{
+			name:     name,
+			scope:    scope,
+			depth:    scopeDepth(scope),
+			regIndex: service.getRegistrationIndex(),
+			service:  s,
+		})
+		return true
+	})
+
+	return candidates
+}
+
+// scopeDepth returns the number of ancestors of scope.
+func scopeDepth(scope *Scope) int {
+	depth := 0
+	for p := scope.parentScope; p != nil; p = p.parentScope {
+		depth++
+	}
+	return depth
 }
 
 // invokeByTag injects services into struct fields based on struct tags.

@@ -38,3 +38,35 @@ A nil injector means `doger.DefaultRootScope`.
 :::
 
 Invocation hooks (`HookBeforeInvocation`, `HookAfterInvocation`) fire once per member, with the member's name, as if `Invoke` had been called once per member.
+
+## Visibility {#visibility}
+
+A collection invoked from a scope includes the services of that scope and of its ancestors, never those of sibling or child scopes.
+
+When the same name exists in several visible scopes, only the **nearest** service is considered, even when it is not assignable to `T`:
+
+```go
+root := doger.New()
+doger.ProvideNamed(root, "x", NewAHandler)   // *AHandler implements EventHandler
+child := root.Scope("child")
+doger.ProvideNamed(child, "x", NewDatabase)  // *sql.DB does not
+
+handlers, _ := doger.InvokeAll[EventHandler](child)
+// handlers is empty: the child's "x" hides the root's "x"
+```
+
+This matches what `doger.InvokeNamed(child, "x")` resolves.
+
+Inside a provider, the invoking scope is the scope where that provider's service is **registered**, not the scope the consumer invoked it from, as for `Invoke`.
+
+## Aliases {#aliases}
+
+Aliases registered with `doger.As` or `doger.Bind` are never members. Their target represents itself, so an alias never duplicates a member:
+
+```go
+doger.Provide(injector, NewAuditHandler)
+doger.As[*AuditHandler, EventHandler](injector)
+
+handlers, _ := doger.InvokeAll[EventHandler](injector)
+// one element: the *AuditHandler instance
+```
