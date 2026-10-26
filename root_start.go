@@ -114,7 +114,7 @@ func (s *RootScope) failAndRepanic(ctx context.Context, recovered any) {
 	case s.opts.HookContainerPanic != nil:
 		s.opts.HookContainerPanic(s, first.point, first.value)
 	default:
-		s.opts.Logf("DI: container %s hook panicked: %v", first.point, first.value)
+		s.logHookPanic(first)
 	}
 
 	panic(recovered)
@@ -176,14 +176,20 @@ func (s *RootScope) keepFirstPanic(first *hookPanic, p hookPanic) {
 	}
 
 	if first.panicked {
-		if strings.HasPrefix(p.point, "scope-") {
-			s.opts.Logf("DI: %s hook panicked: %v", p.point, p.value)
-		} else {
-			s.opts.Logf("DI: container %s hook panicked: %v", p.point, p.value)
-		}
+		s.logHookPanic(p)
 		return
 	}
 	*first = p
+}
+
+// logHookPanic logs an observer hook panic that is not dispatched.
+func (s *RootScope) logHookPanic(p hookPanic) {
+	if strings.HasPrefix(p.point, "scope-") {
+		s.opts.Logf("DI: %s hook panicked: %v", p.point, p.value)
+		return
+	}
+
+	s.opts.Logf("DI: container %s hook panicked: %v", p.point, p.value)
 }
 
 // dispatchFirstPanic dispatches the first observer hook panic of an
