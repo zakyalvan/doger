@@ -38,6 +38,12 @@ type (
 	structOthers struct {
 		Others []EventHandler `do:"*"`
 	}
+
+	// handlerKey is a string-kinded type that is not string.
+	handlerKey    string
+	structKeyKind struct {
+		K map[handlerKey]EventHandler `do:"*"`
+	}
 )
 
 // collectionRoot registers "console" then "audit" in a new root scope.
@@ -124,6 +130,11 @@ func TestInvokeStruct_CollectionInvalidField(t *testing.T) {
 			name:    "map with int keys",
 			invoke:  func(root *RootScope) error { _, err := InvokeStruct[structIntKeys](root); return err },
 			message: fmt.Sprintf("DI: tag `*` requires a slice or map[string] field, got `%s.M`", NameOf[structIntKeys]()),
+		},
+		{
+			name:    "map with string-kinded keys",
+			invoke:  func(root *RootScope) error { _, err := InvokeStruct[structKeyKind](root); return err },
+			message: fmt.Sprintf("DI: tag `*` requires a slice or map[string] field, got `%s.K`", NameOf[structKeyKind]()),
 		},
 	}
 

@@ -560,7 +560,7 @@ func injectCollectionField(injector Injector, structName string, field reflect.S
 			slice = reflect.Append(slice, memberValue(m.instance, fieldType.Elem()))
 		}
 		fieldValue.Set(slice)
-	case fieldType.Kind() == reflect.Map && fieldType.Key().Kind() == reflect.String:
+	case fieldType.Kind() == reflect.Map && fieldType.Key() == reflect.TypeFor[string]():
 		members, err := invokeCollection(injector, fieldType.Elem(), false)
 		if err != nil {
 			return err

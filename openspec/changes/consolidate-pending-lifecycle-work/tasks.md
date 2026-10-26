@@ -379,9 +379,9 @@ Rules:
 
 ## 55. The `*` tag requires exactly map[string] (collection-struct-injection; design V6)
 
-- [ ] 55.1 RED: add the string-kinded key row to `TestInvokeStruct_CollectionInvalidField`; verify `go test -race -run TestInvokeStruct_CollectionInvalidField .` fails because no error is returned
-- [ ] 55.2 GREEN: compare the map key type with `reflect.TypeFor[string]()`; verify the 55.1 command passes and `make test` is green
-- [ ] 55.3 REFACTOR: none needed for a one-line check; verify `make test` and `make lint` pass
+- [x] 55.1 RED: add the string-kinded key row to `TestInvokeStruct_CollectionInvalidField`; verify `go test -race -run TestInvokeStruct_CollectionInvalidField .` fails because no error is returned
+- [x] 55.2 GREEN: compare the map key type with `reflect.TypeFor[string]()`; verify the 55.1 command passes and `make test` is green
+- [x] 55.3 REFACTOR: none needed for a one-line check; verify `make test` and `make lint` pass
 
 ## 56. Missing incremental-start tests (container-start; design V7, V8)
 
