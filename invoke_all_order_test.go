@@ -24,15 +24,17 @@ func TestInvokeAll_DefaultOrder(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		rootRegs  []string
-		childRegs []string
-		order     []string
+		name       string
+		rootRegs   []string
+		childRegs  []string
+		childFirst bool // register the child's services before the root's
+		order      []string
 	}{
 		{name: "root only", rootRegs: []string{"c", "a", "b"}, order: []string{"c", "a", "b"}},
 		{name: "root then child", rootRegs: []string{"b", "a"}, childRegs: []string{"z", "y"}, order: []string{"b", "a", "z", "y"}},
 		{name: "child only", childRegs: []string{"y", "z"}, order: []string{"y", "z"}},
 		{name: "one each", rootRegs: []string{"a"}, childRegs: []string{"a2"}, order: []string{"a", "a2"}},
+		{name: "child registered first", rootRegs: []string{"a"}, childRegs: []string{"z"}, childFirst: true, order: []string{"a", "z"}},
 	}
 
 	for _, tt := range tests {
@@ -42,11 +44,19 @@ func TestInvokeAll_DefaultOrder(t *testing.T) {
 
 			root := New()
 			child := root.Scope("child")
-			for _, name := range tt.rootRegs {
-				provideHandler(root, name, newConsole)
+			registerRoot := func() {
+				for _, name := range tt.rootRegs {
+					provideHandler(root, name, newConsole)
+				}
+			}
+			if !tt.childFirst {
+				registerRoot()
 			}
 			for _, name := range tt.childRegs {
 				provideHandler(child, name, newConsole)
+			}
+			if tt.childFirst {
+				registerRoot()
 			}
 
 			assert.Equal(t, tt.order, collectNames(t, child))
@@ -148,6 +158,30 @@ func TestInvokeAll_Ordered(t *testing.T) {
 			assert.Equal(t, tt.order, collectNames(t, root))
 		})
 	}
+}
+
+func TestInvokeAll_OrderedStableBeyondTwelve(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	// slices.SortFunc is stable for up to 12 elements only, so equal
+	// orders among more members tell a stable sort from an unstable one
+	root := New()
+	expected := make([]string, 0, 26)
+	for i := range 26 {
+		name := fmt.Sprintf("h-%02d", i)
+		order := i % 2 // 13 members with order 0, then 13 with order 1
+		provideHandler(root, name, func(n string) *orderedHandler {
+			return &orderedHandler{handlerBase: handlerBase{n}, order: order}
+		})
+	}
+	for _, order := range []int{0, 1} {
+		for i := order; i < 26; i += 2 {
+			expected = append(expected, fmt.Sprintf("h-%02d", i))
+		}
+	}
+
+	assert.Equal(t, expected, collectNames(t, root))
 }
 
 func TestInvokeAll_OrderedTransient(t *testing.T) {
