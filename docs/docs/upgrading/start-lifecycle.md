@@ -75,6 +75,12 @@ Since the previous pick was random, no code could rely on a specific one, but a 
 
 Migration: none for decorators; code that checked for `ErrCircularDependency` in that case checks for `ErrServiceNotMatch`.
 
+**The struct fallback decides by name (BREAKING, edge cases).** An empty `do:""` tag falls back to resolution by type only when no service is registered under the field type, or when the only one is the service whose provider calls `InvokeStruct`.
+- A service registered under the field type that fails with an error matching `ErrServiceNotFound` (for example, its own provider could not find a dependency) used to make the field silently fall back to another assignable service. That error is now returned.
+- A decorator registered under the field type (`doger.Provide[Logger]` whose provider calls `InvokeStruct` with a `Logger` field) used to fail with `ErrCircularDependency`; it now receives the service it wraps. With no other match, it still fails with `ErrCircularDependency`.
+
+Migration: fix the failing provider, or register the service you want under the field type's name.
+
 Performance: to pick deterministically, `InvokeAs` considers every match of the nearest scope that has one, instead of stopping at the first one found. Each scope caches, per requested type, its services assignable to it, and resets that cache whenever a service is registered, overridden or removed, so a call no longer scans and reflects over every service. In a scope with 20 services (10 runs alternating with the previous release), a call takes about 0.3µs instead of 1.3µs, with 4 allocations instead of 11. The first call for a type in a scope, and the first after each registration in it, builds that scope's entry.
 
 ## The `do:"*"` struct tag injects a collection {#star-struct-tag}

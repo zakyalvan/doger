@@ -1327,6 +1327,76 @@ func TestInvokeAs_SkipsAliasOfShadowedName(t *testing.T) {
 	assert.NotErrorIs(t, err, ErrCircularDependency)
 }
 
+func TestInvokeStruct_FallbackKeepsNestedNotFound(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+	is := assert.New(t)
+
+	type withGreeter struct {
+		G Greeter `do:""`
+	}
+
+	root := New()
+	provideGreeter(root, "other")
+	// the service named after the field type exists, but its provider fails
+	// with a not-found error of its own
+	Provide(root, func(i Injector) (Greeter, error) {
+		_, err := InvokeNamed[string](i, "missing-config")
+		return nil, err
+	})
+
+	_, err := InvokeStruct[withGreeter](root)
+
+	is.ErrorIs(err, ErrServiceNotFound)
+	is.ErrorContains(err, "missing-config")
+}
+
+func TestInvokeStruct_DecoratorNamedAfterFieldType(t *testing.T) {
+	t.Parallel()
+
+	type withGreeter struct {
+		G Greeter `do:""`
+	}
+
+	tests := []struct {
+		name string
+		base bool // register "base", another Greeter
+		want string
+	}{
+		{name: "another match", base: true, want: "decor(base)"},
+		{name: "no other match"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+
+			root := New()
+			if tt.base {
+				provideGreeter(root, "base")
+			}
+			// the decorator is registered under the field type's own name
+			Provide(root, func(i Injector) (Greeter, error) {
+				value, err := InvokeStruct[withGreeter](i)
+				if err != nil {
+					return nil, err
+				}
+				return &greeterDecor{inner: value.G}, nil
+			})
+
+			decor, err := Invoke[Greeter](root)
+
+			if tt.want == "" {
+				assert.ErrorIs(t, err, ErrCircularDependency)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, decor.Greet())
+		})
+	}
+}
+
 func TestInvokeStruct_FallbackSkipsInvokerAlias(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, time.Second)

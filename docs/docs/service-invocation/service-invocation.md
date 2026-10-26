@@ -107,8 +107,11 @@ bus, err := doger.InvokeStruct[Bus](injector)
 
 When a field uses an empty tag value (eg: `do:""`) and no service is registered under the field type, the injector falls back to resolution by type: among the services assignable to the field type, it selects the one in the nearest scope, then the earliest registration, then the smallest name (same rule as `doger.InvokeAs[T]`).
 
+Called from a provider whose own service is registered under the field type (a decorator registered with `doger.Provide[Logger]`, for example), the field falls back to resolution by type too, skipping that service, so the decorator receives the service it wraps.
+
 Implications:
 
+- The fallback depends on whether the name is registered, not on the error: a service registered under the field type that fails to build returns its error, even one matching `ErrServiceNotFound`.
 - Prefer explicit names when multiple assignable services exist to avoid ambiguity.
 - This fallback only applies when the tag key is present and empty; a missing tag does nothing.
 - The struct tag key can be customized via `doger.InjectorOpts.StructTagKey`.

@@ -415,8 +415,11 @@ func MustInvokeNamed[T any](i Injector, name string) T {
 // If the service is found but not assignable to the struct field, an error is returned.
 //
 // An empty tag (`do:""`) names the service after the field type. When no
-// service has that name, InvokeStruct falls back to resolution by type,
-// selecting among assignable services with the rule of [InvokeAs].
+// visible service has that name, or, called from a provider, only the
+// service that provider builds has it, InvokeStruct falls back to resolution
+// by type, selecting among assignable services with the rule of [InvokeAs].
+// The fallback depends on the name only: a service with that name that fails
+// to build returns its error, even one matching [ErrServiceNotFound].
 //
 // The tag value `*` injects a collection: a []E field receives
 // [InvokeAll][E] and a map[string]E field [InvokeAllMap][E]; any other field

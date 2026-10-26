@@ -2,7 +2,6 @@ package doger
 
 import (
 	"cmp"
-	"errors"
 	"fmt"
 	"reflect"
 	"slices"
@@ -569,15 +568,16 @@ func invokeByTags(i Injector, structName string, structValue reflect.Value, impl
 			serviceName = typetostring.GetReflectValueType(fieldValue)
 		}
 
-		dependency, err := invokeAnyByName(injector, serviceName)
-		if err != nil && implicitAliasing && wasTagNameEmpty && errors.Is(err, ErrServiceNotFound) {
-			// Fallback: try to resolve by generic type of the field
-			toType := fieldValue.Type()
-
-			if selected, found := selectByType(injector, toType); found {
-				dependency, err = invokeAnyByName(injector, selected.name)
+		name := serviceName
+		if implicitAliasing && wasTagNameEmpty && !namedCandidate(injector, serviceName) {
+			// Fallback: resolve by the field's type when no service other than
+			// the invoking one has the type's name; with no match, the named
+			// lookup reports why
+			if selected, found := selectByType(injector, fieldValue.Type()); found {
+				name = selected.name
 			}
 		}
+		dependency, err := invokeAnyByName(injector, name)
 		if err != nil {
 			return err
 		}
@@ -594,6 +594,16 @@ func invokeByTags(i Injector, structName string, structValue reflect.Value, impl
 	}
 
 	return nil
+}
+
+// namedCandidate reports whether a visible service named name, other than
+// the one whose provider invokes from injector, can fill a field by name.
+func namedCandidate(injector Injector, name string) bool {
+	if invoker, ok := invokingServiceName(injector); ok && invoker == name {
+		return false
+	}
+
+	return injector.serviceExistRec(name)
 }
 
 // injectCollectionField sets a field tagged `*`: a []E field to the members
