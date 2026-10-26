@@ -420,6 +420,39 @@ func TestScopeShutdown_JoinedWinnerPanics(t *testing.T) {
 	})
 }
 
+func TestRefresh_QueuedBehindShutdown(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, 5*time.Second)
+	is := assert.New(t)
+
+	// a slow Closing hook keeps Shutdown in progress while the queued
+	// Refresh takes the pipeline
+	slow := func(context.Context, *RootScope) { time.Sleep(100 * time.Millisecond) }
+	root := NewWithOpts(&InjectorOpts{HookContainerClosing: []func(context.Context, *RootScope){slow}})
+	require.NoError(t, root.Start())
+	entered := make(chan struct{})
+	var once sync.Once
+	var starts atomic.Int32
+	provideLazy(root, "late", &ctxStarter{fn: func(ctx context.Context) error {
+		starts.Add(1)
+		once.Do(func() { close(entered) })
+		<-ctx.Done()
+		return ctx.Err()
+	}})
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- root.Refresh() }()
+	<-entered
+	secondDone := make(chan error, 1)
+	go func() { secondDone <- root.Refresh() }()
+	time.Sleep(50 * time.Millisecond) // the second Refresh waits for the pipeline
+
+	root.Shutdown()
+
+	is.ErrorIs(<-firstDone, ErrStartAfterShutdown)
+	is.ErrorIs(<-secondDone, ErrStartAfterShutdown)
+	is.Equal(int32(1), starts.Load(), "the queued Refresh started nothing")
+}
+
 func TestScopeShutdown_CreatedDuringStart(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, time.Second)
