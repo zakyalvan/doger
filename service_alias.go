@@ -14,6 +14,7 @@ var (
 	_ serviceWrapperHealthcheck = (*serviceAlias[int, int])(nil)
 	_ serviceWrapperShutdown    = (*serviceAlias[int, int])(nil)
 	_ serviceWrapperClone       = (*serviceAlias[int, int])(nil)
+	_ serviceWrapperAliasTarget = (*serviceAlias[int, int])(nil)
 )
 
 type serviceAlias[Initial any, Alias any] struct {
@@ -63,6 +64,12 @@ func (s *serviceAlias[Initial, Alias]) getServiceType() ServiceType {
 
 func (s *serviceAlias[Initial, Alias]) getReflectType() reflect.Type {
 	return reflect.TypeFor[Alias]() // if T is a pointer or interface, it will return a typed nil
+}
+
+// aliasTarget returns the injector the alias resolves its target from, and
+// the target's name.
+func (s *serviceAlias[Initial, Alias]) aliasTarget() (Injector, string) {
+	return s.scope, s.targetName
 }
 
 func (s *serviceAlias[Initial, Alias]) getInstanceAny(i Injector) (any, error) {

@@ -432,6 +432,11 @@ func selectByType(injector Injector, target reflect.Type) (collectionCandidate, 
 			return true
 		}
 
+		// an alias of the invoking service would resolve to it
+		if fromProvider && aliasResolvesTo(s, invoker) {
+			return true
+		}
+
 		// a nearer service of the same name hides this one, as for collections
 		if shadowedBetween(from, scope, name) {
 			return true
@@ -447,6 +452,35 @@ func selectByType(injector Injector, target reflect.Type) (collectionCandidate, 
 	})
 
 	return selected, found
+}
+
+// maxAliasHops bounds the alias chain aliasResolvesTo follows: a longer
+// chain is a loop.
+const maxAliasHops = 64
+
+// aliasResolvesTo reports whether service is an alias whose target chain
+// reaches a service named name, following each target from its alias's
+// injector, as invoking the alias does.
+func aliasResolvesTo(service any, name string) bool {
+	for range maxAliasHops {
+		alias, ok := service.(serviceWrapperAliasTarget)
+		if !ok {
+			return false
+		}
+
+		injector, target := alias.aliasTarget()
+		if target == name {
+			return true
+		}
+
+		next, _, found := injector.serviceGetRec(target)
+		if !found {
+			return false
+		}
+		service = next
+	}
+
+	return false
 }
 
 // shadowedBetween reports whether a scope from from up to, but not

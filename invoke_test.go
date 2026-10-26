@@ -1078,14 +1078,18 @@ func TestInvokeAs_SkipsInvoker(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name   string
-		before bool // register "base" before "decor"
-		base   bool // register "base" at all
-		want   string
+		name    string
+		before  bool     // register "base" before "decor"
+		base    bool     // register "base" at all
+		aliases []string // a chain of Greeter aliases from "decor", registered after it
+		want    string
 	}{
 		{name: "base registered after decor", base: true, want: "decor(base)"},
 		{name: "base registered before decor", base: true, before: true, want: "decor(base)"},
 		{name: "no other match"},
+		{name: "alias of decor, then base", base: true, aliases: []string{"decor-alias"}, want: "decor(base)"},
+		{name: "chained aliases of decor, then base", base: true, aliases: []string{"a1", "a2"}, want: "decor(base)"},
+		{name: "alias of decor, no other match", aliases: []string{"decor-alias"}},
 	}
 
 	for _, tt := range tests {
@@ -1104,6 +1108,15 @@ func TestInvokeAs_SkipsInvoker(t *testing.T) {
 				}
 				return &greeterDecor{inner: inner}, nil
 			})
+			target := "decor"
+			for index, alias := range tt.aliases {
+				if index == 0 {
+					require.NoError(t, AsNamed[*greeterDecor, Greeter](root, target, alias))
+				} else {
+					require.NoError(t, AsNamed[Greeter, Greeter](root, target, alias))
+				}
+				target = alias
+			}
 			if tt.base && !tt.before {
 				provideGreeter(root, "base")
 			}
@@ -1137,6 +1150,44 @@ func TestInvokeStruct_FallbackSkipsInvoker(t *testing.T) {
 		}
 		return &greeterDecor{inner: value.G}, nil
 	})
+	provideGreeter(root, "base")
+
+	decor, err := InvokeNamed[*greeterDecor](root, "decor")
+
+	require.NoError(t, err)
+	assert.Equal(t, "decor(base)", decor.Greet())
+}
+
+func TestAliasResolvesTo_Loop(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	x := newServiceAlias[Greeter, Greeter]("x", root, "y")
+	root.serviceSet("x", x)
+	root.serviceSet("y", newServiceAlias[Greeter, Greeter]("y", root, "x"))
+
+	assert.False(t, aliasResolvesTo(x, "decor"))
+	assert.True(t, aliasResolvesTo(x, "x"))
+}
+
+func TestInvokeStruct_FallbackSkipsInvokerAlias(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	type withGreeter struct {
+		G Greeter `do:""`
+	}
+
+	root := New()
+	ProvideNamed(root, "decor", func(i Injector) (*greeterDecor, error) {
+		value, err := InvokeStruct[withGreeter](i)
+		if err != nil {
+			return nil, err
+		}
+		return &greeterDecor{inner: value.G}, nil
+	})
+	require.NoError(t, AsNamed[*greeterDecor, Greeter](root, "decor", "decor-alias"))
 	provideGreeter(root, "base")
 
 	decor, err := InvokeNamed[*greeterDecor](root, "decor")

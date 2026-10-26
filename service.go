@@ -110,6 +110,11 @@ type (
 	}
 )
 
+// serviceWrapperAliasTarget is implemented by aliases.
+type serviceWrapperAliasTarget interface {
+	aliasTarget() (Injector, string)
+}
+
 type serviceWrapperBuildTime interface {
 	getBuildTime() (time.Duration, bool)
 }
