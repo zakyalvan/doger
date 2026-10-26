@@ -300,6 +300,20 @@ Examples:
   | child scope "tenant", created after Start | tenant.Start() |
 ```
 
+#### Scenario: Parallel incremental start keeps dependency order
+```gherkin
+Given a started root container inside synctest.Test created with StartParallelism 3
+And lazy Starters "a" (blocking 2s), "b", "c" and "d" (each blocking 1s) registered after Start in <scope>, where only "d"'s provider invokes "a"
+When the consumer calls <operation>
+Then it returns nil after 3s of bubble time
+And "d" started after "a" returned
+
+Examples:
+  | scope                                   | operation      |
+  | the root                                | root.Refresh() |
+  | child scope "tenant", created after Start | tenant.Start() |
+```
+
 <!-- cases: 1 default: 0 and 1 rows are the sequential default -->
 <!-- cases: 2 overrides: n > 1 rows -->
 <!-- cases: 3 zero values: StartParallelism 0 -->

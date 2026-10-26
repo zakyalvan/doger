@@ -42,6 +42,23 @@ Then no data race is reported
 And every observed phase is one of PhaseIdle, PhaseStarting, PhaseStarted, PhaseReady, PhaseClosing, PhaseClosed
 ```
 
+#### Scenario: Phase names
+```gherkin
+Given the value <phase>
+When the consumer calls its String()
+Then the result is "<name>"
+
+Examples:
+  | phase         | name     |
+  | PhaseIdle     | idle     |
+  | PhaseStarting | starting |
+  | PhaseStarted  | started  |
+  | PhaseReady    | ready    |
+  | PhaseFailed   | failed   |
+  | PhaseClosing  | closing  |
+  | PhaseClosed   | closed   |
+```
+
 #### Scenario: Unknown phase values print as a number
 ```gherkin
 Given the value ContainerPhase(42)

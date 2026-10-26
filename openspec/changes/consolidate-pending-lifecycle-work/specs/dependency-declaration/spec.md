@@ -22,6 +22,15 @@ Examples:
   | DeclareDependency(root, "worker", "db") returned nil | cache: depends-on, db: invoked, job: declared | "db" without a suffix                    |
 ```
 
+#### Scenario: An edge both depended on and invoked
+```gherkin
+Given a root scope with lazy "queue"
+And lazy "worker" registered with DependsOnNamed("queue"), whose provider invokes "queue"
+And "worker" has been invoked
+When the consumer calls ExplainNamedService(root, "worker")
+Then the dependency on "queue" has Source DependencySourceInvoked
+```
+
 #### Scenario: Dependents report the same source
 ```gherkin
 Given the setup of "Source per edge", first row

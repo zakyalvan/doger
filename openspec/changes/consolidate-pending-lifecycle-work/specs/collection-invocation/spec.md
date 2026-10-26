@@ -271,10 +271,10 @@ And "bus" is shut down before "console" and before "audit"
 
 #### Scenario: Invocation hooks per member
 ```gherkin
-Given a root scope with an after-invocation hook that records service names
-And lazy services "console" and "audit" implementing "EventHandler"
+Given a root scope with before- and after-invocation hooks that record service names
+And lazy services "console" and "audit" implementing "EventHandler", registered in that order
 When the consumer calls InvokeAll for type "EventHandler"
-Then the hook recorded exactly "console" 1 time and "audit" 1 time
+Then each hook recorded "console", then "audit", once each
 ```
 
 #### Scenario: No edges when invoked outside a provider
