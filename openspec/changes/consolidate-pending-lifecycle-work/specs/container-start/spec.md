@@ -376,7 +376,7 @@ Examples:
 <!-- cases: 10 compatibility: messages and errors.Is behavior are unchanged; errors.As is additive -->
 
 ### Requirement: Child scope shutdown waits for a start that is starting its services
-A child scope's `Shutdown`/`ShutdownWithContext` that begins while a `Start`, `Refresh` or `Scope.Start` is running, and that run has services of this scope among its candidates, SHALL wait for that run to return, without cancelling it, before shutting anything down. A run that begins after the scope's shutdown began SHALL NOT start or handle services of that scope. Shutting such a scope down synchronously from code running in that run deadlocks, as for root Shutdown.
+A child scope's `Shutdown`/`ShutdownWithContext` that begins while a `Start`, `Refresh` or `Scope.Start` is running, and that run has services of this scope among its candidates, SHALL wait for that run to return, without cancelling it, before shutting anything down. A run that begins while the scope shuts down SHALL NOT start or handle services of that scope. Shutting such a scope down synchronously from code running in that run deadlocks, as for root Shutdown.
 
 #### Scenario: Child shutdown waits for a running start
 ```gherkin

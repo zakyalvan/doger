@@ -135,6 +135,7 @@ func (s *RootScope) finishIncremental(incCtx context.Context, err *error) {
 
 	s.incCancel(nil)
 	close(s.incDone)
+	s.runScopes = nil
 	s.incCancel = nil
 	s.incDone = nil
 }

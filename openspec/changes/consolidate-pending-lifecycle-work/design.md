@@ -179,6 +179,7 @@ Found by `/opsx:verify` and a code review, each reproduced by a failing test bef
 
 **V4. A child scope shutdown waits for a run that is starting its services (user decision).**
 - Under `lifecycleMu`, the running pipeline records `runScopes`, the scopes of its candidates, after discovery, and drops candidates whose scope is closing. A child scope's shutdown marks the scope closing under `lifecycleMu` and, if the in-flight run has it in `runScopes`, waits for that run's done channel without cancelling it, bounded by its context (failure keyed by the scope with an empty service name, like root).
+- The closing mark is a counter that lasts while the shutdown runs. A directly shut-down child scope stays attached to its parent, so registrations made in it afterwards are started by a later Refresh, as before.
 - Only runs with candidates in the scope are waited for, so a scope created and shut down by a provider during Start does not deadlock. Shutting a scope down synchronously from code of a run that is starting it deadlocks, as for root; documented.
 - The root's own scope keeps root Shutdown's model (start-lifecycle D6).
 

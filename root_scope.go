@@ -135,6 +135,7 @@ type RootScope struct {
 	// is held across their user code; Shutdown never takes it, and nothing
 	// takes it while holding lifecycleMu.
 	pipelineMu sync.Mutex
+	runScopes  map[*Scope]struct{}          // scopes with candidates in the running pipeline; guarded by lifecycleMu
 	startedMu  sync.Mutex                   // guards started and handled; never held across user code
 	started    map[any]struct{}             // Starters already started, keyed by wrapper
 	handled    map[any]map[*kindID]struct{} // kinds already handled, by wrapper
@@ -223,8 +224,9 @@ func (s *RootScope) Shutdown() *ShutdownReport { return s.ShutdownWithContext(co
 //
 // Only the [RootScope] methods follow this model. A shutdown reached through
 // the root's *Scope (a provider's injector, or [Injector.Shutdown] on a
-// virtual scope) and Scope.Shutdown on child scopes bypass it and behave as
-// before.
+// virtual scope) bypasses it and behaves as before. Scope.Shutdown on a
+// child scope waits for a start that is starting it; see
+// [Scope.ShutdownWithContext].
 func (s *RootScope) ShutdownWithContext(ctx context.Context) *ShutdownReport {
 	if ctx == nil {
 		ctx = context.Background()

@@ -63,6 +63,8 @@ type Scope struct {
 	// for improved observability in unit tests.
 	orderedInvocation      map[string]int // Map tracking service invocation order (faster than slice)
 	orderedInvocationIndex int            // Counter for tracking invocation order
+
+	closing int // shutdowns of this scope in progress; guarded by rootScope.lifecycleMu
 }
 
 // ID returns the unique identifier of the scope.
@@ -371,6 +373,14 @@ func (s *Scope) Shutdown() *ShutdownReport {
 // ShutdownWithContext gracefully shuts down the scope and all its children with context support.
 // This method performs shutdown operations in parallel for better performance.
 //
+// On a child scope, it first waits, without cancelling it, for a running
+// Start, Refresh or Scope.Start that is starting services of this scope, and
+// a run that begins while the scope shuts down skips it. If ctx ends first,
+// the report fails with an error keyed by this scope with an empty service
+// name, wrapping ctx.Err(), and the shutdown proceeds. Never shut down,
+// synchronously from code running in such a start, a scope that the start is
+// starting: it would wait for itself.
+//
 // Parameters:
 //   - ctx: Context for cancellation and timeout control
 //
@@ -391,10 +401,18 @@ func (s *Scope) shutdownWithContext(ctx context.Context, first *hookPanic) *Shut
 	s.logf("requested shutdown")
 	start := s.clock().Now()
 
+	// child scopes only: the root's own scope fires no scope hook and follows
+	// root Shutdown's model
+	isChild := s.parentScope != nil
+
+	var waitErr error
+	if isChild {
+		defer s.endClosing()
+		waitErr = s.beginClosing(ctx)
+	}
+
 	rep1 := s.shutdownChildrenInParallel(ctx, first)
 
-	// child scopes only: the root's own scope fires no scope hook
-	isChild := s.parentScope != nil
 	if isChild {
 		s.runScopeObserverHooks(ctx, "scope-closing", s.rootScope.opts.HookScopeClosing, first)
 	}
@@ -407,9 +425,43 @@ func (s *Scope) shutdownWithContext(ctx context.Context, first *hookPanic) *Shut
 	}
 
 	report := mergeShutdownReports(rep1, rep2)
+	if waitErr != nil {
+		report.Errors[newServiceDescription(s.id, s.name, "")] = waitErr
+	}
 	report.ShutdownTime = s.clock().Since(start)
 	report.Succeed = len(report.Errors) == 0
 	return report
+}
+
+// beginClosing marks the child scope as shutting down, so a Start, Refresh
+// or Scope.Start beginning now skips it, and waits, bounded by ctx, for one
+// that is running with candidates in this scope. It returns an error when ctx
+// ended first. Each call must be paired with endClosing.
+func (s *Scope) beginClosing(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	root := s.rootScope
+	root.lifecycleMu.Lock()
+	s.closing++
+	_, done, inFlight := root.inFlightRun()
+	_, starting := root.runScopes[s]
+	root.lifecycleMu.Unlock()
+
+	if inFlight && starting && !awaitDone(done, ctx) {
+		return fmt.Errorf("DI: waiting for start: %w", ctx.Err())
+	}
+
+	return nil
+}
+
+// endClosing ends the shutdown that beginClosing marked.
+func (s *Scope) endClosing() {
+	s.rootScope.lifecycleMu.Lock()
+	defer s.rootScope.lifecycleMu.Unlock()
+
+	s.closing--
 }
 
 // runScopeObserverHooks runs scope observer hooks for s in order, recovering

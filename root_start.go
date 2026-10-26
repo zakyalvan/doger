@@ -246,6 +246,7 @@ func (s *RootScope) finishStart(startCtx context.Context, err *error, panicked b
 	}
 	s.startCancel(nil)
 	close(s.startDone)
+	s.runScopes = nil
 }
 
 // startCandidate is a service discovered by Start.
@@ -277,7 +278,7 @@ func (s *RootScope) runStartPipeline(startCtx context.Context) error {
 // in the subtrees of roots, with the abort checks of start-lifecycle D7.
 // Start, Refresh and Scope.Start share it.
 func (s *RootScope) runPipeline(ctx context.Context, roots []*Scope) error {
-	candidates := s.discoverCandidates(roots)
+	candidates := s.claimCandidates(s.discoverCandidates(roots))
 
 	if err := buildCandidates(ctx, candidates); err != nil {
 		return err
@@ -371,6 +372,22 @@ func (s *RootScope) discoverCandidates(roots []*Scope) []*startCandidate {
 	slices.SortFunc(candidates, func(a, b *startCandidate) int {
 		return cmp.Or(cmp.Compare(a.depth, b.depth), cmp.Compare(a.regIndex, b.regIndex))
 	})
+
+	return candidates
+}
+
+// claimCandidates drops the candidates of scopes that are shutting down and
+// records the scopes of the others, so that a child scope shutdown waits for
+// this run (see Scope.ShutdownWithContext).
+func (s *RootScope) claimCandidates(candidates []*startCandidate) []*startCandidate {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+
+	candidates = slices.DeleteFunc(candidates, func(c *startCandidate) bool { return c.scope.closing > 0 })
+	s.runScopes = make(map[*Scope]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		s.runScopes[candidate.scope] = struct{}{}
+	}
 
 	return candidates
 }

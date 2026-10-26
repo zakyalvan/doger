@@ -174,7 +174,9 @@ A starter, kind handler, runner, provider or hook that runs during `Start` must 
 
 :::
 
-Only the root scope coordinates Start and Shutdown. A shutdown reached through the root's `*Scope` (the injector a provider receives) or a child scope bypasses this coordination.
+Only the root scope cancels a running Start. A shutdown reached through the root's `*Scope` (the injector a provider receives) bypasses this coordination.
+
+A child scope's `Shutdown()` does not cancel anything, but it waits for a running `Start`, `Refresh` or `scope.Start` that is starting services of that scope, then shuts the scope down, so no service starts after its scope was shut down. A run that begins while the scope shuts down skips it. `ShutdownWithContext(ctx)` bounds the wait: if `ctx` ends first, the report fails with an error for that scope wrapping `ctx.Err()`, and the shutdown proceeds. A scope that the running start has nothing to start in, such as one a provider creates and shuts down during `Start`, never waits. Shutting down, from Start-time code, a scope that the running start is starting would wait for itself.
 
 ## Start is one-shot {#one-shot}
 

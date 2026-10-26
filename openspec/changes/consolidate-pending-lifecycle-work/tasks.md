@@ -366,10 +366,10 @@ Rules:
 
 ## 53. Child scope shutdown waits for a start that is starting it (container-start; design V4)
 
-- [ ] 53.1 RED: add `TestScopeShutdown_WaitsForStart` (3 rows), `TestScopeShutdown_LaterStartSkips`, `TestScopeShutdown_CreatedDuringStart` and `TestScopeShutdown_WaitBounded` to `root_refresh_test.go`; verify `go test -race -run TestScopeShutdown_ .` fails on WaitsForStart, LaterStartSkips and WaitBounded, and record that CreatedDuringStart passes on arrival
-- [ ] 53.2 GREEN: record `runScopes` under `lifecycleMu` after discovery (dropping closing scopes), mark a child scope closing under `lifecycleMu` at shutdown and wait, bounded by its context, for an in-flight run that has it in `runScopes`; verify the 53.1 command passes, `TestRootScope_ForgetsShutDownServices` and the scope-hook suites pass unchanged, and `make test` is green
-- [ ] 53.3 REFACTOR: *Extract Function* `awaitRunForScope(ctx)` out of `shutdownWithContext`; verify `make test` and `make lint` pass
-- [ ] 53.4 Document the wait and its deadlock rule on `Scope.Shutdown`/`ShutdownWithContext`, the starter page and an upgrading-page entry (flagged); verify the docs lint and build pass
+- [x] 53.1 RED: add `TestScopeShutdown_WaitsForStart` (3 rows), `TestScopeShutdown_LaterStartSkips`, `TestScopeShutdown_CreatedDuringStart` and `TestScopeShutdown_WaitBounded` to `root_refresh_test.go`; verify `go test -race -run TestScopeShutdown_ .` fails on WaitsForStart, LaterStartSkips and WaitBounded, and record that CreatedDuringStart passes on arrival
+- [x] 53.2 GREEN: record `runScopes` under `lifecycleMu` after discovery (dropping closing scopes), mark a child scope closing under `lifecycleMu` at shutdown and wait, bounded by its context, for an in-flight run that has it in `runScopes`; verify the 53.1 command passes, `TestRootScope_ForgetsShutDownServices` and the scope-hook suites pass unchanged, and `make test` is green
+- [x] 53.3 REFACTOR: *Extract Function* `beginClosing(ctx)`/`endClosing()` out of `shutdownWithContext`; verify `make test` and `make lint` pass
+- [x] 53.4 Document the wait and its deadlock rule on `Scope.Shutdown`/`ShutdownWithContext`, the starter page and an upgrading-page entry (flagged); verify the docs lint and build pass
 
 ## 54. Live-collection reads after the provider returned (live-collections; design V5)
 
