@@ -236,7 +236,7 @@ And no data race is reported
 Given a started root container inside synctest.Test with lazy Starter "late" registered after Start, whose Start(ctx) blocks until ctx is done and returns ctx.Err()
 And Refresh() is running in another goroutine and "late" has entered Start
 When the consumer calls Shutdown()
-Then Shutdown returns after Refresh returned
+Then Shutdown returns only after the Refresh run ended, its Starter having returned
 And the report succeeds
 And Refresh returns an error matching ErrStartAfterShutdown
 ```
