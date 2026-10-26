@@ -260,7 +260,7 @@ Interleaved against the head before 84.6 (`a95ccee`, 10 alternating runs, same m
 The +16 B/op on invocations is the larger virtual scope (its invoker link, from V17); 84.6 then removed one allocation per invocation. `InvokeAs` and `New` stay within the costs accepted in 48.1. `NewFrameFromPC` (+7.5%, p=0.018) is in the untouched `stacktrace` package: noise.
 
 
-## Part V4: fourth verification (groups 86-97)
+## Part V4: fourth verification (groups 86-104)
 
 The fourth `/opsx:verify` reproduced four defects with probe tests (D1-D4, design V37-V40) and asked for one decision (D5, V41). Every probe was run on `2012c60` before any change:
 
@@ -285,4 +285,60 @@ After the fixes, every probe passes (D1: 0 failures and 0 double starts in 3 × 
 | 94 | test-only | Mutations (reverted): the parallel coordinator re-panicking on receipt fails `TestStart_ParallelHookPanic/n=4,_HookAfterStart` (now that "b" returns at once); `markHandled` without `stillRegistered` fails `TestKind_HandledGuard`; an empty requirement map fails both rows of `TestStart_ParallelIncrementalDependencyOrder` (3 runs of 3, after making "a" the slowest Starter; with equal durations only the Refresh row failed); build hooks receiving a copy of the pointee fail the lazy, alias and eager-value rows of `TestAfterBuildHook_Fires`; changing the `started` or `closing` phase names fails `TestContainerPhase_String`; keeping the first edge source fails `TestExplain_EdgeSourceStrongest` (queue row); `MustInvokeAs` resolving from the root scope deadlocks `TestMustInvokeAs_FromProvider`; removing `onBeforeInvocation` from `invokeServiceInstance` fails `TestInvokeAll_HooksPerMember`; removing the invoker skip fails `TestInvokeAs_StoredInjectorSkipsHolder`. `TestScopeHooks_LaterPanicLogged` now starts the root, as its scenario says. |
 | 95, 96 | docs | Godoc, proposal and design drift, upgrading page; eight Examples pass with `go test -race -run Example`. |
 
-### 97. Integration checks after the fourth verification
+### Scope extension (groups 97-103, design V50-V54)
+
+The parent session relayed that the user moved the four V49 items into scope; the user confirmed it directly before any change.
+
+| Group | RED, or the check that passed on arrival | Notes |
+|---|---|---|
+| 97 | `go test -race -count=2 -run '^TestInvokeByName$' .` panicked with ``DI: service `foo` has already been declared`` | Audit: the tests touching `DefaultRootScope` or a nil injector are `TestInvokeByName`, `TestGetInjectorOrDefault` (which did not restore the global either), `TestDeclareDependency`, `TestInvokeAll_NilInjector`, `TestCollection_NilInjector` and `TestKind_NilRootUsesDefault`; all six are now non-parallel and restore `DefaultRootScope` in `t.Cleanup`, and pass with `-count=3`. `ExampleDefaultRootScope` registers on the global root, but Examples run once whatever `-count` is (checked with `-v`). |
+| 98 | refactor | *Add Parameter*: `All(_ Injector)`, `Map(_ Injector)`; every caller passes nil. |
+| 99 | `TestCollection_ReaderInjector`: no `app -> console` edge (not-a-handler row); ``circular dependency detected: `app` -> `bus` -> `app` `` (handler row). `TestCollection_GoroutineReadDuringOuterProvider` (former hazard 1): the same false cycle. `TestCollection_MemberProviderReads` (former hazard 2): both rows deadlocked (1s timeout). `TestCollection_ReadWithNilRecordsNoEdge` passed on arrival | GREEN removed `Collection.reader` and `runningChain`, which it made dead (the linter's `unused` check). Tests of removed scenarios were deleted: `ReadDuringOuterProvider` (replaced by the handler row), `DetachedReadRecordsNoEdge` (same as `ReadWithNilRecordsNoEdge`), `DetachedReadKeepsRunningChain` (its machinery is gone). Mutation (reverted): a nil read building through the holder's captured virtual scope fails the strengthened `ReadWithNilRecordsNoEdge`. A probe confirmed the documented misuse: a nil read from inside a member's own provider is still waiting after 500ms. |
+| 100 | refactors | `detachedInjector`, the `detached` flag (with V47's holder in messages) and `returned` (with its four marking sites) removed, each after gopls references showed no use. `newVirtualScope` and the `base` chain stay for white-box tests. |
+| 101 | With the field added and unused, `TestHealthCheckSingleTimeout` failed exactly its three rows that the option changes (`own_bound_only`: got nil; `own_larger_bound_in_time`, `negative_unbounded`: got the timeout) | The docs validator treats `...` as an elided-code marker even in comments; a comment was reworded. |
+| 102 | refactor, see below | |
+| 103 | refactor, see below | |
+
+### 102. InvokeAs index
+
+Profile of `BenchmarkInvokeAs` (20 services in one scope): 55% of CPU in `Scope.serviceForEachRec`, whose per-call snapshot slice is 72% of the allocated bytes; the selection callback takes 22%, about half of it reflect assignability. Each scope now caches, per target type, its assignable services, reset under its lock in `serviceSet` and in the shutdown removal.
+
+| Benchmark (10 alternating runs) | against the previous head | against `ed65bdc` |
+|---|---|---|
+| InvokeAs time | 1.41µs → 0.30µs, −78.8% (p=0.000) | 1.29µs → 0.30µs, −76.8% (p=0.000) |
+| InvokeAs B/op, allocs/op | 993 → 144, 8 → 4 | 937 → 144, 11 → 4 |
+| Provide, InvokeNamed | ~ | |
+
+New tests: `TestInvokeAs_SeesRegistryChanges` (registration, override, shutdown after a first call); dropping the reset in `serviceSet` fails all three rows, in the shutdown removal the shutdown row. `TestInvokeAs_ConcurrentRegistration`: reading the cache without the read lock gives 5 data-race reports.
+
+### 103. New allocations
+
+Profile of `BenchmarkNew` (1248 B, 11 allocs): the zero `InjectorOpts` that `New` allocates is about 560 B (it grew with the public hook lists), `RootScope` about 200 B, the root scope with its three maps about 270 B in 4 allocations, the DAG with two maps 3 allocations, the UUID 2.
+- Rejected: allocating the empty maps lazily, because white-box tests assert empty, non-nil maps (`scope_test.go`, `dag_test.go`), so it would change assertions; sharing a default `InjectorOpts`, because `Add*Hook` appends to it.
+- Kept: the root scope and the DAG live in the `RootScope` allocation, and the UUID fills a stack array with `crypto/rand.Read`.
+
+| Benchmark (20 alternating runs, 2s) | against the previous head | against `ed65bdc` |
+|---|---|---|
+| New time | −4.2% (p=0.029) | ~ (p=0.989) |
+| New B/op | 1248 → 1216 | 952 → 1216 (the public `InjectorOpts` fields) |
+| New allocs/op | 11 → 8 | 13 → 8 |
+
+The 10-run comparison showed −7.6% time without significance (p=0.105) on this VM's ±13% noise, so it was repeated with 20 runs.
+
+### 104. Integration checks after the fourth verification
+
+- 104.1: on `a0c2b85`, `make test`, `make lint`, `go vet ./... && go test -race ./...` in all 25 `go.work` modules, the docs lint and build, and `openspec validate --strict`: all pass.
+- 104.2 (design V54): all pass, with no data race.
+
+| Process | Tests | `-count` | Peak RSS | Time |
+|---|---|---|---|---|
+| start | `TestStart_*`, `TestAbortOutcome` | 2000 | 272 MB | 65 s |
+| incremental | `TestRefresh_*`, `TestScopeStart_*`, `TestScopeShutdown_*`, `TestIncrementalStart_*`, `TestKind_*` | 2000 | 198 MB | 34 s |
+| container hooks | `TestContainerHooks_*` (but ShutdownCauseRace), `TestContainerFailedHook_*`, `TestPhase_*` | 2000 | 237 MB | 80 s |
+| scope hooks | `TestScopeHooks_*`, `TestScopeStartingHook_*`, `TestScopeStartedHook_*` | 2000 | 124 MB | 21 s |
+| collections | `TestCollection_*`, `TestInvokeAll*`, `TestInvokeAs_*`, `TestMustInvokeAs_*`, `TestInvokeStruct_*` | 2000 | 437 MB | 270 s |
+| `TestContainerHooks_ShutdownCauseRace` | 40,000 Start/Shutdown races per run | 50 | 1032 MB | 226 s |
+
+Why the stress is split: a first single `-race -count=2000` process over all of these tests grew to 7.3 GB of RSS in 34 minutes (about 190 MB/min on a 15 GB machine) and was stopped. Measured: after 100 runs, peak RSS was 2066 MB with `-race` and 26 MB without, while the live Go heap at exit was about 1 MB in both (`inuse_space`), so nothing is retained. A standalone program showed the race runtime keeping about 280 bytes per goroutine ever created (RSS linear up to 1 million short-lived goroutines with `-race`, flat at 8 MB without). `/sched/goroutines-created`, read per top-level test, attributed 80,009 of the suite's 81,636 goroutines per run (98%) to `TestContainerHooks_ShutdownCauseRace`.
+
+While measuring, `TestStart_CallerCancelThenShutdown`'s parallel row failed 1 time in 100 (3 under `-race`), and 2 times in 3000 on the previous version of the test: when the cancel landed before the scheduler dispatched "b", its own abort check was the first failure, which is correct. Fixed in `ae5f69f` (the row cancels once both Starters run); 3000 runs, and 300 under `-race`, pass.
