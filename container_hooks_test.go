@@ -938,42 +938,42 @@ func TestContainerHooks_ObserverContexts(t *testing.T) {
 
 	tests := []struct {
 		name      string
-		register  func(root *RootScope, record func(context.Context))
+		register  func(root *RootScope, record func(context.Context, *RootScope))
 		operation func(root *RootScope, ctx context.Context)
 	}{
 		{
 			name: "Started",
-			register: func(root *RootScope, record func(context.Context)) {
-				root.AddContainerStartedHook(func(ctx context.Context, _ *RootScope) { record(ctx) })
+			register: func(root *RootScope, record func(context.Context, *RootScope)) {
+				root.AddContainerStartedHook(func(ctx context.Context, r *RootScope) { record(ctx, r) })
 			},
 			operation: func(root *RootScope, ctx context.Context) { _ = root.StartWithContext(ctx) },
 		},
 		{
 			name: "Ready",
-			register: func(root *RootScope, record func(context.Context)) {
-				root.AddContainerReadyHook(func(ctx context.Context, _ *RootScope) { record(ctx) })
+			register: func(root *RootScope, record func(context.Context, *RootScope)) {
+				root.AddContainerReadyHook(func(ctx context.Context, r *RootScope) { record(ctx, r) })
 			},
 			operation: func(root *RootScope, ctx context.Context) { _ = root.StartWithContext(ctx) },
 		},
 		{
 			name: "Failed",
-			register: func(root *RootScope, record func(context.Context)) {
+			register: func(root *RootScope, record func(context.Context, *RootScope)) {
 				root.AddContainerStartingHook(func(context.Context, *RootScope) error { return errVeto })
-				root.AddContainerFailedHook(func(ctx context.Context, _ *RootScope, _ error) { record(ctx) })
+				root.AddContainerFailedHook(func(ctx context.Context, r *RootScope, _ error) { record(ctx, r) })
 			},
 			operation: func(root *RootScope, ctx context.Context) { _ = root.StartWithContext(ctx) },
 		},
 		{
 			name: "Closing",
-			register: func(root *RootScope, record func(context.Context)) {
-				root.AddContainerClosingHook(func(ctx context.Context, _ *RootScope) { record(ctx) })
+			register: func(root *RootScope, record func(context.Context, *RootScope)) {
+				root.AddContainerClosingHook(func(ctx context.Context, r *RootScope) { record(ctx, r) })
 			},
 			operation: func(root *RootScope, ctx context.Context) { _ = root.ShutdownWithContext(ctx) },
 		},
 		{
 			name: "Closed",
-			register: func(root *RootScope, record func(context.Context)) {
-				root.AddContainerClosedHook(func(ctx context.Context, _ *RootScope, _ *ShutdownReport) { record(ctx) })
+			register: func(root *RootScope, record func(context.Context, *RootScope)) {
+				root.AddContainerClosedHook(func(ctx context.Context, r *RootScope, _ *ShutdownReport) { record(ctx, r) })
 			},
 			operation: func(root *RootScope, ctx context.Context) { _ = root.ShutdownWithContext(ctx) },
 		},
@@ -986,7 +986,11 @@ func TestContainerHooks_ObserverContexts(t *testing.T) {
 
 			root := New()
 			var received []context.Context
-			tt.register(root, func(ctx context.Context) { received = append(received, ctx) })
+			var roots []*RootScope
+			tt.register(root, func(ctx context.Context, r *RootScope) {
+				received = append(received, ctx)
+				roots = append(roots, r)
+			})
 			callerCtx := context.WithValue(context.Background(), traceKey{}, "abc")
 
 			tt.operation(root, callerCtx)
@@ -997,6 +1001,7 @@ func TestContainerHooks_ObserverContexts(t *testing.T) {
 			assert.Same(t, callerCtx, received[0])
 			assert.NoError(t, received[0].Err())
 			assert.Equal(t, "abc", received[0].Value(traceKey{}))
+			assert.Same(t, root, roots[0], "the hook receives the root it is registered on")
 		})
 	}
 }
