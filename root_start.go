@@ -324,12 +324,7 @@ func (s *RootScope) finishStart(startCtx context.Context, err *error, panicked b
 // cause always matches ErrStartAfterShutdown, even when the caller cancelled
 // first. lifecycleMu must be held, so that beginClose has set the cause.
 func abortOutcome(ctx context.Context, err error) error {
-	cause := context.Cause(ctx)
-	if !errors.Is(cause, ErrStartAfterShutdown) {
-		// the caller cancelled before Shutdown did
-		cause = fmt.Errorf("%w: %w", ErrStartAfterShutdown, cause)
-	}
-
+	cause := shutdownCause(ctx)
 	switch {
 	case err == nil:
 		return fmt.Errorf("DI: start aborted: %w", cause)
@@ -341,6 +336,17 @@ func abortOutcome(ctx context.Context, err error) error {
 	default:
 		return fmt.Errorf("%w (start aborted: %w)", err, cause)
 	}
+}
+
+// shutdownCause returns the cause of the run's cancellation, made to match
+// ErrStartAfterShutdown when the caller cancelled before Shutdown did.
+func shutdownCause(ctx context.Context) error {
+	cause := context.Cause(ctx)
+	if errors.Is(cause, ErrStartAfterShutdown) {
+		return cause
+	}
+
+	return fmt.Errorf("%w: %w", ErrStartAfterShutdown, cause)
 }
 
 // startCandidate is a service discovered by Start.
