@@ -222,21 +222,51 @@ func invokeServiceInstance(injector Injector, vScope *virtualScope, hookName, re
 func invokeAllByGenericType[T any](i Injector) ([]T, error) {
 	injector := getInjectorOrDefault(i)
 
-	vScope, _ := injector.(*virtualScope)
-
 	candidates := collectionCandidates[T](injector)
 	result := make([]T, 0, len(candidates))
-	for _, candidate := range candidates {
-		instance, err := invokeServiceInstance(injector, vScope, candidate.name, candidate.name, candidate.scope, candidate.service)
-		if err != nil {
-			return nil, wrapMemberError(candidate.name, err)
-		}
-
-		typed, _ := instance.(T)
-		result = append(result, typed)
+	err := buildMembers(injector, candidates, func(_ string, member T) {
+		result = append(result, member)
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	return result, nil
+}
+
+// invokeAllMapByGenericType invokes every collection member for T, keyed
+// by name.
+func invokeAllMapByGenericType[T any](i Injector) (map[string]T, error) {
+	injector := getInjectorOrDefault(i)
+
+	candidates := collectionCandidates[T](injector)
+	result := make(map[string]T, len(candidates))
+	err := buildMembers(injector, candidates, func(name string, member T) {
+		result[name] = member
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// buildMembers builds the candidates in order and passes each member to
+// add. It stops at the first failure, naming the member.
+func buildMembers[T any](injector Injector, candidates []collectionCandidate, add func(name string, member T)) error {
+	vScope, _ := injector.(*virtualScope)
+
+	for _, candidate := range candidates {
+		instance, err := invokeServiceInstance(injector, vScope, candidate.name, candidate.name, candidate.scope, candidate.service)
+		if err != nil {
+			return wrapMemberError(candidate.name, err)
+		}
+
+		typed, _ := instance.(T)
+		add(candidate.name, typed)
+	}
+
+	return nil
 }
 
 // wrapMemberError names the collection member whose build failed.

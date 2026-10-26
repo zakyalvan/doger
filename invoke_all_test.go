@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -324,10 +326,16 @@ type collectionCall struct {
 	call func(Injector) (isNil bool, length int, err error)
 }
 
-var invokeAllCall = collectionCall{name: "InvokeAll", call: func(i Injector) (bool, int, error) {
-	handlers, err := InvokeAll[EventHandler](i)
-	return handlers == nil, len(handlers), err
-}}
+var (
+	invokeAllCall = collectionCall{name: "InvokeAll", call: func(i Injector) (bool, int, error) {
+		handlers, err := InvokeAll[EventHandler](i)
+		return handlers == nil, len(handlers), err
+	}}
+	invokeAllMapCall = collectionCall{name: "InvokeAllMap", call: func(i Injector) (bool, int, error) {
+		handlers, err := InvokeAllMap[EventHandler](i)
+		return handlers == nil, len(handlers), err
+	}}
+)
 
 func TestInvokeAll_Empty(t *testing.T) {
 	t.Parallel()
@@ -339,6 +347,10 @@ func TestInvokeAll_Empty(t *testing.T) {
 	}{
 		{name: "InvokeAll_no_services", function: invokeAllCall, register: func(*RootScope) {}},
 		{name: "InvokeAll_only_db", function: invokeAllCall, register: func(root *RootScope) {
+			ProvideNamed(root, "db", func(Injector) (*sql.DB, error) { return &sql.DB{}, nil })
+		}},
+		{name: "InvokeAllMap_no_services", function: invokeAllMapCall, register: func(*RootScope) {}},
+		{name: "InvokeAllMap_only_db", function: invokeAllMapCall, register: func(root *RootScope) {
 			ProvideNamed(root, "db", func(Injector) (*sql.DB, error) { return &sql.DB{}, nil })
 		}},
 	}
@@ -408,14 +420,19 @@ type mustCollectionCall struct {
 	call func(Injector) int
 }
 
-var mustInvokeAllCall = mustCollectionCall{name: "MustInvokeAll", call: func(i Injector) int {
-	return len(MustInvokeAll[EventHandler](i))
-}}
+var (
+	mustInvokeAllCall = mustCollectionCall{name: "MustInvokeAll", call: func(i Injector) int {
+		return len(MustInvokeAll[EventHandler](i))
+	}}
+	mustInvokeAllMapCall = mustCollectionCall{name: "MustInvokeAllMap", call: func(i Injector) int {
+		return len(MustInvokeAllMap[EventHandler](i))
+	}}
+)
 
 func TestMustInvokeAll_Panics(t *testing.T) {
 	t.Parallel()
 
-	for _, function := range []mustCollectionCall{mustInvokeAllCall} {
+	for _, function := range []mustCollectionCall{mustInvokeAllCall, mustInvokeAllMapCall} {
 		t.Run(function.name, func(t *testing.T) {
 			t.Parallel()
 			testWithTimeout(t, time.Second)
@@ -439,7 +456,7 @@ func TestMustInvokeAll_Panics(t *testing.T) {
 func TestMustInvokeAll_Success(t *testing.T) {
 	t.Parallel()
 
-	for _, function := range []mustCollectionCall{mustInvokeAllCall} {
+	for _, function := range []mustCollectionCall{mustInvokeAllCall, mustInvokeAllMapCall} {
 		t.Run(function.name, func(t *testing.T) {
 			t.Parallel()
 			testWithTimeout(t, time.Second)
@@ -451,6 +468,41 @@ func TestMustInvokeAll_Success(t *testing.T) {
 			var length int
 			assert.NotPanics(t, func() { length = function.call(root) })
 			assert.Equal(t, 2, length)
+		})
+	}
+}
+
+func TestInvokeAllMap_Keys(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		from         string
+		consoleScope string
+	}{
+		{name: "from root", from: "root", consoleScope: "root"},
+		{name: "from child", from: "child", consoleScope: "child"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+			is := assert.New(t)
+
+			root := New()
+			provideHandler(root, "console", newConsole)
+			provideHandler(root, "audit", newAudit)
+			child := root.Scope("child")
+			provideHandler(child, "console", func(n string) *ChildConsoleHandler { return &ChildConsoleHandler{handlerBase{n}} })
+			from := map[string]Injector{"root": root, "child": child}[tt.from]
+
+			handlers, err := InvokeAllMap[EventHandler](from)
+
+			require.NoError(t, err)
+			is.ElementsMatch([]string{"console", "audit"}, slices.Collect(maps.Keys(handlers)))
+			_, fromChild := handlers["console"].(*ChildConsoleHandler)
+			is.Equal(tt.consoleScope == "child", fromChild)
 		})
 	}
 }

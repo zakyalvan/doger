@@ -168,10 +168,10 @@ Rules:
 
 ## 24. Name-keyed collection (InvokeAllMap) (Part K)
 
-- [ ] 24.1 RED: add `TestInvokeAllMap_Keys` (scenario "Map collection keys", 2 rows) and the `InvokeAllMap`/`MustInvokeAllMap` rows of `TestInvokeAll_Empty`, `TestMustInvokeAll_Panics` and `TestMustInvokeAll_Success`; verify `go test -race -run 'TestInvokeAllMap_Keys|TestInvokeAll_Empty|TestMustInvokeAll_' .` fails to compile only on the missing `InvokeAllMap`/`MustInvokeAllMap`
-- [ ] 24.2 GREEN: add `InvokeAllMap` on `collectionCandidates` with the same build loop, returning `map[string]T{}` on no match, and `MustInvokeAllMap` via `must1`; verify the 24.1 command passes and `make test` is green
-- [ ] 24.3 REFACTOR: *Extract Function* `buildMembers` shared by the slice and map variants, removing the duplicated loop; verify `make test` and `make lint` pass
-- [ ] 24.4 Add `ExampleInvokeAllMap` and godoc on `InvokeAllMap`/`MustInvokeAllMap` (same members as `InvokeAll`, keyed by name, unordered); verify `go test -run ExampleInvokeAllMap .` passes
+- [x] 24.1 RED: add `TestInvokeAllMap_Keys` (scenario "Map collection keys", 2 rows) and the `InvokeAllMap`/`MustInvokeAllMap` rows of `TestInvokeAll_Empty`, `TestMustInvokeAll_Panics` and `TestMustInvokeAll_Success`; verify `go test -race -run 'TestInvokeAllMap_Keys|TestInvokeAll_Empty|TestMustInvokeAll_' .` fails to compile only on the missing `InvokeAllMap`/`MustInvokeAllMap`
+- [x] 24.2 GREEN: add `InvokeAllMap` on `collectionCandidates` with the same build loop, returning `map[string]T{}` on no match, and `MustInvokeAllMap` via `must1`; verify the 24.1 command passes and `make test` is green
+- [x] 24.3 REFACTOR: *Extract Function* `buildMembers` shared by the slice and map variants, removing the duplicated loop; verify `make test` and `make lint` pass
+- [x] 24.4 Add `ExampleInvokeAllMap` and godoc on `InvokeAllMap`/`MustInvokeAllMap` (same members as `InvokeAll`, keyed by name, unordered); verify `go test -run ExampleInvokeAllMap .` passes
 
 ## 25. A collection excludes the service that invokes it (Part K)
 

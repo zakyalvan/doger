@@ -654,6 +654,19 @@ func MustInvokeAll[T any](i Injector) []T {
 	return must1(InvokeAll[T](i))
 }
 
+// InvokeAllMap returns the same members as [InvokeAll], keyed by service
+// name, under the same visibility, alias, shadowing and failure rules. With
+// no match, it returns an empty, non-nil map.
+func InvokeAllMap[T any](i Injector) (map[string]T, error) {
+	return invokeAllMapByGenericType[T](i)
+}
+
+// MustInvokeAllMap is like [InvokeAllMap] but panics with the error
+// InvokeAllMap would return.
+func MustInvokeAllMap[T any](i Injector) map[string]T {
+	return must1(InvokeAllMap[T](i))
+}
+
 /////////////////////////////////////////////////////////////////////////////
 // 							Implicit aliases
 /////////////////////////////////////////////////////////////////////////////

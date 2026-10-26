@@ -511,3 +511,22 @@ func ExampleInvokeAll() {
 	// email: deploy done
 	// sms: deploy done
 }
+
+func ExampleInvokeAllMap() {
+	injector := New()
+	ProvideNamed(injector, "email", func(Injector) (*exampleEmailNotifier, error) { return &exampleEmailNotifier{}, nil })
+	ProvideNamed(injector, "sms", func(Injector) (*exampleSMSNotifier, error) { return &exampleSMSNotifier{}, nil })
+
+	// The same members as InvokeAll, keyed by service name.
+	notifiers, err := InvokeAllMap[exampleNotifier](injector)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	fmt.Println(notifiers["sms"].Notify("deploy done"))
+	fmt.Println(len(notifiers))
+	// Output:
+	// sms: deploy done
+	// 2
+}
