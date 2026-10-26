@@ -238,3 +238,24 @@ Interleaved against the head before 84.6 (`a95ccee`, 10 alternating runs, same m
 | ProviderChainTransient | -9.6% | 880 → 832 | 24 → 20 |
 | geomean | -5.3% | -0.9% | -18.6% |
 
+### 85. Integration checks after the third verification
+
+- 85.1: `make test`, `make lint`, `go vet ./... && go test -race ./...` in all 25 `go.work` modules, the docs lint and build, and `openspec validate --strict`: all pass on `cb9de50`.
+  - A first module run, made while the stress run below loaded the machine and with its output discarded, failed once in the root module. It did not reproduce in 10 runs under the same load or in the final run. The failing test is unknown; the data race below, in the same package, is the likely cause but this is not confirmed.
+- 85.2: the Part V, V2 and V3 lifecycle and collection tests ran 2000 times each under `-race`.
+  - The first run reported one data race, in `TestContainerHooks_ShutdownDuringStart` ("Shutdown in the last step"), a test from Part H. Its shutdown function called `wg.Wait()` while the kind handler could still be calling `wg.Go()`, a Wait racing an Add at a zero counter. It reproduced once in 3000 isolated runs; with the fix (`cb9de50`, the function waits until Shutdown was launched), 6000 runs pass.
+  - That run also hit `go test`'s 10-minute default timeout; the goroutine dump showed only test runners waiting on parallel subtests, with no stuck worker. The rerun with `-timeout 110m` passed: 688s, no race, no failure.
+- 85.3: interleaved against the PR base `ed65bdc` (10 alternating runs, `cb9de50`):
+
+| Benchmark | time | B/op | allocs/op |
+|---|---|---|---|
+| InvokeLazySteadyState, InvokeLazyParallel, InvokeTransient, InvokeNestedScopes | ~ | 192 → 208 | 6 → 5 |
+| InvokeNamed | -5.6% (p=0.042) | 96 → 112 | 4 → 3 |
+| InvokeAlias | -11.0% (p=0.000) | 256 → 272 | 9 → 7 |
+| InvokeAs | +5.3% (p=0.001) | 937 → 1009 | 11 → 8 |
+| ProviderChainTransient | -6.6% (p=0.005) | 816 → 832 | 24 → 20 |
+| New | +8.1% (p=0.000) | 952 → 1232 | 13 → 11 |
+| Provide, HealthCheck, Shutdown, ListProvidedServices, Ancestors | ~ | ~ | ~ |
+
+The +16 B/op on invocations is the larger virtual scope (its invoker link, from V17); 84.6 then removed one allocation per invocation. `InvokeAs` and `New` stay within the costs accepted in 48.1. `NewFrameFromPC` (+7.5%, p=0.018) is in the untouched `stacktrace` package: noise.
+

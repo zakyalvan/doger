@@ -579,5 +579,5 @@ Each step runs `make test` and `make lint` after it; no test input or assertion 
 
 ## 85. Integration checks after the third verification
 
-- [ ] 85.1 Full run: `make test`, `make lint`, per-module `go vet ./... && go test -race ./...` in every `go.work` module, the docs lint and build, and `openspec validate consolidate-pending-lifecycle-work --strict`
-- [ ] 85.2 Stress: run the Part V, V2 and V3 lifecycle and collection tests with `-race -count=2000`; verify no failure
+- [x] 85.1 Full run: `make test`, `make lint`, per-module `go vet ./... && go test -race ./...` in every `go.work` module, the docs lint and build, and `openspec validate consolidate-pending-lifecycle-work --strict`
+- [x] 85.2 Stress: run the Part V, V2 and V3 lifecycle and collection tests with `-race -count=2000`; verify no failure
