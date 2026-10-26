@@ -230,6 +230,7 @@ func invokeAllByGenericType[T any](i Injector) ([]T, error) {
 type collectionMember struct {
 	candidate collectionCandidate
 	instance  any
+	order     int // set by the ordering pass of an ordered collection
 }
 
 // invokeCollection builds the members of the collection for target, visible
@@ -249,26 +250,16 @@ func invokeCollection(injector Injector, target reflect.Type, ordered bool) ([]c
 		return members, nil
 	}
 
-	orders := make([]int, len(members))
-	for index, m := range members {
-		order, err := orderValue(m.candidate.name, m.instance, m.candidate.options())
+	for index := range members {
+		order, err := orderValue(members[index].candidate.name, members[index].instance, members[index].candidate.options())
 		if err != nil {
 			return nil, err
 		}
-		orders[index] = order
+		members[index].order = order
 	}
-	positions := make([]int, len(members))
-	for index := range positions {
-		positions[index] = index
-	}
-	slices.SortStableFunc(positions, func(a, b int) int { return cmp.Compare(orders[a], orders[b]) })
+	slices.SortStableFunc(members, func(a, b collectionMember) int { return cmp.Compare(a.order, b.order) })
 
-	sorted := make([]collectionMember, 0, len(members))
-	for _, index := range positions {
-		sorted = append(sorted, members[index])
-	}
-
-	return sorted, nil
+	return members, nil
 }
 
 // orderValue returns the collection order of a built member: its WithOrder
@@ -610,7 +601,7 @@ func injectCollectionField(injector Injector, structName string, field reflect.S
 
 		collection := reflect.MakeMapWithSize(fieldType, len(members))
 		for _, m := range members {
-			collection.SetMapIndex(reflect.ValueOf(m.candidate.name).Convert(fieldType.Key()), memberValue(m.instance, fieldType.Elem()))
+			collection.SetMapIndex(reflect.ValueOf(m.candidate.name), memberValue(m.instance, fieldType.Elem()))
 		}
 		fieldValue.Set(collection)
 	default:
