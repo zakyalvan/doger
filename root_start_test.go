@@ -1477,12 +1477,17 @@ func TestScopeStart_RootScope(t *testing.T) {
 	testWithTimeout(t, time.Second)
 
 	root := New()
+	k := NewKind[Job, Spec]("k")
+	var scope *Scope
+	k.Handle(root, StageBeforeStart, func(_ context.Context, c Component[Job, Spec]) error {
+		scope = c.Scope // the *Scope a root service works with
+		return nil
+	})
+	ProvideNamed(root, "j", func(Injector) (*CleanupJob, error) { return &CleanupJob{name: "j"}, nil }, k.With(Spec{}))
 	require.NoError(t, root.Start())
+	require.NotNil(t, scope)
 	starts := &countingStarters{}
 	provideCountedStarter(root, starts, "late")
-
-	// the *Scope a root service's provider works with
-	scope := root.self
 
 	assert.NoError(t, scope.Start())
 	assert.Equal(t, 1, starts.count("late"))

@@ -247,3 +247,41 @@ func TestCollection_ConcurrentReads(t *testing.T) {
 
 	assert.Equal(t, int32(1), calls.Load())
 }
+
+func TestCollection_ReadDuringHolderProvider(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+	is := assert.New(t)
+
+	root := New()
+	provideHandler(root, "console", newConsole)
+	var read []string
+	ProvideNamed(root, "bus", func(i Injector) (*busHandler, error) {
+		peers := InvokeCollection[EventHandler](i)
+		handlers, err := peers.All()
+		read = handlerNames(handlers)
+		return &busHandler{handlerBase: handlerBase{"bus"}, peers: peers}, err
+	})
+
+	_, err := InvokeNamed[*busHandler](root, "bus")
+
+	require.NoError(t, err)
+	is.Equal([]string{"console"}, read)
+	is.Equal([]string{"console"}, explainedNames(t, root, "bus", false))
+}
+
+// TestCollection_NilInjector is not parallel: it replaces DefaultRootScope.
+func TestCollection_NilInjector(t *testing.T) {
+	testWithTimeout(t, time.Second)
+
+	previous := DefaultRootScope
+	DefaultRootScope = New()
+	t.Cleanup(func() { DefaultRootScope = previous })
+	c := InvokeCollection[EventHandler](nil)
+	provideHandler(DefaultRootScope, "console", newConsole)
+
+	handlers, err := c.All()
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"console"}, handlerNames(handlers))
+}
