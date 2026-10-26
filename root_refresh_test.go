@@ -253,10 +253,17 @@ func TestScopeShutdown_LaterStartSkips(t *testing.T) {
 	is := assert.New(t)
 
 	root := New()
+	k := NewKind[Job, Spec]("k")
+	var handled atomic.Int32
+	k.Handle(root, StageBeforeStart, func(context.Context, Component[Job, Spec]) error {
+		handled.Add(1)
+		return nil
+	})
 	require.NoError(t, root.Start())
 	tenant := root.Scope("tenant")
 	starts := &countingStarters{}
 	provideCountedStarter(tenant, starts, "w")
+	ProvideNamed(tenant, "j", func(Injector) (*CleanupJob, error) { return &CleanupJob{name: "j"}, nil }, k.With(Spec{}))
 	entered, release := make(chan struct{}), make(chan struct{})
 	root.AddScopeClosingHook(func(context.Context, *Scope) {
 		close(entered)
@@ -271,6 +278,7 @@ func TestScopeShutdown_LaterStartSkips(t *testing.T) {
 	close(release)
 	is.NoError(err)
 	is.Equal(0, starts.count("w"))
+	is.Equal(int32(0), handled.Load(), "the kind handler handled a service of the closing scope")
 	is.True((<-shutdown).Succeed)
 }
 
