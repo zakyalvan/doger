@@ -1162,12 +1162,12 @@ func TestInvokeAs_Shadowing(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		mid     bool // put a scope between the root and the child
+		mid     bool // invoke from a scope below the one registering db
 		childDB func(child *Scope)
 		check   func(t *testing.T, child *Scope)
 	}{
 		{
-			name:    "string grandchild db through an intermediate scope, InvokeAs",
+			name:    "string db in an intermediate scope, InvokeAs from below it",
 			mid:     true,
 			childDB: func(child *Scope) { ProvideNamedValue(child, "db", "a string") },
 			check: func(t *testing.T, child *Scope) {
@@ -1216,10 +1216,10 @@ func TestInvokeAs_Shadowing(t *testing.T) {
 			root := New()
 			ProvideNamed(root, "db", func(Injector) (*shadowPG, error) { return &shadowPG{scope: "[root]"}, nil })
 			child := root.Scope("request")
+			tt.childDB(child)
 			if tt.mid {
 				child = child.Scope("leaf")
 			}
-			tt.childDB(child)
 
 			tt.check(t, child)
 		})
