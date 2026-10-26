@@ -429,6 +429,6 @@ Rules:
 
 ## 64. Integration checks after the verification fixes
 
-- [ ] 64.1 Full run: `make test`, `make lint`, per-module `go vet ./... && go test -race ./...` in every `go.work` module, `npm --prefix docs run lint && npm --prefix docs run build`, and `openspec validate consolidate-pending-lifecycle-work --strict`
-- [ ] 64.2 Traceability: run every test named in the design's Test Strategy rows for Part V with `-race -v` and verify each lists PASS with row counts matching the scenarios
-- [ ] 64.3 Benchmarks: compare `BenchmarkInvokeAs`, `BenchmarkInvokeAlias`, `BenchmarkProvide`, `BenchmarkNew`, `BenchmarkShutdown` and the invoke benchmarks against `ed65bdc` with `benchstat` (20 interleaved runs) and record them in notes.md
+- [x] 64.1 Full run: `make test`, `make lint`, per-module `go vet ./... && go test -race ./...` in every `go.work` module, `npm --prefix docs run lint && npm --prefix docs run build`, and `openspec validate consolidate-pending-lifecycle-work --strict`
+- [x] 64.2 Traceability: run every test named in the design's Test Strategy rows for Part V with `-race -v` and verify each lists PASS with row counts matching the scenarios
+- [x] 64.3 Benchmarks: compare `BenchmarkInvokeAs`, `BenchmarkInvokeAlias`, `BenchmarkProvide`, `BenchmarkNew`, `BenchmarkShutdown` and the invoke benchmarks against `ed65bdc` with `benchstat` (20 interleaved runs) and record them in notes.md

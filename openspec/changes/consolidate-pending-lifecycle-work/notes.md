@@ -151,7 +151,7 @@ Each defect was first reproduced by a probe in a scratch copy of the repo during
 | 50 | `TestContainerHooks_ShutdownCauseRace`: 259 and 278 of 20000 runs per row returned `DI: start aborted: %!w(<nil>)` | |
 | 51 | `TestStart_ParallelHookPanic`: the test binary crashed with `panic: hook-boom`, created by `startStartersParallel` | |
 | 52 | `TestIncrementalStart_DuringStart`: all 3 rows timed out (deadlock) | The task line expected the goroutine row to return nil; the scenario has a's Start await that goroutine, so it deadlocks as well. Unawaited, the verify probe saw nil after Start returned. |
-| 53 | `TestScopeShutdown_WaitsForStart` (Shutdown returned while "w" was starting), `TestScopeShutdown_LaterStartSkips` ("w" started 1 time), `TestScopeShutdown_WaitBounded` (returned at 0s with a successful report) | `TestScopeShutdown_CreatedDuringStart` passed on arrival (it guards against waiting too much; its mutation check follows the benchmarks). The closing mark became a counter that lasts while the shutdown runs, because a directly shut-down child scope stays attached and may be reused; spec and design wording were aligned. The extracted functions are `beginClosing`/`endClosing` (the task named `awaitRunForScope`). |
+| 53 | `TestScopeShutdown_WaitsForStart` (Shutdown returned while "w" was starting), `TestScopeShutdown_LaterStartSkips` ("w" started 1 time), `TestScopeShutdown_WaitBounded` (returned at 0s with a successful report) | `TestScopeShutdown_CreatedDuringStart` passed on arrival (it guards against waiting too much: a mutation that waits for every in-flight run, ignoring `runScopes`, makes it time out on a deadlock). The closing mark became a counter that lasts while the shutdown runs, because a directly shut-down child scope stays attached and may be reused; spec and design wording were aligned. The extracted functions are `beginClosing`/`endClosing` (the task named `awaitRunForScope`). |
 | 54 | `TestCollection_AfterProviderReturned`: `circular dependency detected: app -> bus -> app`; `TestCollection_HeldByProvider`: edges [audit console] recorded | The HeldByProvider assertion changed with the agreed scenario: reads after the provider returned record no edge. |
 | 55 | string-kinded key row: no error returned | |
 | 56 | n/a: `TestStartError_Incremental`, `TestScopeStart_AncestorsNotStarted`, `TestStart_ParallelIncremental` passed on arrival | Mutations, each reverted: `StartError.Scope` forced to the root scope fails all 3 StartError rows; `Scope.Start` run on the root scope fails AncestorsNotStarted (db started 1 time); parallel start disabled fails both ParallelIncremental rows (3s instead of 1s). |
@@ -165,3 +165,20 @@ Each defect was first reproduced by a probe in a scratch copy of the repo during
 ### 61.4 InvokeAs after shadowing
 
 Interleaved against `ed65bdc` (20 alternating runs) with shadowing in place: `InvokeAs` +6.9% (p=0.001, 1.229µs → 1.314µs), 937 → 961 B/op, 11 → 9 allocs/op; `InvokeAlias` -5.8%. The shadow check runs only for matching candidates and walks parent pointers, so it adds no allocation and no measurable time over the +9.2% accepted in 48.1.
+
+### 64. Integration checks after the verification fixes
+
+- 64.1: `make test`, `make lint`, `go vet ./... && go test -race ./...` in all 25 `go.work` modules, the docs lint and build, and `openspec validate --strict`: all pass.
+- 64.2: every Part V test in the design's Test Strategy passes under `-race -v`, with subtest counts matching the scenario rows (InvalidField 3 = 2 + 1 new row; `TestStart_Parallel` 6 = 5 + max uint).
+- 64.3: interleaved against `ed65bdc` (20 alternating runs, head `4a799a2`):
+
+| Benchmark | time | B/op | allocs/op |
+|---|---|---|---|
+| InvokeLazySteadyState, InvokeLazyParallel, InvokeNamed, InvokeTransient, InvokeNestedScopes | ~ | ~ | ~ |
+| InvokeAlias | -5.4% (p=0.000) | ~ | ~ |
+| InvokeAs | +7.6% (p=0.000) | 937 → 961 | 11 → 9 |
+| Provide | ~ (p=0.242) | +0.18% | -0.09% |
+| New | +7.7% (p=0.000) | 952 → 1232 | 13 → 11 |
+| Shutdown | ~ (p=0.841) | ~ | ~ |
+
+These match the 48.1 decision: `InvokeAs` stays within the accepted cost of deterministic selection, `New` meets the 11 allocs/op target, and the fixes add no measurable cost elsewhere.
