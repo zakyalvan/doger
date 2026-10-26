@@ -119,7 +119,7 @@ Migration: none, unless a Starting hook counted on running for every `scope.Star
 
 **BREAKING (unkeyed literals only).** These exported structs gain fields:
 
-- `InjectorOpts`: `StartParallelism`, `HookAfterBuild`, the `HookContainer*` and `HookScope*` hook lists, and `HookContainerPanic`;
+- `InjectorOpts`: `StartParallelism`, `HookAfterBuild`, the `HookContainer*` and `HookScope*` hook lists, `HookContainerPanic` and `HealthCheckSingleTimeout`;
 - `ExplainServiceDependencyOutput`: `Source`.
 
 Keyed literals (`doger.InjectorOpts{Logf: ...}`) and zero values compile unchanged. An **unkeyed** composite literal of one of these structs no longer compiles. Migration: name the fields.

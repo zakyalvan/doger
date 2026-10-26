@@ -625,6 +625,7 @@ Added (all additive unless flagged):
   - `ContainerPhase`, `PhaseIdle` … `PhaseClosed`, `RootScope.Phase`;
   - `Collection[T]`, `InvokeCollection`.
 - **Part V:** `DependencySource.UnmarshalText`.
+- **Part V4:** `InjectorOpts.HealthCheckSingleTimeout` (V52); `Collection.All` and `Collection.Map` take the reader's injector (V51, before any release).
 
 Changed behavior, flagged, with migration:
 - Per-service `HealthCheck*` honor `HealthCheckTimeout`. Migration: none if the option is 0; otherwise expect the bound.
