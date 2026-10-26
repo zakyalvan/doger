@@ -17,7 +17,7 @@ Several separate plans and loose ends build on `add-start-lifecycle-and-kinds`: 
 **Findings and follow-ups from PR #4**
 - **Defect (behavior change, flagged):** an alias over an eager service shuts the target down twice. An alias now never shuts its target down; only the target's own registration does.
 - **Defect (internal):** `mergeShutdownReports` reports `Succeed: false` for reports with no errors. Today callers overwrite the field, so consumers cannot see it.
-- `New()` no longer allocates the default `Runnable` handler entry: it is resolved at Start. This removes +2 allocs per container.
+- `New()` no longer allocates the default `Runnable` handler entry: every container starts with one shared default kind list, and `Kind.Handle` copies a list before writing it (copy-on-write), so containers and clones never see each other's handlers. This removes 2 allocs per container.
 - **Not reproduced:** a race between `HealthCheck` and root `Shutdown` on `healthCheckPool` (0 races in 2,000 runs). It gets one bounded investigation task; no fix is proposed unless a failing test reproduces it.
 
 **Open questions of `add-start-lifecycle-and-kinds`, decided**
@@ -51,6 +51,13 @@ Several separate plans and loose ends build on `add-start-lifecycle-and-kinds`: 
 - `HookAfterBuild` ran under the wrapper lock, so a hook touching its own service deadlocked. It now runs after the lock is released.
 - `InvokeAs` returned services hidden by a same-name service in a nearer scope. It now honors shadowing (**behavior change, flagged**).
 - Also: `DependencySource` decodes from JSON; Override drops replaced wrappers from the start bookkeeping; `StartParallelism` beyond the number of Starters no longer wraps negative; the `*` tag requires exactly `map[string]E`.
+
+**Fixes from the second to fourth verifications (design Parts V2, V3, V4).** Each defect was reproduced by a failing test first:
+- `InvokeAs` and the struct fallback skip the service whose provider calls them, so a decorator resolves the service it wraps; a lone self-match fails with `ErrServiceNotMatch` (**behavior change, flagged**, V27). Aliases whose target chain resolves to that service are skipped too (**behavior change, flagged**, V40).
+- A per-service hook panic during Start runs the Failed hooks before it is re-raised (**behavior change, flagged**, V28).
+- A start that Shutdown interrupts matches `ErrStartAfterShutdown` even when the caller had cancelled its context first, and so does the Failed error after a pipeline panic (**behavior change, flagged**, V38, V39).
+- `Scope.Start` on a scope that is shutting down runs no scope Starting hook (**behavior change, flagged**, V41).
+- A child scope shutdown that ran entirely between a run's collection and its claim no longer makes the run fail with `ErrServiceNotFound`, or start a same-name ancestor Starter twice (V37).
 
 ## Capabilities
 
@@ -113,7 +120,9 @@ These capabilities come from `add-start-lifecycle-and-kinds` and exist under `op
 | Child scope shutdown during a start | Waits for a run that is starting the scope's services | Bound the wait with `ShutdownWithContext` |
 | Live collection after its provider returned | Resolves from the provider's scope without its chain; no edges | Use `InvokeAll` inside the provider for recorded edges |
 | `InvokeAs` and shadowing | A shadowed ancestor service is not a candidate | Invoke the ancestor by name from its own scope |
-| `InvokeAs` from a provider | The provider's own service is not a candidate | Use `InvokeNamed` to resolve a specific service |
+| `InvokeAs` from a provider | The provider's own service, and its aliases, are not candidates | Use `InvokeNamed` to resolve a specific service |
+| `Scope.Start` while the scope shuts down | Starts nothing, runs no scope hook, returns nil | Call `Scope.Start` after the shutdown returned |
+| Start interrupted by Shutdown | The error matches `ErrStartAfterShutdown`, and the caller's cause when it cancelled first | None needed: match either with `errors.Is` |
 | Per-service hook panic during Start | Failed hooks run, then the panic is re-raised | Recover the panic in the hook |
 | Failed Starter or kind handler on `Refresh` | Tried again by the next `Refresh`/`Scope.Start` | Remove or fix the service before the next run |
 | Post-build hook and locking | Runs after the wrapper lock is released | None needed |
@@ -126,7 +135,7 @@ These were not decided explicitly, so I chose and recorded them:
 3. `RootScope.Phase()`: a close phase dominates once Shutdown has begun.
 4. `HookAfterBuild` fires after every successful provider call (each transient instance included) and on an eager value's first successful invocation. Hook panics propagate, as with other per-service hooks.
 5. An edge recorded more than once keeps the strongest source: invoked > depends-on > declared.
-6. `Collection[T]` captures the invoking scope, so self-exclusion and edge recording work as for `InvokeAll`.
+6. `Collection[T]` captures the invoking scope, so self-exclusion works as for `InvokeAll`. Edges are recorded only by reads made while the holder's provider runs; reads after it returned record none (V5).
 
 ## Defect
 

@@ -65,7 +65,7 @@ Facts verified for the new parts (scratch probes on a copy of the repo at `e116a
 ### Part Q — Decided open questions of start-lifecycle
 
 **Q1. Clones copy kind handlers.**
-- `CloneWithOpts` copies `s.kinds` (a slice clone under `kindsMu`) into the clone after `NewWithOpts`. `Clone` goes through it.
+- `CloneWithOpts` shares `s.kinds` with the clone after `NewWithOpts` (read under `kindsMu`); `Kind.Handle` copies a list before writing it (copy-on-write, V36), so a handler replaced on either container leaves the other unchanged. `Clone` goes through it.
 - Entries are stateless with respect to the container (their `run` closure receives scope, name, instance and meta), so sharing them is safe.
 
 **Q2. `StartError`.**
@@ -165,7 +165,7 @@ Facts verified for the new parts (scratch probes on a copy of the repo at `e116a
 
 **X3. Lock rules.** `lifecycleMu` is never held across user code (start-lifecycle D6). `pipelineMu` (P1) is held across pipeline user code and never taken under `lifecycleMu` or by Shutdown. `kindsMu` and `declareMu` keep their scopes.
 
-**X4. Upgrading page.** Every flagged item gets an entry in `docs/docs/upgrading/start-lifecycle.md`, renamed in title to cover this release: alias shutdown, `InvokeAs` determinism, the `*` struct tag, the per-service health-check timeout, and clone handler copying. (The health-check timeout rule from #5 is already documented in `migrating-from-samber-do.md`.)
+**X4. Upgrading page.** Every flagged item gets an entry in `docs/docs/upgrading/start-lifecycle.md`, renamed in title to cover this release: alias shutdown, `InvokeAs` determinism (with shadowing, V14, and skipping the invoking service and its aliases, V27, V40), the `*` struct tag, the per-service health-check timeout, clone handler copying, Failed hooks on a pipeline panic (V28), the child scope shutdown wait (V4), the abort cause after a caller cancellation (V38, V39), scope Starting hooks skipping a closing scope (V41), the explain `Source` in `String()` and JSON, and the unkeyed-literal break. (The health-check timeout rule from #5 is already documented in `migrating-from-samber-do.md`.)
 
 ### Part V — Verification fixes
 
@@ -223,7 +223,7 @@ A second `/opsx:verify` found four defects, each reproduced by a probe test, plu
 
 A third `/opsx:verify` and a `/code-review` reproduced five defects with probe tests, and one more turned up while planning the fixes (V23). The user chose the recommended option for each open decision (V25, V27–V31), asked to fix V23 in this round, and to apply every suggestion, including the code-review cleanups (V36).
 
-**V23. Each invocation copies its invoker chain (user decision: fix in this round).** `invokeAnyByNameAs` and `invokeByName` extend the chain with `append(slices.Clip(chain), name)`, as `invokeServiceInstance` already does. A plain `append` reused spare capacity, so a sibling invocation overwrote the last name of a stored injector's chain. A live collection then took the sibling for its holder, and cycle detection and edges recorded through a stored injector used the wrong name.
+**V23. Each invocation has its own invoker chain (user decision: fix in this round).** A plain `append` of the chain reused spare capacity, so a sibling invocation overwrote the last name of a stored injector's chain. A live collection then took the sibling for its holder, and cycle detection and edges recorded through a stored injector used the wrong name. The first fix copied the chain per invocation (`append(slices.Clip(chain), name)`); V36 replaced it: each virtual scope now stores only its own name and a link to its invoker's virtual scope, so no chain is shared or copied.
 
 **V24. An invocation is over once it returned.** The three sites that create a provider's virtual scope mark it `returned` once `getInstance` returns, whether or not a provider ran: an eager value resolving its `DependsOn`, or an attempt that failed before its provider ran. `handleProviderPanic` still marks it as soon as the provider returns, so reads from the holder's own `HookAfterBuild` are already detached, as before.
 
@@ -615,6 +615,12 @@ Changed behavior, flagged, with migration:
 - Clones copy replaced kind handlers. Migration: re-register a different handler on the clone if needed.
 - `InvokeAs` / implicit struct aliasing skip services shadowed by a same-name service in a nearer scope (V14). Migration: invoke the ancestor service by name from its own scope.
 - A child scope `Shutdown` waits for a running Start, Refresh or Scope.Start that is starting its services (V4). Migration: do not shut down, from Start-time code, a scope that the running start is starting.
+- `InvokeAs` / implicit struct aliasing skip the service whose provider calls them (V27), and its aliases (V40); a lone self-match fails with `ErrServiceNotMatch` instead of `ErrCircularDependency`. Migration: none for decorators; check for `ErrServiceNotMatch` in that case.
+- A per-service hook panic during Start runs the Failed hooks before it is re-raised (V28). Migration: none, unless a Failed hook assumed Start had returned.
+- A start that Shutdown interrupts after the caller cancelled its context matches `ErrStartAfterShutdown` too, and the Failed hooks receive such an error after a pipeline panic (V38, V39). Migration: code comparing messages accepts the added text.
+- `Scope.Start` on a scope that is shutting down runs no Starting hook (V41). Migration: observe the shutdown with a Closing hook.
+- `ExplainServiceDependencyOutput.String()` marks non-invoked edges with ` (depends-on)` or ` (declared)`, and its JSON gains `"source"` (Q2). Migration: text parsers accept the suffixes; strict JSON decoders accept `source`.
+- **BREAKING (unkeyed literals only):** new exported fields in `InjectorOpts` and `ExplainServiceDependencyOutput`. Migration: name the fields.
 
 Defaults: see the proposal's Defaults & Control table. Every new hook list defaults to empty, and `StartParallelism` to sequential.
 
@@ -630,10 +636,10 @@ All tests run under `go test -race` with goleak (`TestMain`). Tests that could h
 | container-phase | Unknown phase values print as a number | `phase_test.go: TestContainerPhase_StringUnknown` | unit |
 | container-phase | Clone starts idle | `phase_test.go: TestPhase_CloneIdle` | unit |
 | scope-lifecycle-hooks | Registration order and nil hooks | `scope_hooks_test.go: TestScopeHooks_RegistrationOrder` | unit |
-| scope-lifecycle-hooks | Starting hook allows or vetoes Scope.Start (3 rows) | `scope_hooks_test.go: TestScopeStartingHook_Veto/<row>` | table |
+| scope-lifecycle-hooks | Starting hook allows or vetoes Scope.Start (4 rows) | `scope_hooks_test.go: TestScopeStartingHook_Veto/<row>` | table |
 | scope-lifecycle-hooks | Closing and Closed around child scope shutdown (4 rows) | `scope_hooks_test.go: TestScopeHooks_ClosingClosed/<row>` | table |
 | scope-lifecycle-hooks | Root scope fires no scope hook | `scope_hooks_test.go: TestScopeHooks_RootFiresNone` | unit |
-| scope-lifecycle-hooks | Observer scope hook panics (3 rows) | `scope_hooks_test.go: TestScopeHooks_ObserverPanic/<row>` | table |
+| scope-lifecycle-hooks | Observer scope hook panics (5 rows) | `scope_hooks_test.go: TestScopeHooks_ObserverPanic/<row>` (4 rows), `TestScopeStartedHook_PanicDefault` | table |
 | service-build-hooks | Which invocations fire the build hook (6 rows) | `build_hooks_test.go: TestAfterBuildHook_Fires/<row>` | table |
 | service-build-hooks | Build hook order relative to invocation hooks | `build_hooks_test.go: TestAfterBuildHook_Order` | unit |
 | service-build-hooks | Registration order and nil hooks | `build_hooks_test.go: TestAfterBuildHook_RegistrationOrder` | unit |
