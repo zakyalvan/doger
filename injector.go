@@ -181,7 +181,10 @@ type InjectorOpts struct {
 	// HookContainerFailed is called by the first Start when it fails after
 	// its one-shot guard, with the context passed to Start and the exact
 	// error Start returns. It may call root Shutdown, for example to clean up
-	// what did start.
+	// what did start. When a per-service hook panics during Start (such as
+	// HookBeforeStart or HookAfterBuild), the Failed hooks run with an error
+	// wrapping the panic value before Start re-raises it; a Failed hook panic
+	// then goes to HookContainerPanic when set, and is logged otherwise.
 	HookContainerFailed []func(ctx context.Context, scope *RootScope, err error)
 
 	// HookContainerClosing is called by the root Shutdown that begins the

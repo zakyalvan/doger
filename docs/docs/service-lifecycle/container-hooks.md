@@ -179,6 +179,8 @@ root := doger.NewWithOpts(&doger.InjectorOpts{
 
 A panic in a Starting hook is different: it is a **veto**. `Start` fails with an error containing the panic value, and `HookContainerPanic` is not called.
 
+A panic in a per-service hook during `Start` (such as `HookBeforeStart`, `HookAfterStart` or `HookAfterBuild`) is not an observer hook panic: it is re-raised on the goroutine that called `Start`. Before that, `Start` marks the container failed and runs the Failed hooks with an error wrapping the panic value, so cleanup wired to Failed still happens. If a Failed hook panics then, the panic goes to `HookContainerPanic` when it is set, and is logged otherwise: the per-service hook's panic is the one re-raised.
+
 ## Root container only {#root-only}
 
 Container hooks fire only for the `*doger.RootScope` methods `Start`, `StartWithContext`, `Shutdown`, `ShutdownWithContext` and `ShutdownOnSignals*`. These do not fire them:

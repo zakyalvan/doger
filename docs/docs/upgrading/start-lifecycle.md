@@ -87,6 +87,12 @@ Migration: rename a service called `*`, or inject it by type.
 
 Migration: none if `HealthCheckTimeout` is `0`. Otherwise, a single-service check that runs longer than the timeout now returns an error matching `ErrHealthCheckTimeout`.
 
+## Failed hooks run when a per-service hook panics during Start {#failed-on-hook-panic}
+
+When a per-service hook (`HookBeforeStart`, `HookAfterStart`, `HookAfterBuild`) panics during the first `Start`, the panic is still re-raised on the calling goroutine, but `Start` now runs the `HookContainerFailed` hooks first, with an error wrapping the panic value. They used to be skipped, although the container was marked failed. A Failed hook that panics meanwhile goes to `HookContainerPanic` when set, and is logged otherwise, so the original panic is the one re-raised.
+
+Migration: none, unless a Failed hook assumed that `Start` had returned. Recover the panic in the per-service hook to turn it into a normal failure.
+
 ## A child scope shutdown waits for a running start {#child-shutdown-waits}
 
 `Scope.Shutdown()` and `Scope.ShutdownWithContext(ctx)` on a child scope now wait for a `Start`, `Refresh` or `Scope.Start` that is starting services of that scope before shutting it down, bounded by `ctx`. They used to run concurrently with it, so a service could start after its scope had been shut down and keep running. A run that begins while the scope shuts down now skips it.

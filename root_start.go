@@ -54,9 +54,11 @@ func (s *RootScope) Start() error {
 // On the first failure (a build error, a Start error, or a panic in a Start
 // method, recovered as an error), Start stops and returns a [*StartError]
 // that names the service, its scope and the failed step, and wraps the
-// cause, so errors.Is and errors.As reach it. Starters not reached yet are not started. Nothing is rolled
-// back: cleanup is the caller's job, typically by calling Shutdown, so
-// services must tolerate Shutdown without a prior Start.
+// cause, so errors.Is and errors.As reach it. Starters not reached yet are
+// not started. Nothing is rolled back: cleanup is the caller's job,
+// typically by calling Shutdown, so services must tolerate Shutdown without
+// a prior Start. A panic in a per-service hook is not recovered as an error:
+// Start runs the Failed hooks, then re-raises it.
 //
 // Shutdown during Start: a root Shutdown that begins while Start runs
 // cancels the Start-time context with cause [ErrStartAfterShutdown] and waits
@@ -88,22 +90,33 @@ func (s *RootScope) StartWithContext(ctx context.Context) error {
 	recovered, panicked, err := s.runStartRecovering(startCtx)
 
 	// pointAfterStart: startDone is closed, so code here may call Shutdown().
-	var first hookPanic
 	if panicked {
-		s.dispatchAfterStart(ctx, recoverAsError(recovered), &first)
-		if first.panicked {
-			if s.opts.HookContainerPanic != nil {
-				s.opts.HookContainerPanic(s, first.point, first.value)
-			} else {
-				s.opts.Logf("DI: container %s hook panicked: %v", first.point, first.value)
-			}
-		}
-		panic(recovered)
+		s.failAndRepanic(ctx, recovered)
 	}
+	var first hookPanic
 	s.dispatchAfterStart(ctx, err, &first)
 	s.dispatchFirstPanic(first)
 
 	return err
+}
+
+// failAndRepanic runs the Failed hooks for a panic that escaped the start
+// pipeline, then re-raises it. A Failed hook panic meanwhile goes to
+// HookContainerPanic when set and is logged otherwise, so that the pipeline
+// panic is the one re-raised.
+func (s *RootScope) failAndRepanic(ctx context.Context, recovered any) {
+	var first hookPanic
+	s.dispatchAfterStart(ctx, recoverAsError(recovered), &first)
+
+	switch {
+	case !first.panicked:
+	case s.opts.HookContainerPanic != nil:
+		s.opts.HookContainerPanic(s, first.point, first.value)
+	default:
+		s.opts.Logf("DI: container %s hook panicked: %v", first.point, first.value)
+	}
+
+	panic(recovered)
 }
 
 // runStartRecovering runs runStart, recovering a panic that escapes the
