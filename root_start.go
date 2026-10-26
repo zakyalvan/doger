@@ -593,10 +593,6 @@ func (s *RootScope) startStarters(startCtx context.Context, candidates []*startC
 	}
 
 	for _, candidate := range candidates {
-		if !candidate.starter {
-			continue
-		}
-
 		if err := checkAbort(startCtx); err != nil {
 			return err
 		}
