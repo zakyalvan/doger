@@ -1,7 +1,6 @@
 package doger
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -336,10 +335,8 @@ func abortOutcome(ctx context.Context, err error) error {
 
 // startCandidate is a service discovered by Start.
 type startCandidate struct {
+	placement
 	scope    *Scope
-	name     string
-	depth    int
-	regIndex uint64
 	service  serviceWrapperAny
 	starter  bool
 	kinds    []kindBinding
@@ -472,7 +469,7 @@ func (s *RootScope) discoverCandidates(roots []*Scope) []*startCandidate {
 	}
 
 	slices.SortFunc(candidates, func(a, b *startCandidate) int {
-		return cmp.Or(cmp.Compare(a.depth, b.depth), cmp.Compare(a.regIndex, b.regIndex))
+		return a.compare(b.placement)
 	})
 
 	return candidates
@@ -540,10 +537,10 @@ func (s *RootScope) newStartCandidate(scope *Scope, name string, depth int, serv
 	}
 
 	return &startCandidate{
-		scope:    scope,
 		name:     name,
 		depth:    depth,
 		regIndex: service.getRegistrationIndex(),
+		scope:    scope,
 		service:  service,
 		starter:  starter,
 		kinds:    kinds,
@@ -624,7 +621,7 @@ func (s *RootScope) startStartersParallel(startCtx context.Context, candidates [
 	requires := s.dependencyRequirements(candidates)
 	pending := slices.Clone(candidates)
 	slices.SortFunc(pending, func(a, b *startCandidate) int {
-		return cmp.Or(cmp.Compare(a.depth, b.depth), cmp.Compare(a.regIndex, b.regIndex))
+		return a.compare(b.placement)
 	})
 	started := map[ServiceDescription]bool{}
 

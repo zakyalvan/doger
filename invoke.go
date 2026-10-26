@@ -343,11 +343,23 @@ func wrapMemberError(name string, err error) error {
 
 // collectionCandidate is a member of a collection, before it is built.
 type collectionCandidate struct {
+	placement
+	scope   *Scope
+	service any
+}
+
+// placement is where a service sits in the default order of collections
+// and Start: ancestors first, then registration order.
+type placement struct {
 	name     string
-	scope    *Scope
 	depth    int    // scope depth from the root scope (root = 0)
-	regIndex uint64 // registration index
-	service  any
+	regIndex uint64 // registration index, unique per root container
+}
+
+// compare orders p before o by scope depth, then registration index; the
+// name keeps the order total even if indexes ever collide.
+func (p placement) compare(o placement) int {
+	return cmp.Or(cmp.Compare(p.depth, o.depth), cmp.Compare(p.regIndex, o.regIndex), cmp.Compare(p.name, o.name))
 }
 
 // collectionCandidatesFor returns the members of a collection for target,
@@ -377,19 +389,15 @@ func collectionCandidatesFor(injector Injector, target reflect.Type) []collectio
 
 		candidates = append(candidates, collectionCandidate{
 			name:     name,
-			scope:    scope,
 			depth:    scopeDepth(scope),
 			regIndex: service.getRegistrationIndex(),
+			scope:    scope,
 			service:  s,
 		})
 		return true
 	})
 
-	// ancestors first, then registration order; the name keeps the order
-	// total even if indexes ever collide
-	slices.SortFunc(candidates, func(a, b collectionCandidate) int {
-		return cmp.Or(cmp.Compare(a.depth, b.depth), cmp.Compare(a.regIndex, b.regIndex), cmp.Compare(a.name, b.name))
-	})
+	slices.SortFunc(candidates, func(a, b collectionCandidate) int { return a.compare(b.placement) })
 
 	return candidates
 }
@@ -451,9 +459,10 @@ func selectByType(injector Injector, target reflect.Type) (collectionCandidate, 
 			return true
 		}
 
-		regIndex := service.getRegistrationIndex()
-		if !found || cmp.Or(cmp.Compare(regIndex, selected.regIndex), cmp.Compare(name, selected.name)) < 0 {
-			selected = collectionCandidate{name: name, scope: scope, regIndex: regIndex, service: s}
+		// one scope at a time, so the depth never decides
+		candidate := placement{name: name, regIndex: service.getRegistrationIndex()}
+		if !found || candidate.compare(selected.placement) < 0 {
+			selected = collectionCandidate{placement: candidate, scope: scope, service: s}
 			found = true
 		}
 		return true
