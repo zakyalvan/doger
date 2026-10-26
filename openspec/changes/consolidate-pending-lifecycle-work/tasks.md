@@ -329,7 +329,7 @@ Rules:
 
 ## 48. Integration checks
 
-- [ ] 48.1 Compare benchmarks against 0.2 with `benchstat`; verify invoke and provide show `~` and `BenchmarkNew` allocs/op is 11 (otherwise stop and investigate)
+- [x] 48.1 Compare benchmarks against 0.2 with `benchstat`; verify invoke and provide show `~` and `BenchmarkNew` allocs/op is 11 (otherwise stop and investigate)
 - [x] 48.2 Full run: verify `make test`, `make lint`, per-module `go vet ./... && go test -race ./...` in every `go.work` module, and `npm --prefix docs run lint && npm --prefix docs run build` all pass
 - [x] 48.3 Traceability: verify `go test -race -v -run '<every test in design.md Test Strategy, new and folded>' .` lists every test and subtest as PASS, with row counts matching the scenarios
 - [x] 48.4 Validate the plan; verify `openspec validate consolidate-pending-lifecycle-work --strict` passes

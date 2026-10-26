@@ -69,6 +69,8 @@ Migration: none if you re-registered the same handlers on the clone. To use a di
 
 Since the previous pick was random, no code could rely on a specific one, but a call that used to succeed by luck may now consistently return another match. Migration: use `InvokeNamed` to pin a specific service.
 
+Performance: to pick deterministically, `InvokeAs` checks every service of the nearest scope that has a match, instead of stopping at the first one found. In a scope with 20 services this costs about 0.1µs (+9%) per call, with fewer allocations than before. On hot paths, prefer `InvokeNamed` or `Invoke` with the concrete type, or resolve once and keep the instance.
+
 ## The `do:"*"` struct tag injects a collection {#star-struct-tag}
 
 **BREAKING (edge case).** In `InvokeStruct`, the tag value `*` now means "every service assignable to the element type": a `[]E` field receives `InvokeAll[E]`, and a `map[string]E` field receives `InvokeAllMap[E]`. A service literally named `*` can no longer be injected through a struct tag, and `*` on any other field kind is an error.

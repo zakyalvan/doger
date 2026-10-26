@@ -72,7 +72,7 @@ Each was shown to fail with a temporary, uncommitted mutation:
 
 ## Group 48: integration
 
-### 48.1 benchmarks: NOT MET, open for review
+### 48.1 benchmarks: first measurement
 
 Interleaved comparison against the baseline commit `ed65bdc` (two test binaries, 10 alternating runs; `InvokeAlias`/`InvokeAs` re-run with 20):
 
@@ -115,3 +115,20 @@ Re-measured interleaved against `ed65bdc` (20 alternating runs):
 
 The remaining `InvokeAs` cost is the full scan of the nearest scope that deterministic selection needs; the benchmark registers 20 services in one scope, so the scope early-exit does not apply to it. Closing the gap further would need new cached state (for example an assignability index per scope, invalidated on registration, override and shutdown). 48.1 stays unchecked pending a decision.
 
+
+### 48.1 final measurement and decision (accepted, closed)
+
+Decision: accept the remaining `InvokeAs` cost and close 48.1. Before closing, `Provide` and `New` were re-measured to settle whether the earlier `Provide` +6.1% was real.
+
+Final interleaved comparison against `ed65bdc` (20 alternating runs, head `b4564de`):
+
+| Benchmark | time | B/op | allocs/op |
+|---|---|---|---|
+| InvokeAlias | -3.7% (p=0.017) | ~ | ~ |
+| InvokeAs | +9.2% (p=0.000), 1.169µs → 1.276µs | 937 → 961 | 11 → 9 |
+| Provide | ~ (p=0.758) | +0.18% | -0.09% |
+| New | +6.7% (p=0.000), 730ns → 779ns | 952 → 1232 | 13 → 11 (target met) |
+
+- `Provide` is `~`: the earlier +6.1% did not reproduce and was noise.
+- `New` meets the allocation target. Its time and bytes grow with the new `InjectorOpts` and `RootScope` fields (hook slices, phase state, incremental-start sets); the gate checks only allocs/op.
+- `InvokeAs` (+9.2%, about 0.1µs per call in a 20-service scope) is accepted: it is the cost of deterministic selection (S5), which must scan the whole nearest scope that has a match. It now allocates less than before. Closing the gap would need a cached assignability index, judged not worth its invalidation complexity. The cost is documented in the upgrade guide.
