@@ -101,6 +101,25 @@ Then the invocation returns an error matching ErrCircularDependency
 And its message contains "`app` -> `bus` -> `app`", naming the holder
 ```
 
+#### Scenario: A read while an outer provider runs records no edge
+```gherkin
+Given lazy "app", not an EventHandler, whose provider invokes "bus", then calls All() on bus's collection and keeps the member names
+And lazy "bus" implementing "EventHandler" whose provider stores c := InvokeCollection[EventHandler](i)
+And lazy "console" implementing "EventHandler"
+When the consumer invokes "app"
+Then the invocation returns nil error and "app" kept [console]
+And ExplainNamedService(root, "app") lists exactly the dependency bus
+```
+
+#### Scenario: A member built by such a read keeps the running chain
+```gherkin
+Given lazy "app" implementing "AppMarker", not an EventHandler, whose provider invokes "bus", calls All() on bus's collection, then invokes "member" and calls All() on member's collection
+And lazy "bus" implementing "EventHandler" whose provider stores InvokeCollection[EventHandler](i)
+And lazy "member" implementing "EventHandler" whose provider stores InvokeCollection[AppMarker](i)
+When the consumer invokes "app" within 1s
+Then the invocation returns an error matching ErrCircularDependency
+```
+
 #### Scenario: A read while the holder's provider runs
 ```gherkin
 Given lazy "console" implementing "EventHandler"
