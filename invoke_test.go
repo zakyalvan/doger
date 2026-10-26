@@ -1054,3 +1054,70 @@ func TestInvokeStruct_ImplicitAliasingDeterministic(t *testing.T) {
 		assert.Equal(t, "b", value.G.Greet())
 	}
 }
+
+type (
+	// shadowStore is implemented by shadowPG only.
+	shadowStore interface{ store() }
+	shadowPG    struct{ scope string }
+
+	shadowStruct struct {
+		S shadowStore `do:""`
+	}
+)
+
+func (*shadowPG) store() {}
+
+func TestInvokeAs_Shadowing(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		childDB func(child *Scope)
+		check   func(t *testing.T, child *Scope)
+	}{
+		{
+			name:    "string child db, InvokeAs",
+			childDB: func(child *Scope) { ProvideNamedValue(child, "db", "a string") },
+			check: func(t *testing.T, child *Scope) {
+				t.Helper()
+				_, err := InvokeAs[shadowStore](child)
+				assert.ErrorIs(t, err, ErrServiceNotMatch)
+			},
+		},
+		{
+			name:    "string child db, InvokeStruct",
+			childDB: func(child *Scope) { ProvideNamedValue(child, "db", "a string") },
+			check: func(t *testing.T, child *Scope) {
+				t.Helper()
+				_, err := InvokeStruct[shadowStruct](child)
+				assert.ErrorIs(t, err, ErrServiceNotFound)
+			},
+		},
+		{
+			name: "Store child db, InvokeAs",
+			childDB: func(child *Scope) {
+				ProvideNamed(child, "db", func(Injector) (*shadowPG, error) { return &shadowPG{scope: "request"}, nil })
+			},
+			check: func(t *testing.T, child *Scope) {
+				t.Helper()
+				store, err := InvokeAs[shadowStore](child)
+				assert.NoError(t, err)
+				assert.Equal(t, &shadowPG{scope: "request"}, store)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+
+			root := New()
+			ProvideNamed(root, "db", func(Injector) (*shadowPG, error) { return &shadowPG{scope: "[root]"}, nil })
+			child := root.Scope("request")
+			tt.childDB(child)
+
+			tt.check(t, child)
+		})
+	}
+}

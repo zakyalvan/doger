@@ -417,6 +417,7 @@ type detachedInjector struct {
 func selectByType(injector Injector, target reflect.Type) (collectionCandidate, bool) {
 	var selected collectionCandidate
 	var found bool
+	from := injectorScope(injector)
 
 	injector.serviceForEachRec(func(name string, scope *Scope, s any) bool {
 		// scopes come nearest first, each one whole: once a scope had a match,
@@ -430,6 +431,11 @@ func selectByType(injector Injector, target reflect.Type) (collectionCandidate, 
 			return true
 		}
 
+		// a nearer service of the same name hides this one, as for collections
+		if shadowedBetween(from, scope, name) {
+			return true
+		}
+
 		regIndex := service.getRegistrationIndex()
 		if !found || cmp.Or(cmp.Compare(regIndex, selected.regIndex), cmp.Compare(name, selected.name)) < 0 {
 			selected = collectionCandidate{name: name, scope: scope, regIndex: regIndex, service: s}
@@ -439,6 +445,18 @@ func selectByType(injector Injector, target reflect.Type) (collectionCandidate, 
 	})
 
 	return selected, found
+}
+
+// shadowedBetween reports whether a scope from from up to, but not
+// including, its ancestor to registers name, hiding to's service.
+func shadowedBetween(from, to *Scope, name string) bool {
+	for scope := from; scope != nil && scope != to; scope = scope.parentScope {
+		if scope.serviceExist(name) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // scopeDepth returns the number of ancestors of scope, 0 for nil.

@@ -36,7 +36,7 @@ Then the result is <result>
 Examples:
   | child_db                     | call                                                    | result                                           |
   | the value "a string"         | InvokeAs[Store]                                          | an error matching ErrServiceNotMatch             |
-  | the value "a string"         | InvokeStruct for a struct with field `S Store \`do:""\`` | an error matching ErrServiceNotMatch             |
+  | the value "a string"         | InvokeStruct for a struct with field `S Store \`do:""\`` | an error matching ErrServiceNotFound, as when no service implements Store |
   | lazy "db" implementing Store | InvokeAs[Store]                                          | the child's "db"                                 |
 ```
 
