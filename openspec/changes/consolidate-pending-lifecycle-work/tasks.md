@@ -162,9 +162,9 @@ Rules:
 
 ## 23. Empty results, failure semantics and MustInvokeAll (Part K)
 
-- [ ] 23.1 RED: add `TestInvokeAll_Empty` (scenario "Empty results", `InvokeAll` rows), `TestInvokeAll_MemberFailure` (scenario "Member failure modes", 3 rows), and `TestMustInvokeAll_Panics` / `TestMustInvokeAll_Success` (scenarios "Must variants panic with the same error" / "Must variants return the collection on success", `MustInvokeAll` rows); verify `go test -race -run 'TestInvokeAll_(Empty|MemberFailure)|TestMustInvokeAll_(Panics|Success)' .` fails to compile only on `MustInvokeAll`, then on the nil-vs-empty and member-name assertions
-- [ ] 23.2 GREEN: return `[]T{}` on no match, wrap the first member error as ``DI: could not invoke collection member `%s`: %w`` and add `MustInvokeAll` via `must1` (design D3, D6, D7); verify the 23.1 command passes and `make test` is green
-- [ ] 23.3 REFACTOR: *Extract Function* `wrapMemberError(name string, err error) error`; verify `make test` and `make lint` pass
+- [x] 23.1 RED: add `TestInvokeAll_Empty` (scenario "Empty results", `InvokeAll` rows), `TestInvokeAll_MemberFailure` (scenario "Member failure modes", 3 rows), and `TestMustInvokeAll_Panics` / `TestMustInvokeAll_Success` (scenarios "Must variants panic with the same error" / "Must variants return the collection on success", `MustInvokeAll` rows); verify `go test -race -run 'TestInvokeAll_(Empty|MemberFailure)|TestMustInvokeAll_(Panics|Success)' .` fails to compile only on `MustInvokeAll`, then on the nil-vs-empty and member-name assertions
+- [x] 23.2 GREEN: return `[]T{}` on no match, wrap the first member error as ``DI: could not invoke collection member `%s`: %w`` and add `MustInvokeAll` via `must1` (design D3, D6, D7); verify the 23.1 command passes and `make test` is green
+- [x] 23.3 REFACTOR: *Extract Function* `wrapMemberError(name string, err error) error`; verify `make test` and `make lint` pass
 
 ## 24. Name-keyed collection (InvokeAllMap) (Part K)
 

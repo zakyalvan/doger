@@ -229,7 +229,7 @@ func invokeAllByGenericType[T any](i Injector) ([]T, error) {
 	for _, candidate := range candidates {
 		instance, err := invokeServiceInstance(injector, vScope, candidate.name, candidate.name, candidate.scope, candidate.service)
 		if err != nil {
-			return nil, err
+			return nil, wrapMemberError(candidate.name, err)
 		}
 
 		typed, _ := instance.(T)
@@ -237,6 +237,11 @@ func invokeAllByGenericType[T any](i Injector) ([]T, error) {
 	}
 
 	return result, nil
+}
+
+// wrapMemberError names the collection member whose build failed.
+func wrapMemberError(name string, err error) error {
+	return fmt.Errorf("DI: could not invoke collection member `%s`: %w", name, err)
 }
 
 // collectionCandidate is a member of a collection, before it is built.

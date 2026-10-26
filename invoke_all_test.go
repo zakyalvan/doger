@@ -2,6 +2,7 @@ package doger
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"sync/atomic"
 	"testing"
@@ -314,4 +315,142 @@ func TestInvokeAll_AliasExcluded(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, handlers, 1)
 	assert.Same(t, audit, handlers[0])
+}
+
+// collectionLen calls one collection function for EventHandler and returns
+// whether the result is nil, its length and the error.
+type collectionCall struct {
+	name string
+	call func(Injector) (isNil bool, length int, err error)
+}
+
+var invokeAllCall = collectionCall{name: "InvokeAll", call: func(i Injector) (bool, int, error) {
+	handlers, err := InvokeAll[EventHandler](i)
+	return handlers == nil, len(handlers), err
+}}
+
+func TestInvokeAll_Empty(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		function collectionCall
+		register func(*RootScope)
+	}{
+		{name: "InvokeAll_no_services", function: invokeAllCall, register: func(*RootScope) {}},
+		{name: "InvokeAll_only_db", function: invokeAllCall, register: func(root *RootScope) {
+			ProvideNamed(root, "db", func(Injector) (*sql.DB, error) { return &sql.DB{}, nil })
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+			is := assert.New(t)
+
+			root := New()
+			tt.register(root)
+
+			isNil, length, err := tt.function.call(root)
+
+			is.NoError(err)
+			is.False(isNil, "the result is non-nil")
+			is.Zero(length)
+		})
+	}
+}
+
+var (
+	errAuditDown  = errors.New("service down")
+	errAuditPanic = errors.New("kaboom")
+)
+
+func TestInvokeAll_MemberFailure(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		provider func(i Injector) (*AuditHandler, error)
+		cause    error
+	}{
+		{name: "returns an error", provider: func(Injector) (*AuditHandler, error) { return nil, errAuditDown }, cause: errAuditDown},
+		{name: "panics with an error", provider: func(Injector) (*AuditHandler, error) { panic(errAuditPanic) }, cause: errAuditPanic},
+		{name: "invokes a missing service", provider: func(i Injector) (*AuditHandler, error) {
+			_, err := InvokeNamed[int](i, "missing")
+			return nil, err
+		}, cause: ErrServiceNotFound},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+			is := assert.New(t)
+
+			root := New()
+			provideHandler(root, "console", newConsole)
+			ProvideNamed(root, "audit", tt.provider)
+
+			handlers, err := InvokeAll[EventHandler](root)
+
+			is.Nil(handlers)
+			is.ErrorContains(err, "collection member `audit`")
+			is.ErrorIs(err, tt.cause)
+		})
+	}
+}
+
+// mustCollectionCall calls one Must collection function for EventHandler
+// and returns the length of its result.
+type mustCollectionCall struct {
+	name string
+	call func(Injector) int
+}
+
+var mustInvokeAllCall = mustCollectionCall{name: "MustInvokeAll", call: func(i Injector) int {
+	return len(MustInvokeAll[EventHandler](i))
+}}
+
+func TestMustInvokeAll_Panics(t *testing.T) {
+	t.Parallel()
+
+	for _, function := range []mustCollectionCall{mustInvokeAllCall} {
+		t.Run(function.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+
+			root := New()
+			ProvideNamed(root, "audit", func(Injector) (*AuditHandler, error) { return nil, errAuditDown })
+
+			var recovered any
+			func() {
+				defer func() { recovered = recover() }()
+				function.call(root)
+			}()
+
+			err, ok := recovered.(error)
+			require.True(t, ok, "the call panics with an error")
+			assert.ErrorIs(t, err, errAuditDown)
+		})
+	}
+}
+
+func TestMustInvokeAll_Success(t *testing.T) {
+	t.Parallel()
+
+	for _, function := range []mustCollectionCall{mustInvokeAllCall} {
+		t.Run(function.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+
+			root := New()
+			provideHandler(root, "console", newConsole)
+			provideHandler(root, "audit", newAudit)
+
+			var length int
+			assert.NotPanics(t, func() { length = function.call(root) })
+			assert.Equal(t, 2, length)
+		})
+	}
 }

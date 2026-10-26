@@ -626,6 +626,11 @@ func MustAsNamed[Initial any, Alias any](i Injector, initial string, alias strin
 // T, so services of other types are never built. Eager values are members
 // as is. Beware InvokeAll[any]: every service matches, so every one is built.
 //
+// With no match, InvokeAll returns an empty, non-nil slice and a nil error,
+// never ErrServiceNotFound. When a member fails to build, it returns nil and
+// an error naming the member and wrapping its cause; members built before
+// it stay built.
+//
 // Visibility follows scope ancestry: services of the invoking scope and of
 // its ancestors, never of siblings or children. When a name exists in
 // several of these scopes, only the nearest service is considered, even if
@@ -641,6 +646,12 @@ func MustAsNamed[Initial any, Alias any](i Injector, initial string, alias strin
 // result outside hot loops.
 func InvokeAll[T any](i Injector) ([]T, error) {
 	return invokeAllByGenericType[T](i)
+}
+
+// MustInvokeAll is like [InvokeAll] but panics with the error InvokeAll
+// would return.
+func MustInvokeAll[T any](i Injector) []T {
+	return must1(InvokeAll[T](i))
 }
 
 /////////////////////////////////////////////////////////////////////////////

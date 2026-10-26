@@ -31,3 +31,9 @@ Each was shown to fail with a temporary, uncommitted mutation:
 - 12.2 asks to copy `HookContainerPanic` in `copy()`, but the field is added by group 13; it is copied there, pinned by `TestContainerHooks_ClonePanicPolicy`.
 - 15.1 tests passed on arrival through the start-lifecycle CAS guards; replacing the close-phase CAS in `beginClose` with an unconditional store panics `TestContainerHooks_ConcurrentShutdown` (close of closed channel).
 - 15.3 gopls review: `lifecycleMu` is locked in `waitForClose`, `beginClose`, `finishClose`, `markReady`, `beginStart` and `finishStart` only. Each is a short critical section with a deferred unlock that calls no hook, provider, Starter or handler.
+
+## Part K: collections
+
+- 20.1 `TestInvokeAs_HookReceivesTypeName` passes on arrival (characterization); passing the real name to `onBeforeInvocation` in `invokeByGenericType` fails it.
+- 22.1 `TestInvokeAll_ProviderScopeVisibility` passes on arrival through `virtualScope` delegation; registering "b" in the root scope fails it.
+- 23.1 the `InvokeAll` rows of `TestInvokeAll_Empty` pass on arrival: the group 21 pipeline already allocates its result with `make([]T, 0, n)`. A nil result fails them.
