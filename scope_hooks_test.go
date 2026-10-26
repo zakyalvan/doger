@@ -157,9 +157,13 @@ func TestScopeStartedHook_SkippedWhileClosing(t *testing.T) {
 	tests := []struct {
 		name    string
 		closing string // the scope whose shutdown is held in its Closing hook
+		// the shutdown begins from a Starting hook of the scope, after the
+		// Starting check and before the run claims its services
+		fromStartingHook bool
 	}{
 		{name: "the scope itself", closing: "tenant"},
 		{name: "its parent", closing: "parent"},
+		{name: "the scope itself, from its Starting hook", closing: "tenant", fromStartingHook: true},
 	}
 
 	for _, tt := range tests {
@@ -171,7 +175,22 @@ func TestScopeStartedHook_SkippedWhileClosing(t *testing.T) {
 			entered := make(chan struct{})
 			release := make(chan struct{})
 			var started atomic.Int32
+			shutdownDone := make(chan struct{})
+			var shuttingDown *Scope
+			shutDown := func() {
+				go func() {
+					defer close(shutdownDone)
+					shuttingDown.Shutdown()
+				}()
+				<-entered
+			}
 			root := New()
+			if tt.fromStartingHook {
+				root.AddScopeStartingHook(func(context.Context, *Scope) error {
+					shutDown()
+					return nil
+				})
+			}
 			root.AddScopeStartedHook(func(context.Context, *Scope) { started.Add(1) })
 			root.AddScopeClosingHook(func(_ context.Context, scope *Scope) {
 				if scope.Name() == tt.closing {
@@ -185,14 +204,11 @@ func TestScopeStartedHook_SkippedWhileClosing(t *testing.T) {
 			errUnused := errors.New("unused")
 			w := &flakyStarter{err: errUnused}
 			provideLazy(tenant, "w", w)
-			shuttingDown := map[string]*Scope{"parent": parent, "tenant": tenant}[tt.closing]
+			shuttingDown = map[string]*Scope{"parent": parent, "tenant": tenant}[tt.closing]
 
-			shutdownDone := make(chan struct{})
-			go func() {
-				defer close(shutdownDone)
-				shuttingDown.Shutdown()
-			}()
-			<-entered
+			if !tt.fromStartingHook {
+				shutDown()
+			}
 
 			is.NoError(tenant.Start())
 
