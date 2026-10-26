@@ -21,19 +21,22 @@ import (
 //
 // Returns a fully initialized Scope with all internal fields set to their default values.
 func newScope(name string, root *RootScope, parent *Scope) *Scope {
-	return &Scope{
-		id:          must1(newUUID()),
-		name:        name,
-		rootScope:   root,
-		parentScope: parent,
-		childScopes: map[string]*Scope{},
+	s := &Scope{}
+	initScope(s, name, root, parent)
 
-		mu:       sync.RWMutex{},
-		services: make(map[string]any),
+	return s
+}
 
-		orderedInvocation:      map[string]int{},
-		orderedInvocationIndex: 0,
-	}
+// initScope initializes the zero Scope s in place, so that a RootScope can
+// hold its own scope in the same allocation.
+func initScope(s *Scope, name string, root *RootScope, parent *Scope) {
+	s.id = must1(newUUID())
+	s.name = name
+	s.rootScope = root
+	s.parentScope = parent
+	s.childScopes = map[string]*Scope{}
+	s.services = make(map[string]any)
+	s.orderedInvocation = map[string]int{}
 }
 
 // Ensure Scope implements the Injector interface at compile time.

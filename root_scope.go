@@ -72,13 +72,14 @@ func NewWithOpts(opts *InjectorOpts, packages ...func(Injector)) *RootScope {
 	opts.initDefaults()
 
 	root := &RootScope{
-		self:            newScope(DefaultRootScopeName, nil, nil),
 		opts:            opts,
-		dag:             newDAG(),
 		healthCheckPool: nil,
 		kinds:           defaultKinds,
 	}
-	root.self.rootScope = root
+	initScope(&root.selfStorage, DefaultRootScopeName, root, nil)
+	root.self = &root.selfStorage
+	initDAG(&root.dagStorage)
+	root.dag = &root.dagStorage
 
 	if opts.HealthCheckParallelism > 0 {
 		root.healthCheckPool = newJobPool[error](opts.HealthCheckParallelism)
@@ -138,6 +139,11 @@ type RootScope struct {
 	startedMu  sync.Mutex                   // guards started and handled; never held across user code
 	started    map[any]struct{}             // Starters already started, keyed by wrapper
 	handled    map[any]map[*kindID]struct{} // kinds already handled, by wrapper
+
+	// selfStorage and dagStorage hold self and dag in the container's own
+	// allocation; use self and dag. A clone points self at its cloned scope.
+	selfStorage Scope
+	dagStorage  DAG
 }
 
 // closePhase is the shutdown state of a root container.

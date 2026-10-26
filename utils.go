@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"reflect"
 	"slices"
 	"sync"
@@ -139,8 +138,8 @@ func coalesce[T comparable](v ...T) T {
 
 // https://gist.github.com/rkravchik/d9733e1d2d626188eb91df751471d739
 func newUUID() (string, error) {
-	uuid := make([]byte, 16)
-	n, err := io.ReadFull(rand.Reader, uuid)
+	var uuid [16]byte
+	n, err := rand.Read(uuid[:])
 	if n != len(uuid) || err != nil {
 		return "", err
 	}

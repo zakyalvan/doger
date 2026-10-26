@@ -89,11 +89,17 @@ func (s *DependencySource) UnmarshalText(text []byte) error {
 //
 // Returns a new DAG instance ready for dependency tracking.
 func newDAG() *DAG {
-	return &DAG{
-		mu:           sync.RWMutex{},
-		dependencies: map[ServiceDescription]map[ServiceDescription]DependencySource{},
-		dependents:   map[ServiceDescription]map[ServiceDescription]DependencySource{},
-	}
+	d := &DAG{}
+	initDAG(d)
+
+	return d
+}
+
+// initDAG initializes the zero DAG d in place, so that a RootScope can hold
+// its graph in the same allocation.
+func initDAG(d *DAG) {
+	d.dependencies = map[ServiceDescription]map[ServiceDescription]DependencySource{}
+	d.dependents = map[ServiceDescription]map[ServiceDescription]DependencySource{}
 }
 
 // DAG represents a Directed Acyclic Graph of services, tracking dependencies and dependents.
