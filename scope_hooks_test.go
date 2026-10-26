@@ -533,6 +533,8 @@ func TestScopeStartedHook_PanicDefault(t *testing.T) {
 	root := New()
 	require.NoError(t, root.Start())
 	tenant := root.Scope("tenant")
+	rec := &callRecorder{}
+	provideBuiltScopeShutdowner(t, tenant, rec)
 	starts := &countingStarters{}
 	provideCountedStarter(tenant, starts, "worker")
 	var second atomic.Int32
@@ -543,6 +545,7 @@ func TestScopeStartedHook_PanicDefault(t *testing.T) {
 
 	is.Equal(int32(1), second.Load(), "the second Started hook ran before the panic was re-raised")
 	is.Equal(1, starts.count("worker"))
+	is.Zero(countOf(rec.list(), "shutdown tenant"), "svc had Shutdown called")
 }
 
 // TestScopeHooks_ObserverPanicThroughParent pins that a child scope hook
