@@ -139,109 +139,6 @@ func TestCollection_AfterProviderReturned(t *testing.T) {
 	}
 }
 
-func TestCollection_ReadDuringOuterProvider(t *testing.T) {
-	t.Parallel()
-	testWithTimeout(t, time.Second)
-
-	root := New()
-	ProvideNamed(root, "app", func(i Injector) (*ConsoleHandler, error) {
-		bus, err := InvokeNamed[*busHandler](i, "bus")
-		if err != nil {
-			return nil, err
-		}
-		if _, err := bus.peers.All(nil); err != nil {
-			return nil, err
-		}
-		return newConsole("app"), nil
-	})
-	ProvideNamed(root, "bus", func(i Injector) (*busHandler, error) {
-		return &busHandler{handlerBase: handlerBase{"bus"}, peers: InvokeCollection[EventHandler](i)}, nil
-	})
-
-	_, err := InvokeNamed[*ConsoleHandler](root, "app")
-
-	assert.ErrorIs(t, err, ErrCircularDependency)
-	// the holder "bus" sits between the running "app" and the member "app"
-	assert.ErrorContains(t, err, "`app` -> `bus` -> `app`")
-}
-
-func TestCollection_DetachedReadRecordsNoEdge(t *testing.T) {
-	t.Parallel()
-	testWithTimeout(t, time.Second)
-
-	root := New()
-	// app is not an EventHandler, so the read succeeds while it runs
-	ProvideNamed(root, "app", func(i Injector) (*Bus, error) {
-		bus, err := InvokeNamed[*busHandler](i, "bus")
-		if err != nil {
-			return nil, err
-		}
-		handlers, err := bus.peers.All(nil)
-		if err != nil {
-			return nil, err
-		}
-		return &Bus{names: handlerNames(handlers)}, nil
-	})
-	ProvideNamed(root, "bus", func(i Injector) (*busHandler, error) {
-		return &busHandler{handlerBase: handlerBase{"bus"}, peers: InvokeCollection[EventHandler](i)}, nil
-	})
-	provideHandler(root, "console", newConsole)
-
-	app, err := InvokeNamed[*Bus](root, "app")
-
-	require.NoError(t, err)
-	assert.Equal(t, []string{"console"}, app.names)
-	assert.Equal(t, []string{"bus"}, explainedNames(t, root, "app", false))
-}
-
-// appMarker is implemented by appService only.
-type (
-	appMarker   interface{ appMarker() }
-	appService  struct{}
-	appsHandler struct {
-		handlerBase
-		apps Collection[appMarker]
-	}
-)
-
-func (*appService) appMarker() {}
-
-func TestCollection_DetachedReadKeepsRunningChain(t *testing.T) {
-	t.Parallel()
-	testWithTimeout(t, time.Second)
-
-	root := New()
-	ProvideNamed(root, "app", func(i Injector) (*appService, error) {
-		bus, err := InvokeNamed[*busHandler](i, "bus")
-		if err != nil {
-			return nil, err
-		}
-		// builds "member" through a detached read, since bus returned
-		if _, err := bus.peers.All(nil); err != nil {
-			return nil, err
-		}
-		member, err := InvokeNamed[*appsHandler](i, "member")
-		if err != nil {
-			return nil, err
-		}
-		// app is still running: reading it must fail, not wait for itself
-		if _, err := member.apps.All(nil); err != nil {
-			return nil, err
-		}
-		return &appService{}, nil
-	})
-	ProvideNamed(root, "bus", func(i Injector) (*busHandler, error) {
-		return &busHandler{handlerBase: handlerBase{"bus"}, peers: InvokeCollection[EventHandler](i)}, nil
-	})
-	ProvideNamed(root, "member", func(i Injector) (*appsHandler, error) {
-		return &appsHandler{handlerBase: handlerBase{"member"}, apps: InvokeCollection[appMarker](i)}, nil
-	})
-
-	_, err := InvokeNamed[*appService](root, "app")
-
-	assert.ErrorIs(t, err, ErrCircularDependency)
-}
-
 func TestCollection_HolderAfterSiblings(t *testing.T) {
 	t.Parallel()
 
@@ -476,7 +373,7 @@ func TestCollection_ReadDuringHolderProvider(t *testing.T) {
 	var read []string
 	ProvideNamed(root, "bus", func(i Injector) (*busHandler, error) {
 		peers := InvokeCollection[EventHandler](i)
-		handlers, err := peers.All(nil)
+		handlers, err := peers.All(i)
 		read = handlerNames(handlers)
 		return &busHandler{handlerBase: handlerBase{"bus"}, peers: peers}, err
 	})
@@ -502,4 +399,210 @@ func TestCollection_NilInjector(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, []string{"console"}, handlerNames(handlers))
+}
+
+// provideBus registers lazy "bus", an EventHandler holding a live collection
+// of its peers, in scope.
+func provideBus(scope Injector) {
+	ProvideNamed(scope, "bus", func(i Injector) (*busHandler, error) {
+		return &busHandler{handlerBase: handlerBase{"bus"}, peers: InvokeCollection[EventHandler](i)}, nil
+	})
+}
+
+// namesHandler is an EventHandler keeping the member names it read.
+type namesHandler struct {
+	handlerBase
+	names []string
+}
+
+func TestCollection_ReaderInjector(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		handler bool // "app" implements EventHandler
+	}{
+		{name: "app is not an EventHandler"},
+		{name: "app implements EventHandler", handler: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+			is := assert.New(t)
+
+			root := New()
+			provideHandler(root, "console", newConsole)
+			provideBus(root)
+			read := func(i Injector) ([]string, error) {
+				bus, err := InvokeNamed[*busHandler](i, "bus")
+				if err != nil {
+					return nil, err
+				}
+				// the provider reads with its own injector
+				handlers, err := bus.peers.All(i)
+				return handlerNames(handlers), err
+			}
+			if tt.handler {
+				ProvideNamed(root, "app", func(i Injector) (*namesHandler, error) {
+					names, err := read(i)
+					return &namesHandler{handlerBase: handlerBase{"app"}, names: names}, err
+				})
+			} else {
+				ProvideNamed(root, "app", func(i Injector) (*Bus, error) {
+					names, err := read(i)
+					return &Bus{names: names}, err
+				})
+			}
+
+			var kept []string
+			var err error
+			if tt.handler {
+				var app *namesHandler
+				app, err = InvokeNamed[*namesHandler](root, "app")
+				if app != nil {
+					kept = app.names
+				}
+			} else {
+				var app *Bus
+				app, err = InvokeNamed[*Bus](root, "app")
+				if app != nil {
+					kept = app.names
+				}
+			}
+
+			is.NoError(err)
+			is.Equal([]string{"console"}, kept)
+			is.Equal([]string{"bus", "console"}, explainedNames(t, root, "app", false))
+		})
+	}
+}
+
+func TestCollection_ReadWithNilRecordsNoEdge(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	provideHandler(root, "console", newConsole)
+	provideBus(root)
+	ProvideNamed(root, "app", func(i Injector) (*Bus, error) {
+		bus, err := InvokeNamed[*busHandler](i, "bus")
+		if err != nil {
+			return nil, err
+		}
+		handlers, err := bus.peers.All(nil)
+		return &Bus{names: handlerNames(handlers)}, err
+	})
+
+	app, err := InvokeNamed[*Bus](root, "app")
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"console"}, app.names)
+	assert.Equal(t, []string{"bus"}, explainedNames(t, root, "app", false))
+}
+
+func TestCollection_GoroutineReadDuringOuterProvider(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+	is := assert.New(t)
+
+	root := New()
+	provideBus(root)
+	busBuilt, release := make(chan *busHandler, 1), make(chan struct{})
+	ProvideNamed(root, "app", func(i Injector) (*ConsoleHandler, error) {
+		bus, err := InvokeNamed[*busHandler](i, "bus")
+		if err != nil {
+			return nil, err
+		}
+		busBuilt <- bus
+		<-release
+		return newConsole("app"), nil
+	})
+	appErr := make(chan error, 1)
+	go func() {
+		_, err := InvokeNamed[*ConsoleHandler](root, "app")
+		appErr <- err
+	}()
+	bus := <-busBuilt
+
+	// a goroutine outside the build chain reads while "app" runs
+	type result struct {
+		names []string
+		err   error
+	}
+	read := make(chan result, 1)
+	go func() {
+		handlers, err := bus.peers.All(nil)
+		read <- result{names: handlerNames(handlers), err: err}
+	}()
+	var got result
+	select {
+	case got = <-read: // returned while "app" was still running
+		close(release)
+	case <-time.After(100 * time.Millisecond):
+		close(release)
+		got = <-read
+	}
+
+	is.NoError(<-appErr)
+	is.NoError(got.err)
+	is.Equal([]string{"app"}, got.names)
+}
+
+func TestCollection_MemberProviderReads(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		helper  bool // console reads through lazy "helper" instead of itself
+		wantErr error
+		kept    []string
+	}{
+		{name: "the member reads with its own injector", kept: []string{"audit"}},
+		{name: "a provider deeper in the member's chain reads", helper: true, wantErr: ErrCircularDependency},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+			is := assert.New(t)
+
+			root := New()
+			provideBus(root)
+			provideHandler(root, "audit", newAudit)
+			bus, err := InvokeNamed[*busHandler](root, "bus")
+			require.NoError(t, err)
+			readPeers := func(i Injector) ([]string, error) {
+				handlers, err := bus.peers.All(i)
+				return handlerNames(handlers), err
+			}
+			ProvideNamed(root, "helper", func(i Injector) (*Bus, error) {
+				names, err := readPeers(i)
+				return &Bus{names: names}, err
+			})
+			ProvideNamed(root, "console", func(i Injector) (*namesHandler, error) {
+				if tt.helper {
+					helper, err := InvokeNamed[*Bus](i, "helper")
+					if err != nil {
+						return nil, err
+					}
+					return &namesHandler{handlerBase: handlerBase{"console"}, names: helper.names}, nil
+				}
+				names, err := readPeers(i)
+				return &namesHandler{handlerBase: handlerBase{"console"}, names: names}, err
+			})
+
+			console, err := InvokeNamed[*namesHandler](root, "console")
+
+			if tt.wantErr != nil {
+				is.ErrorIs(err, tt.wantErr)
+				is.ErrorContains(err, "`console`")
+				return
+			}
+			require.NoError(t, err)
+			is.Equal(tt.kept, console.names)
+		})
+	}
 }

@@ -187,10 +187,24 @@ func invokeServiceInstance(injector Injector, vScope *virtualScope, hookName, re
 	return instance, nil
 }
 
+// collectionSource is where a collection read finds and builds its members.
+type collectionSource struct {
+	from   Injector      // the members are the services visible from it
+	reader *virtualScope // the reading provider's scope, or nil: its build chain, self-exclusion and edges apply
+	holder string        // excluded too, when not empty: the service holding a live collection
+}
+
+// collectionFrom returns the source of a collection invoked from injector:
+// visible from it, and built through it.
+func collectionFrom(injector Injector) collectionSource {
+	reader, _ := injector.(*virtualScope)
+	return collectionSource{from: injector, reader: reader}
+}
+
 // invokeAllByGenericType invokes every collection member for T, in
 // collection order.
-func invokeAllByGenericType[T any](i Injector) ([]T, error) {
-	members, err := invokeCollection(getInjectorOrDefault(i), reflect.TypeFor[T](), true)
+func invokeAllByGenericType[T any](source collectionSource) ([]T, error) {
+	members, err := invokeCollection(source, reflect.TypeFor[T](), true)
 	if err != nil {
 		return nil, err
 	}
@@ -211,13 +225,13 @@ type collectionMember struct {
 	order     int // set by the ordering pass of an ordered collection
 }
 
-// invokeCollection builds the members of the collection for target, visible
-// from injector, in default order. When ordered is true, a separate stable
-// pass then sorts them by WithOrder or Order(), once every member is built.
-func invokeCollection(injector Injector, target reflect.Type, ordered bool) ([]collectionMember, error) {
-	candidates := collectionCandidatesFor(injector, target)
+// invokeCollection builds the members of the collection for target from
+// source, in default order. When ordered is true, a separate stable pass
+// then sorts them by WithOrder or Order(), once every member is built.
+func invokeCollection(source collectionSource, target reflect.Type, ordered bool) ([]collectionMember, error) {
+	candidates := collectionCandidatesFor(source, target)
 	members := make([]collectionMember, 0, len(candidates))
-	err := buildMembers(injector, candidates, func(candidate collectionCandidate, instance any) {
+	err := buildMembers(source, candidates, func(candidate collectionCandidate, instance any) {
 		members = append(members, collectionMember{candidate: candidate, instance: instance})
 	})
 	if err != nil {
@@ -270,8 +284,8 @@ func orderValue(name string, instance any, opts *serviceOptions) (order int, err
 
 // invokeAllMapByGenericType invokes every collection member for T, keyed
 // by name. Order() is never called.
-func invokeAllMapByGenericType[T any](i Injector) (map[string]T, error) {
-	members, err := invokeCollection(getInjectorOrDefault(i), reflect.TypeFor[T](), false)
+func invokeAllMapByGenericType[T any](source collectionSource) (map[string]T, error) {
+	members, err := invokeCollection(source, reflect.TypeFor[T](), false)
 	if err != nil {
 		return nil, err
 	}
@@ -285,16 +299,17 @@ func invokeAllMapByGenericType[T any](i Injector) (map[string]T, error) {
 	return result, nil
 }
 
-// buildMembers builds the candidates in order and passes each member to
-// add. It stops at the first failure, naming the member.
-func buildMembers(injector Injector, candidates []collectionCandidate, add func(candidate collectionCandidate, instance any)) error {
-	vScope, _ := injector.(*virtualScope)
-	if detached, ok := injector.(detachedInjector); ok {
-		vScope, _ = detached.Injector.(*virtualScope)
+// buildMembers builds the candidates in order, through the reader when
+// there is one, and passes each member to add. It stops at the first
+// failure, naming the member.
+func buildMembers(source collectionSource, candidates []collectionCandidate, add func(candidate collectionCandidate, instance any)) error {
+	injector := source.from
+	if source.reader != nil {
+		injector = source.reader
 	}
 
 	for _, candidate := range candidates {
-		instance, err := invokeServiceInstance(injector, vScope, candidate.name, candidate.name, candidate.scope, candidate.service)
+		instance, err := invokeServiceInstance(injector, source.reader, candidate.name, candidate.name, candidate.scope, candidate.service)
 		if err != nil {
 			return wrapMemberError(candidate.name, err)
 		}
@@ -341,20 +356,25 @@ func (p placement) compare(o placement) int {
 }
 
 // collectionCandidatesFor returns the members of a collection for target,
-// visible from injector: the nearest service of each name (even when it is
-// not assignable to target, it shadows its ancestors), without aliases and
-// without the service whose provider invokes the collection, whose
-// registered type is assignable to target.
-func collectionCandidatesFor(injector Injector, target reflect.Type) []collectionCandidate {
+// visible from source: the nearest service of each name (even when it is
+// not assignable to target, it shadows its ancestors), without aliases,
+// without the service whose provider reads the collection and without the
+// holder, whose registered type is assignable to target.
+func collectionCandidatesFor(source collectionSource, target reflect.Type) []collectionCandidate {
 	candidates := []collectionCandidate{}
 	seen := map[string]struct{}{}
 
-	// the service whose provider invokes the collection is not a member
-	if invoker, ok := invokingServiceName(injector); ok {
-		seen[invoker] = struct{}{}
+	// the service whose provider reads the collection is not a member
+	if source.reader != nil {
+		if invoker, ok := source.reader.getLastInvokerName(); ok {
+			seen[invoker] = struct{}{}
+		}
+	}
+	if source.holder != "" {
+		seen[source.holder] = struct{}{}
 	}
 
-	injector.serviceForEachRec(func(name string, scope *Scope, s any) bool {
+	source.from.serviceForEachRec(func(name string, scope *Scope, s any) bool {
 		if _, ok := seen[name]; ok {
 			return true
 		}
@@ -604,7 +624,7 @@ func injectCollectionField(injector Injector, structName string, field reflect.S
 
 	switch {
 	case fieldType.Kind() == reflect.Slice:
-		members, err := invokeCollection(injector, fieldType.Elem(), true)
+		members, err := invokeCollection(collectionFrom(injector), fieldType.Elem(), true)
 		if err != nil {
 			return err
 		}
@@ -615,7 +635,7 @@ func injectCollectionField(injector Injector, structName string, field reflect.S
 		}
 		fieldValue.Set(slice)
 	case fieldType.Kind() == reflect.Map && fieldType.Key() == reflect.TypeFor[string]():
-		members, err := invokeCollection(injector, fieldType.Elem(), false)
+		members, err := invokeCollection(collectionFrom(injector), fieldType.Elem(), false)
 		if err != nil {
 			return err
 		}

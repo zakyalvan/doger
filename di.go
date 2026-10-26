@@ -663,7 +663,7 @@ func MustAsNamed[Initial any, Alias any](i Injector, initial string, alias strin
 // members give a new instance on every call. Resolve once and keep the
 // result outside hot loops.
 func InvokeAll[T any](i Injector) ([]T, error) {
-	return invokeAllByGenericType[T](i)
+	return invokeAllByGenericType[T](collectionFrom(getInjectorOrDefault(i)))
 }
 
 // MustInvokeAll is like [InvokeAll] but panics with the error InvokeAll
@@ -676,7 +676,7 @@ func MustInvokeAll[T any](i Injector) []T {
 // name, under the same visibility, alias, self-exclusion, shadowing and
 // failure rules. With no match, it returns an empty, non-nil map.
 func InvokeAllMap[T any](i Injector) (map[string]T, error) {
-	return invokeAllMapByGenericType[T](i)
+	return invokeAllMapByGenericType[T](collectionFrom(getInjectorOrDefault(i)))
 }
 
 // MustInvokeAllMap is like [InvokeAllMap] but panics with the error

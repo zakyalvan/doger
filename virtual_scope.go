@@ -89,23 +89,6 @@ func chainTo(vScope *virtualScope, name string) []string {
 	return append(vScope.invokerChain(), name)
 }
 
-// runningChain returns, outermost first, the names of the providers above
-// vScope that are still running. Detached scopes only pass through.
-func runningChain(vScope *virtualScope) []string {
-	var names []string
-	for p := vScope.parent; p != nil; p = p.parent {
-		if p.detached || p.returned.Load() {
-			continue
-		}
-		if name, ok := p.getLastInvokerName(); ok {
-			names = append(names, name)
-		}
-	}
-	slices.Reverse(names)
-
-	return names
-}
-
 // pass through
 func (s *virtualScope) ID() string                                 { return s.self.ID() }
 func (s *virtualScope) Name() string                               { return s.self.Name() }
