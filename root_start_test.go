@@ -1658,3 +1658,67 @@ func TestStart_ParallelHooks(t *testing.T) {
 		is.Less(indexOf(events, "before "+name), indexOf(events, "after "+name))
 	}
 }
+
+// sleepyStarter sleeps 1s in Start, counting how many are inside Start.
+type sleepyStarter struct{ running *atomic.Int32 }
+
+func (s *sleepyStarter) Start() error {
+	s.running.Add(1)
+	defer s.running.Add(-1)
+	time.Sleep(time.Second)
+	return nil
+}
+
+func TestStart_ParallelHookPanic(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		n      uint
+		before bool
+	}{
+		{name: "n=1, HookBeforeStart", n: 1, before: true},
+		{name: "n=4, HookBeforeStart", n: 4, before: true},
+		{name: "n=4, HookAfterStart", n: 4, before: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				is := assert.New(t)
+
+				panicFor := func(name string) {
+					if name == "b" {
+						panic("hook-boom")
+					}
+				}
+				opts := &InjectorOpts{StartParallelism: tt.n}
+				if tt.before {
+					opts.HookBeforeStart = []func(*Scope, string){func(_ *Scope, name string) { panicFor(name) }}
+				} else {
+					opts.HookAfterStart = []func(*Scope, string, error){func(_ *Scope, name string, _ error) { panicFor(name) }}
+				}
+				root := NewWithOpts(opts)
+				var running atomic.Int32
+				for _, name := range []string{"a", "b", "c"} {
+					ProvideNamed(root, name, func(Injector) (*sleepyStarter, error) { return &sleepyStarter{running: &running}, nil })
+				}
+
+				var recovered any
+				var runningAtPanic int32
+				func() {
+					defer func() {
+						recovered = recover()
+						runningAtPanic = running.Load()
+					}()
+					_ = root.Start()
+				}()
+
+				is.Equal("hook-boom", recovered)
+				is.Zero(runningAtPanic, "Starters still inside Start when the panic was raised")
+				is.Equal(PhaseFailed, root.Phase())
+			})
+		})
+	}
+}

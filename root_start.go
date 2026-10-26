@@ -486,7 +486,9 @@ func (s *RootScope) startStarters(startCtx context.Context, candidates []*startC
 // startStartersParallel starts up to n Starters at a time, each once every
 // Starter it depends on has started, picking the ready one with the smallest
 // scope depth, then registration index. The first failure stops scheduling;
-// running Starters are awaited before it is returned. Every goroutine has
+// running Starters are awaited before it is returned. A panic in a
+// per-service hook stops scheduling too, and is re-raised on the calling
+// goroutine once the running Starters have returned. Every goroutine has
 // returned when it returns.
 func (s *RootScope) startStartersParallel(startCtx context.Context, candidates []*startCandidate, n int) error {
 	requires := s.dependencyRequirements(candidates)
@@ -499,13 +501,16 @@ func (s *RootScope) startStartersParallel(startCtx context.Context, candidates [
 	type outcome struct {
 		candidate *startCandidate
 		err       error
+		panicked  bool
+		recovered any
 	}
 	outcomes := make(chan outcome)
 	running := 0
 	var firstErr error
+	var firstPanic *outcome
 
 	for {
-		for firstErr == nil && running < n {
+		for firstErr == nil && firstPanic == nil && running < n {
 			ready := slices.IndexFunc(pending, func(c *startCandidate) bool {
 				return !slices.ContainsFunc(requires[c.desc()], func(d ServiceDescription) bool { return !started[d] })
 			})
@@ -520,15 +525,34 @@ func (s *RootScope) startStartersParallel(startCtx context.Context, candidates [
 			candidate := pending[ready]
 			pending = slices.Delete(pending, ready, ready+1)
 			running++
-			go func() { outcomes <- outcome{candidate: candidate, err: s.startCandidate(startCtx, candidate)} }()
+			go func() {
+				o := outcome{candidate: candidate, panicked: true}
+				defer func() {
+					if o.panicked {
+						o.recovered = recover()
+					}
+					outcomes <- o
+				}()
+				o.err = s.startCandidate(startCtx, candidate)
+				o.panicked = false
+			}()
 		}
 
 		if running == 0 {
+			if firstPanic != nil {
+				panic(firstPanic.recovered)
+			}
 			return firstErr
 		}
 
 		o := <-outcomes
 		running--
+		if o.panicked {
+			if firstPanic == nil {
+				firstPanic = &o
+			}
+			continue
+		}
 		if o.err != nil && firstErr == nil {
 			firstErr = o.err
 		}

@@ -354,9 +354,9 @@ Rules:
 
 ## 51. Parallel start re-raises hook panics on the caller (container-start; design V2)
 
-- [ ] 51.1 RED: add `TestStart_ParallelHookPanic` (3 rows) to `root_start_test.go`; verify `go test -race -run TestStart_ParallelHookPanic .` crashes the test binary with `panic: hook-boom` created by `startStartersParallel`
-- [ ] 51.2 GREEN: recover the per-service hook panic in the parallel worker, report it to the coordinator, stop dispatching, drain the running workers and re-panic the first value; verify the 51.1 command passes and `make test` is green
-- [ ] 51.3 REFACTOR: *Extract Function* for the worker body if `startStartersParallel` grows past the gocyclo limit; verify `make test` and `make lint` pass
+- [x] 51.1 RED: add `TestStart_ParallelHookPanic` (3 rows) to `root_start_test.go`; verify `go test -race -run TestStart_ParallelHookPanic .` crashes the test binary with `panic: hook-boom` created by `startStartersParallel`
+- [x] 51.2 GREEN: recover the per-service hook panic in the parallel worker, report it to the coordinator, stop dispatching, drain the running workers and re-panic the first value; verify the 51.1 command passes and `make test` is green
+- [x] 51.3 REFACTOR: *Extract Function* for the worker body if `startStartersParallel` grows past the gocyclo limit; verify `make test` and `make lint` pass
 
 ## 52. Incremental start fails fast while Start runs (container-start; design V3)
 
