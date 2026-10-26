@@ -90,7 +90,7 @@ injector := doger.NewWithOpts(&doger.InjectorOpts{
 
 ### Clock {#clock}
 
-`InjectorOpts.Clock` is the container's time source, a [`clockwork.Clock`](https://pkg.go.dev/github.com/jonboulle/clockwork#Clock). The container reads time only from it: the `HealthCheckTimeout` and `HealthCheckGlobalTimeout` deadlines, lazy service build times (`ServiceBuildTime` in explain output), and `ShutdownReport.ShutdownTime`/`ServiceShutdownTime`.
+`InjectorOpts.Clock` is the container's time source, a [`clockwork.Clock`](https://pkg.go.dev/github.com/jonboulle/clockwork#Clock). The container reads time only from it: the `HealthCheckTimeout`, `HealthCheckSingleTimeout` and `HealthCheckGlobalTimeout` deadlines, lazy service build times (`ServiceBuildTime` in explain output), and `ShutdownReport.ShutdownTime`/`ServiceShutdownTime`.
 
 - **Default:** `nil`, which means the real clock (`clockwork.NewRealClock()`).
 - **Override:** pass a fake clock to control time in tests, for example to reach a health-check timeout without waiting for it.

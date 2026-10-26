@@ -134,7 +134,7 @@ if err := root.Start(); err != nil {
 }
 ```
 
-Services must therefore tolerate `Shutdown` without a prior `Start`. A panic that escapes `Start` (for example from a hook) still marks the container as started, so a later `Shutdown()` never blocks on it.
+Services must therefore tolerate `Shutdown` without a prior `Start`. A panic that escapes `Start` (for example from a hook) still ends the one-shot `Start`: `Phase()` reports `failed`, a later `Start` returns `ErrAlreadyStarted`, and a later `Shutdown()` never blocks on it.
 
 ### StartError {#start-error}
 
@@ -154,7 +154,7 @@ if startErr, ok := errors.AsType[*doger.StartError](err); ok {
 }
 ```
 
-Errors that are not tied to a service are not `StartError` values: `ErrAlreadyStarted`, `ErrStartAfterShutdown`, a cancelled context and a dependency cycle.
+Errors that are not tied to a service are not `StartError` values: `ErrAlreadyStarted`, `ErrStartAfterShutdown`, a cancelled context and a cycle among the dependency edges checked before the build (for example from `DeclareDependency`). A cycle met while building a service, such as a circular `DependsOn`, is that service's build failure, so it is a `StartError`.
 
 ## Shutdown during Start {#shutdown-during-start}
 
@@ -218,7 +218,7 @@ doger.Provide(tenant, NewTenantSync)
 err := tenant.Start() // starts tenant-a and its child scopes only
 ```
 
-Services of ancestor scopes that the subtree depends on are built as needed, but `scope.Start` does not start them: `Refresh` does. On the root's own scope (for example the scope a root service's provider works with), `Start` behaves as `Refresh`. `scope.Start` follows the same rules as `Refresh`: `ErrNotStarted`, `ErrStartAfterShutdown`, at most once per service, and calls serialized with `Refresh`.
+Services of ancestor scopes that the subtree depends on are built as needed, but `scope.Start` does not start them: `Refresh` does. On the root's own `*Scope` (for example `Component.Scope` of a root service in a kind handler), `Start` behaves as `Refresh`. `scope.Start` follows the same rules as `Refresh`: `ErrNotStarted`, `ErrStartAfterShutdown`, at most once per service, and calls serialized with `Refresh`.
 
 ## Parallel start {#parallel-start}
 

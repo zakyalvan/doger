@@ -76,8 +76,8 @@ func (s *RootScope) Start() error {
 // Only [RootScope] methods are container-level: they fire the container
 // hooks and own the one-shot Start. [Scope.Start] starts a scope subtree
 // incrementally, as [RootScope.Refresh] does, once Start succeeded; on the
-// root's own *Scope (the injector a provider receives, or [Component.Scope]
-// of a root service) it is Refresh. A child scope's Shutdown waits for a run
+// root's own *Scope (for example [Component.Scope] of a root service) it is
+// Refresh. A child scope's Shutdown waits for a run
 // that is starting its services (see [Scope.ShutdownWithContext]); a
 // Shutdown reached through the root's own *Scope bypasses this
 // coordination.

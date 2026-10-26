@@ -151,7 +151,7 @@ handlers, err := bus.handlers.All(nil) // includes them
 
 **The reader's injector.** `r` is the injector of the code that reads:
 
-- **Inside a provider**, pass the provider's own injector. The read then behaves exactly like `InvokeAll` called from it: the provider's own service is excluded, its dependency on each member is recorded (so shutdown order follows the members), and a cycle through its build chain is reported as `ErrCircularDependency`.
+- **Inside a provider**, pass the provider's own injector. Members still come from the holder's scope, without the holder, but self-exclusion, edges and cycle detection then follow the provider, as for `InvokeAll` called from it: the provider's own service is excluded (by name), its dependency on each member is recorded (so shutdown order follows the members), and a cycle through its build chain is reported as `ErrCircularDependency`.
 - **Outside any provider**, pass `nil`. The read uses no build chain and records no dependency. If a member is being built by another goroutine, the read waits for that build.
 
 ```go

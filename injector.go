@@ -286,9 +286,10 @@ type InjectorOpts struct {
 	// This allows customization of the struct tag format for injection.
 	StructTagKey string
 
-	// Clock is the time source of the container. It measures HealthCheckTimeout
-	// and HealthCheckGlobalTimeout, lazy service build times, and shutdown
-	// durations. Child scopes and Clone use the root scope's clock.
+	// Clock is the time source of the container. It measures
+	// HealthCheckTimeout, HealthCheckSingleTimeout and HealthCheckGlobalTimeout,
+	// lazy service build times, and shutdown durations. Child scopes and Clone
+	// use the root scope's clock.
 	// Default: the real clock (clockwork.NewRealClock()).
 	// Set a clockwork.NewFakeClock() to control time in tests. A health check
 	// running on a fake clock must wait on ctx.Done(): ctx.Err() blocks on a

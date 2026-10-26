@@ -126,7 +126,7 @@ The result of a health check does not depend on goroutine scheduling:
 - The timeout error matches `doger.ErrHealthCheckTimeout` and the context error with `errors.Is`. Its message is `DI: health check timeout: context canceled` or `DI: health check timeout: context deadline exceeded`.
 - A check that returns before its context ends keeps its own result.
 - A service without a health check (a value without a `HealthCheck` method, a lazy service not invoked yet, a transient service) always reports `nil`, even on an ended context.
-- `HealthCheckTimeout` and `HealthCheckGlobalTimeout` are measured on the injector's [clock](../container/options.md#clock). A check that ends exactly when one of these timeouts elapses is a timeout. A deadline you set on your own context counts when that context is done.
+- `HealthCheckTimeout`, `HealthCheckSingleTimeout` and `HealthCheckGlobalTimeout` are measured on the injector's [clock](../container/options.md#clock). A check that ends exactly when one of these timeouts elapses is a timeout. A deadline you set on your own context counts when that context is done.
 
 ### Single-service checks {#single-service-checks}
 

@@ -136,7 +136,7 @@ These were not decided explicitly, so I chose and recorded them:
 3. `RootScope.Phase()`: a close phase dominates once Shutdown has begun.
 4. `HookAfterBuild` fires after every successful provider call (each transient instance included) and on an eager value's first successful invocation. Hook panics propagate, as with other per-service hooks.
 5. An edge recorded more than once keeps the strongest source: invoked > depends-on > declared.
-6. `Collection[T]` captures the invoking scope, so self-exclusion works as for `InvokeAll`. Edges are recorded only by reads made while the holder's provider runs; reads after it returned record none (V5).
+6. `Collection[T]` captures the holder's scope and name. Each read takes the reader's injector, so self-exclusion, edges and cycle detection follow the reader as for `InvokeAll`; a nil reader records no edge (V51, superseding V5).
 
 ## Defect
 
