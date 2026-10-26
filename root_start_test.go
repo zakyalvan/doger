@@ -373,6 +373,24 @@ func TestStart_LateRegistrationNotStarted(t *testing.T) {
 	is.Equal(int32(0), instance.starts.Load())
 }
 
+func TestStart_LateScopeNotStarted(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+	is := assert.New(t)
+
+	root := New()
+	require.NoError(t, root.Start())
+	tenant := root.Scope("tenant")
+	instance := provideCounted(tenant, "worker", &startWithErr{})
+	_, err := InvokeNamed[*startWithErr](tenant, "worker")
+	require.NoError(t, err)
+
+	is.Equal(int32(0), instance.starts.Load(), "a scope created after Start is not started by it")
+
+	is.NoError(root.Refresh())
+	is.Equal(int32(1), instance.starts.Load())
+}
+
 func TestStart_DependencyOrder(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, time.Second)
@@ -410,6 +428,42 @@ func TestStart_DependencyOrder(t *testing.T) {
 	}
 	is.Contains(recorded, "build repo")
 	is.Equal([]string{"start db", "start http", "start consumer"}, recorded[firstStart:])
+	started, _ := tracked(root, wrapperOf(t, root.self, "repo"))
+	is.False(started, "repo is built but, not being a Starter, not started")
+}
+
+func TestStartError_StarterPanic(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+
+	tests := []struct {
+		name        string
+		parallelism uint
+	}{
+		{name: "sequential", parallelism: 0},
+		{name: "StartParallelism 2", parallelism: 2},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+			is := assert.New(t)
+
+			root := NewWithOpts(&InjectorOpts{StartParallelism: tt.parallelism})
+			provideLazy(root, "a", &ctxStarter{fn: func(context.Context) error { panic(errBoom) }})
+			provideLazy(root, "b", &errorStarter{})
+
+			err := root.Start()
+
+			var startErr *StartError
+			require.ErrorAs(t, err, &startErr)
+			is.Equal(StartOpStart, startErr.Op)
+			is.Equal("a", startErr.Service)
+			is.ErrorIs(err, errBoom)
+		})
+	}
 }
 
 func TestStart_ScopeTraversal(t *testing.T) {

@@ -228,14 +228,53 @@ func TestAfterBuildHook_Scopes(t *testing.T) {
 
 func TestAfterBuildHook_Panic(t *testing.T) {
 	t.Parallel()
+
+	tests := []struct {
+		name     string
+		register func(root *RootScope)
+	}{
+		{name: "lazy", register: func(root *RootScope) {
+			ProvideNamed(root, "db", func(Injector) (*buildDB, error) { return &buildDB{}, nil })
+		}},
+		{name: "eager value", register: func(root *RootScope) { ProvideNamedValue(root, "db", &buildDB{}) }},
+		{name: "transient", register: func(root *RootScope) {
+			ProvideNamedTransient(root, "db", func(Injector) (*buildDB, error) { return &buildDB{}, nil })
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+
+			root := NewWithOpts(&InjectorOpts{
+				HookAfterBuild: []func(*Scope, string, any){func(*Scope, string, any) { panic("hook-boom") }},
+			})
+			tt.register(root)
+
+			assert.PanicsWithValue(t, "hook-boom", func() { _, _ = InvokeNamed[*buildDB](root, "db") })
+		})
+	}
+}
+
+func TestAfterBuildHook_TypedNil(t *testing.T) {
+	t.Parallel()
 	testWithTimeout(t, time.Second)
 
-	root := NewWithOpts(&InjectorOpts{
-		HookAfterBuild: []func(*Scope, string, any){func(*Scope, string, any) { panic("hook-boom") }},
-	})
-	ProvideNamed(root, "db", func(Injector) (*buildDB, error) { return &buildDB{}, nil })
+	rec := &buildRecorder{}
+	root := NewWithOpts(&InjectorOpts{HookAfterBuild: []func(*Scope, string, any){rec.hook}})
+	ProvideNamed(root, "db", func(Injector) (*buildDB, error) { return nil, nil })
 
-	assert.PanicsWithValue(t, "hook-boom", func() { _, _ = InvokeNamed[*buildDB](root, "db") })
+	_, err := InvokeNamed[*buildDB](root, "db")
+
+	require.NoError(t, err)
+	records := rec.list()
+	require.Len(t, records, 1)
+	// a typed nil: the interface holds a *buildDB (testify's NotNil would
+	// call it nil, so check the dynamic type instead)
+	db, ok := records[0].instance.(*buildDB)
+	assert.True(t, ok, "the hook received %#v", records[0].instance)
+	assert.Nil(t, db)
 }
 
 // buildHC is a health checker built by a lazy provider.

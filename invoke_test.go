@@ -1012,6 +1012,19 @@ func TestInvokeAs_DeterministicStable(t *testing.T) {
 	}
 }
 
+func TestMustInvokeAs_Deterministic(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, 5*time.Second)
+
+	for range 100 {
+		root := New()
+		provideGreeter(root, "b")
+		provideGreeter(root, "a")
+
+		assert.Equal(t, "b", MustInvokeAs[Greeter](root).Greet())
+	}
+}
+
 func TestInvokeAs_SingleAndMissing(t *testing.T) {
 	t.Parallel()
 
@@ -1149,9 +1162,20 @@ func TestInvokeAs_Shadowing(t *testing.T) {
 
 	tests := []struct {
 		name    string
+		mid     bool // put a scope between the root and the child
 		childDB func(child *Scope)
 		check   func(t *testing.T, child *Scope)
 	}{
+		{
+			name:    "string grandchild db through an intermediate scope, InvokeAs",
+			mid:     true,
+			childDB: func(child *Scope) { ProvideNamedValue(child, "db", "a string") },
+			check: func(t *testing.T, child *Scope) {
+				t.Helper()
+				_, err := InvokeAs[shadowStore](child)
+				assert.ErrorIs(t, err, ErrServiceNotMatch)
+			},
+		},
 		{
 			name:    "string child db, InvokeAs",
 			childDB: func(child *Scope) { ProvideNamedValue(child, "db", "a string") },
@@ -1192,6 +1216,9 @@ func TestInvokeAs_Shadowing(t *testing.T) {
 			root := New()
 			ProvideNamed(root, "db", func(Injector) (*shadowPG, error) { return &shadowPG{scope: "[root]"}, nil })
 			child := root.Scope("request")
+			if tt.mid {
+				child = child.Scope("leaf")
+			}
 			tt.childDB(child)
 
 			tt.check(t, child)
