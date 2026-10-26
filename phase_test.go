@@ -137,19 +137,17 @@ func TestPhase_RaceFree(t *testing.T) {
 	allowed := []ContainerPhase{PhaseIdle, PhaseStarting, PhaseStarted, PhaseReady, PhaseClosing, PhaseClosed}
 
 	stop := make(chan struct{})
-	observed := make(chan ContainerPhase, 1024)
+	seen := make([]map[ContainerPhase]int, 20) // per goroutine: every observation counts
 	var wg sync.WaitGroup
-	for range 20 {
+	for g := range seen {
+		seen[g] = map[ContainerPhase]int{}
 		wg.Go(func() {
 			for {
 				select {
 				case <-stop:
 					return
 				default:
-					select {
-					case observed <- root.Phase():
-					default:
-					}
+					seen[g][root.Phase()]++
 				}
 			}
 		})
@@ -159,11 +157,15 @@ func TestPhase_RaceFree(t *testing.T) {
 	root.Shutdown()
 	close(stop)
 	wg.Wait()
-	close(observed)
 
-	for phase := range observed {
-		assert.Contains(t, allowed, phase)
+	total := 0
+	for _, phases := range seen {
+		for phase, n := range phases {
+			assert.Contains(t, allowed, phase)
+			total += n
+		}
 	}
+	assert.Positive(t, total)
 }
 
 func TestContainerPhase_String(t *testing.T) {

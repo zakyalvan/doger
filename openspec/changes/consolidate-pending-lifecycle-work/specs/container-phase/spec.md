@@ -11,7 +11,7 @@ Lets a consumer observe where a root container is in its lifecycle (idle, starti
 
 #### Scenario: Phase follows the lifecycle
 ```gherkin
-Given a root scope with lazy Starter "a" whose Start blocks until released, and HookContainerStarted and HookContainerReady hooks that record Phase()
+Given a root scope with lazy Starter "a" whose Start blocks until released
 And the consumer has <done>
 When the consumer calls root.Phase()
 Then the result is <phase>
