@@ -3,6 +3,7 @@ package doger
 import (
 	"bytes"
 	"html/template"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -201,6 +202,12 @@ func ExplainService[T any](i Injector) (description ExplainServiceOutput, ok boo
 // Returns a service explanation and a boolean indicating if the service was found.
 // The boolean is false if the service is not found.
 //
+// The service is looked up from scope and its ancestors, and its dependencies
+// are those recorded for it in the scope that registers it, whichever scope
+// explains it. The dependency graph can hold a cycle, closed by a build after
+// a [DeclareDependency] edge: a service repeated along one branch is listed
+// once more, without its own dependencies, so the output stays finite.
+//
 // Note: Please call Invoke[T] before ExplainNamedService[T] to ensure that the service is registered.
 //
 // Play: https://go.dev/play/p/GTcGyPFC8IB
@@ -246,12 +253,20 @@ func ExplainNamedService(scope Injector, name string) (description ExplainServic
 		ServiceType:      service.getServiceType(),
 		ServiceBuildTime: buildTime,
 		Invoked:          invoked,
-		Dependencies:     newExplainServiceDependencies(_i, newServiceDescription(_i.ID(), _i.Name(), name), "dependencies"),
-		Dependents:       newExplainServiceDependencies(_i, newServiceDescription(_i.ID(), _i.Name(), name), "dependents"),
+		Dependencies:     newExplainServiceDependencies(_i, newServiceDescription(serviceScope.ID(), serviceScope.Name(), name), "dependencies", nil),
+		Dependents:       newExplainServiceDependencies(_i, newServiceDescription(serviceScope.ID(), serviceScope.Name(), name), "dependents", nil),
 	}, true
 }
 
-func newExplainServiceDependencies(i Injector, desc ServiceDescription, mode string) []ExplainServiceDependencyOutput {
+// newExplainServiceDependencies returns the dependencies (or dependents) of
+// desc, each with its own recursively. path holds the services above desc:
+// a service already on it closes a cycle, so it is listed without its own.
+func newExplainServiceDependencies(i Injector, desc ServiceDescription, mode string, path []ServiceDescription) []ExplainServiceDependencyOutput {
+	if slices.Contains(path, desc) {
+		return []ExplainServiceDependencyOutput{}
+	}
+	path = append(slices.Clone(path), desc)
+
 	dependencies, dependents := i.RootScope().dag.explainService(desc.ScopeID, desc.ScopeName, desc.Service)
 
 	deps := dependencies
@@ -268,7 +283,7 @@ func newExplainServiceDependencies(i Injector, desc ServiceDescription, mode str
 	})
 
 	return mAp(deps, func(item ServiceDescription, _ int) ExplainServiceDependencyOutput {
-		recursive := newExplainServiceDependencies(i, item, mode)
+		recursive := newExplainServiceDependencies(i, item, mode, path)
 
 		from, to := desc, item
 		if mode == "dependents" {

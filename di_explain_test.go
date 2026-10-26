@@ -331,6 +331,94 @@ Dependents:
 	is.Equal(ExplainServiceOutput{}, output)
 }
 
+// explainTree renders dependencies as name(children), siblings comma-separated.
+func explainTree(deps []ExplainServiceDependencyOutput) string {
+	tree := ""
+	for index, dep := range deps {
+		if index > 0 {
+			tree += ","
+		}
+		tree += dep.Service + "(" + explainTree(dep.Recursive) + ")"
+	}
+	return tree
+}
+
+func TestExplainNamedService_GraphCycle(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		declared     [][2]string // dependent, dependency: declared before the build closes the cycle
+		dependencies string
+		dependents   string
+	}{
+		{name: "two services", declared: [][2]string{{"b", "a"}}, dependencies: "b(a())", dependents: "b(a())"},
+		{name: "three services", declared: [][2]string{{"c", "a"}}, dependencies: "b(c(a()))", dependents: "c(b(a()))"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+			is := assert.New(t)
+
+			// a invokes b, which invokes c when registered
+			root := New()
+			ProvideNamed(root, "c", func(Injector) (int, error) { return 1, nil })
+			ProvideNamed(root, "b", func(i Injector) (int64, error) {
+				if tt.name == "three services" {
+					_, err := InvokeNamed[int](i, "c")
+					return 2, err
+				}
+				return 2, nil
+			})
+			ProvideNamed(root, "a", func(i Injector) (string, error) {
+				_, err := InvokeNamed[int64](i, "b")
+				return "a", err
+			})
+			for _, edge := range tt.declared {
+				is.NoError(DeclareDependency(root, edge[0], edge[1]))
+			}
+			_, err := InvokeNamed[string](root, "a")
+			is.NoError(err)
+
+			output, ok := ExplainNamedService(root, "a")
+
+			// the repeated service is listed without its dependencies
+			is.True(ok)
+			is.Equal(tt.dependencies, explainTree(output.Dependencies))
+			is.Equal(tt.dependents, explainTree(output.Dependents))
+			is.NotEmpty(output.String())
+		})
+	}
+}
+
+func TestExplainNamedService_FromOtherScope(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+	is := assert.New(t)
+
+	root := New()
+	ProvideNamed(root, "b", func(Injector) (int, error) { return 1, nil })
+	ProvideNamed(root, "a", func(i Injector) (string, error) {
+		_, err := InvokeNamed[int](i, "b")
+		return "a", err
+	})
+	_, err := InvokeNamed[string](root, "a")
+	is.NoError(err)
+	child := root.Scope("request")
+
+	fromRoot, okRoot := ExplainNamedService(root, "a")
+	fromChild, okChild := ExplainNamedService(child, "a")
+	fromChildB, _ := ExplainNamedService(child, "b")
+
+	is.True(okRoot)
+	is.True(okChild)
+	is.Equal("b()", explainTree(fromRoot.Dependencies))
+	is.Equal(fromRoot.Dependencies, fromChild.Dependencies)
+	is.Equal("a()", explainTree(fromChildB.Dependents))
+}
+
 /////////////////////////////////////////////////////////////////////////////
 // 							Explain scopes
 /////////////////////////////////////////////////////////////////////////////
