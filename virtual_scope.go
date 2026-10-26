@@ -151,23 +151,25 @@ func (s *virtualScope) onServiceInvoke(name string) { s.self.onServiceInvoke(nam
 //	ServiceB depends on ServiceC
 //	ServiceC depends on ServiceA  // This creates a circular dependency
 //
-// The method checks if the service name already exists in the invoker chain,
-// which would indicate a circular dependency.
-func (s *virtualScope) detectCircularDependency(name string) error {
-	if s.chainContains(name) {
+// The method checks if the service, its name registered in scope, already
+// exists in the invoker chain, which would indicate a circular dependency. A
+// service with the same name in another scope is a different service.
+func (s *virtualScope) detectCircularDependency(name string, scope *Scope) error {
+	if s.chainContains(name, scope) {
 		return fmt.Errorf("%w: %s", ErrCircularDependency, humanReadableInvokerChain(chainTo(s, name)))
 	}
 	return nil
 }
 
-// chainContains reports whether name is in the invoker chain, without
-// building it.
-func (s *virtualScope) chainContains(name string) bool {
+// chainContains reports whether the service name of scope is in the invoker
+// chain, without building it. A base chain holds names only, so any scope
+// matches it.
+func (s *virtualScope) chainContains(name string, scope *Scope) bool {
 	for v := s; v != nil; v = v.parent {
 		if v.base != nil {
 			return contains(v.base, name)
 		}
-		if v.name == name {
+		if v.name == name && injectorScope(v.self) == scope {
 			return true
 		}
 	}

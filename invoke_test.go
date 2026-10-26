@@ -1397,6 +1397,75 @@ func TestInvokeStruct_DecoratorNamedAfterFieldType(t *testing.T) {
 	}
 }
 
+func TestCircularDependency_SameNameInAnotherScope(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		resolve func(i Injector) (int, error) // what root "agg" does
+		from    string                        // the scope "x" is invoked from
+		wantErr error
+	}{
+		{
+			name: "InvokeNamed of the root x from a child x",
+			resolve: func(i Injector) (int, error) {
+				_, err := InvokeNamed[*greeterImpl](i, "x")
+				return 1, err
+			},
+			from: "child",
+		},
+		{
+			name: "InvokeAll from a child x",
+			resolve: func(i Injector) (int, error) {
+				all, err := InvokeAll[Greeter](i)
+				return len(all), err
+			},
+			from: "child",
+		},
+		{
+			name: "the root x, a real cycle",
+			resolve: func(i Injector) (int, error) {
+				_, err := InvokeNamed[*greeterImpl](i, "x")
+				return 1, err
+			},
+			from:    "root",
+			wantErr: ErrCircularDependency,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+
+			root := New()
+			child := root.Scope("child")
+			ProvideNamed(root, "agg", func(i Injector) (int, error) { return tt.resolve(i) })
+			// the child "x" shadows the root "x" and invokes "agg"
+			ProvideNamed(child, "x", func(i Injector) (*greeterImpl, error) {
+				_, err := InvokeNamed[int](i, "agg")
+				return &greeterImpl{name: "child-x"}, err
+			})
+			ProvideNamed(root, "x", func(i Injector) (*greeterImpl, error) {
+				if tt.from == "root" {
+					_, err := InvokeNamed[int](i, "agg")
+					return &greeterImpl{name: "x"}, err
+				}
+				return &greeterImpl{name: "x"}, nil
+			})
+			from := map[string]Injector{"root": root, "child": child}[tt.from]
+
+			_, err := InvokeNamed[*greeterImpl](from, "x")
+
+			if tt.wantErr != nil {
+				assert.ErrorIs(t, err, tt.wantErr)
+				return
+			}
+			assert.NoError(t, err)
+		})
+	}
+}
+
 func TestInvokeStruct_FallbackSkipsInvokerAlias(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, time.Second)

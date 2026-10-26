@@ -33,15 +33,16 @@ func invokeAnyByNameAs(i Injector, name string, source DependencySource) (any, e
 	injector := getInjectorOrDefault(i)
 
 	vScope, isVirtualScope := injector.(*virtualScope)
-	if isVirtualScope {
-		if err := vScope.detectCircularDependency(name); err != nil {
-			return nil, err
-		}
-	}
 
 	serviceAny, serviceScope, found := injector.serviceGetRec(name)
 	if !found {
 		return nil, serviceNotFound(injector, ErrServiceNotFound, chainTo(vScope, name))
+	}
+
+	if isVirtualScope {
+		if err := vScope.detectCircularDependency(name, serviceScope); err != nil {
+			return nil, err
+		}
 	}
 
 	if isVirtualScope {
@@ -84,15 +85,16 @@ func invokeByName[T any](i Injector, name string) (T, error) {
 	injector := getInjectorOrDefault(i)
 
 	vScope, isVirtualScope := injector.(*virtualScope)
-	if isVirtualScope {
-		if err := vScope.detectCircularDependency(name); err != nil {
-			return empty[T](), err
-		}
-	}
 
 	serviceAny, serviceScope, found := injector.serviceGetRec(name)
 	if !found {
 		return empty[T](), serviceNotFound(injector, ErrServiceNotFound, chainTo(vScope, name))
+	}
+
+	if isVirtualScope {
+		if err := vScope.detectCircularDependency(name, serviceScope); err != nil {
+			return empty[T](), err
+		}
 	}
 
 	if isVirtualScope {
@@ -156,7 +158,7 @@ func invokeByGenericType[T any](i Injector) (T, error) {
 // provider. The edge is recorded only after a successful build.
 func invokeServiceInstance(injector Injector, vScope *virtualScope, hookName, realName string, scope *Scope, service any) (any, error) {
 	if vScope != nil {
-		if err := vScope.detectCircularDependency(realName); err != nil {
+		if err := vScope.detectCircularDependency(realName, scope); err != nil {
 			return nil, err
 		}
 	}
