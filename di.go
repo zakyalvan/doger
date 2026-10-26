@@ -639,6 +639,11 @@ func MustAsNamed[Initial any, Alias any](i Injector, initial string, alias strin
 // service is registered in. Aliases (As, Bind) are never members: their
 // target represents itself.
 //
+// Inside a provider, the service that provider builds is not a member, so a
+// composite can collect every other implementation of its own interface.
+// Any other member already in the invocation chain still fails the call
+// with ErrCircularDependency.
+//
 // Invocation hooks fire once per member, with the member's name, as for N
 // calls to Invoke. The result is a snapshot: services registered later are
 // not added to it, and changing it does not affect later calls; transient
@@ -655,8 +660,8 @@ func MustInvokeAll[T any](i Injector) []T {
 }
 
 // InvokeAllMap returns the same members as [InvokeAll], keyed by service
-// name, under the same visibility, alias, shadowing and failure rules. With
-// no match, it returns an empty, non-nil map.
+// name, under the same visibility, alias, self-exclusion, shadowing and
+// failure rules. With no match, it returns an empty, non-nil map.
 func InvokeAllMap[T any](i Injector) (map[string]T, error) {
 	return invokeAllMapByGenericType[T](i)
 }

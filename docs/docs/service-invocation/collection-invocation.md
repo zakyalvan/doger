@@ -70,3 +70,16 @@ doger.As[*AuditHandler, EventHandler](injector)
 handlers, _ := doger.InvokeAll[EventHandler](injector)
 // one element: the *AuditHandler instance
 ```
+
+## Composites {#composites}
+
+When a collection is invoked from inside a provider, the service that provider builds is **not** a member, even if its registered type is assignable to `T`. A composite can therefore collect every other implementation of its own interface:
+
+```go
+doger.Provide(injector, func(i doger.Injector) (*CompositeHandler, error) {
+    handlers, err := doger.InvokeAll[EventHandler](i) // every other EventHandler
+    return &CompositeHandler{handlers: handlers}, err
+})
+```
+
+Only the service whose provider is running is excluded. A deeper cycle still fails with `doger.ErrCircularDependency`: if `x`'s provider invokes `bus`, and `bus`'s provider collects every `EventHandler`, `x` is a member of that collection and the call fails with `` `x` -> `bus` -> `x` ``.

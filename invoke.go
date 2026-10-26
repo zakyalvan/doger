@@ -285,11 +285,18 @@ type collectionCandidate struct {
 
 // collectionCandidates returns the members of a collection for T, visible
 // from injector: the nearest service of each name (even when it is not
-// assignable to T, it shadows its ancestors), without aliases, whose
-// registered type is assignable to T.
+// assignable to T, it shadows its ancestors), without aliases and without
+// the service whose provider invokes the collection, whose registered type
+// is assignable to T.
 func collectionCandidates[T any](injector Injector) []collectionCandidate {
 	candidates := []collectionCandidate{}
 	seen := map[string]struct{}{}
+
+	// the service whose provider invokes the collection is not a member
+	if invoker, ok := invokingServiceName(injector); ok {
+		seen[invoker] = struct{}{}
+	}
+
 	injector.serviceForEachRec(func(name string, scope *Scope, s any) bool {
 		if _, ok := seen[name]; ok {
 			return true
@@ -312,6 +319,17 @@ func collectionCandidates[T any](injector Injector) []collectionCandidate {
 	})
 
 	return candidates
+}
+
+// invokingServiceName returns the name of the service whose provider is
+// running, when injector is a provider's virtual scope.
+func invokingServiceName(injector Injector) (string, bool) {
+	vScope, ok := injector.(*virtualScope)
+	if !ok {
+		return "", false
+	}
+
+	return vScope.getLastInvokerName()
 }
 
 // scopeDepth returns the number of ancestors of scope.

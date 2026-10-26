@@ -175,10 +175,10 @@ Rules:
 
 ## 25. A collection excludes the service that invokes it (Part K)
 
-- [ ] 25.1 RED: add `TestInvokeAll_CompositeExcludesSelf` (scenario "Composite collects every other implementation") and `TestInvokeAll_DeeperCycle` (scenario "Deeper cycles still fail"); verify `go test -race -run 'TestInvokeAll_(CompositeExcludesSelf|DeeperCycle)' .` fails on CompositeExcludesSelf with `ErrCircularDependency`; DeeperCycle passes on arrival, so record that and show it can fail by temporarily excluding every invoker-chain member (not committed)
-- [ ] 25.2 GREEN: drop the candidate named like the last entry of the virtual scope's invoker chain (design D3a); verify the 25.1 command passes and `make test` is green
-- [ ] 25.3 REFACTOR: *Extract Function* `invokingServiceName(injector) (string, bool)` if the check is inline in `collectionCandidates`, otherwise none needed; verify `make test` and `make lint` pass
-- [ ] 25.4 Add the composite section to the docs page and the self-exclusion rule to the `InvokeAll`/`InvokeAllMap` godoc; verify `npm --prefix docs run build` succeeds
+- [x] 25.1 RED: add `TestInvokeAll_CompositeExcludesSelf` (scenario "Composite collects every other implementation") and `TestInvokeAll_DeeperCycle` (scenario "Deeper cycles still fail"); verify `go test -race -run 'TestInvokeAll_(CompositeExcludesSelf|DeeperCycle)' .` fails on CompositeExcludesSelf with `ErrCircularDependency`; DeeperCycle passes on arrival, so record that and show it can fail by temporarily excluding every invoker-chain member (not committed)
+- [x] 25.2 GREEN: drop the candidate named like the last entry of the virtual scope's invoker chain (design D3a); verify the 25.1 command passes and `make test` is green
+- [x] 25.3 REFACTOR: *Extract Function* `invokingServiceName(injector) (string, bool)` if the check is inline in `collectionCandidates`, otherwise none needed; verify `make test` and `make lint` pass
+- [x] 25.4 Add the composite section to the docs page and the self-exclusion rule to the `InvokeAll`/`InvokeAllMap` godoc; verify `npm --prefix docs run build` succeeds
 
 ## 26. Dependency edges, hooks and snapshot semantics (Part K)
 

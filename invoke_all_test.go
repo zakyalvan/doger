@@ -506,3 +506,43 @@ func TestInvokeAllMap_Keys(t *testing.T) {
 		})
 	}
 }
+
+func TestInvokeAll_CompositeExcludesSelf(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	provideHandler(root, "console", newConsole)
+	provideHandler(root, "audit", newAudit)
+	var recorded []string
+	ProvideNamed(root, "composite", func(i Injector) (*CompositeHandler, error) {
+		handlers, err := InvokeAll[EventHandler](i)
+		recorded = handlerNames(handlers)
+		return &CompositeHandler{handlerBase{"composite"}}, err
+	})
+
+	_, err := InvokeNamed[*CompositeHandler](root, "composite")
+
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"console", "audit"}, recorded)
+}
+
+func TestInvokeAll_DeeperCycle(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	ProvideNamed(root, "x", func(i Injector) (*XHandler, error) {
+		_, err := InvokeNamed[*Bus](i, "bus")
+		return &XHandler{handlerBase{"x"}}, err
+	})
+	ProvideNamed(root, "bus", func(i Injector) (*Bus, error) {
+		_, err := InvokeAll[EventHandler](i)
+		return &Bus{}, err
+	})
+
+	_, err := InvokeNamed[*XHandler](root, "x")
+
+	assert.ErrorIs(t, err, ErrCircularDependency)
+	assert.ErrorContains(t, err, "`x` -> `bus` -> `x`")
+}
