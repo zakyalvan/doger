@@ -1790,26 +1790,46 @@ func provideLazy[T any](scope Injector, name string, value T) {
 func TestStart_ParallelFailure(t *testing.T) {
 	t.Parallel()
 
-	synctest.Test(t, func(t *testing.T) {
-		is := assert.New(t)
+	tests := []struct {
+		name        string
+		incremental bool // "a", "b" and "c" are registered after Start and started by Refresh
+	}{
+		{name: "Start"},
+		{name: "Refresh", incremental: true},
+	}
 
-		errBoom := errors.New("boom")
-		root := NewWithOpts(&InjectorOpts{StartParallelism: 2})
-		rec := &callRecorder{}
-		provideLazy(root, "a", &sleepingStarter{name: "a", d: time.Second, err: errBoom, rec: rec})
-		provideLazy(root, "b", &sleepingStarter{name: "b", d: 2 * time.Second, rec: rec})
-		provideLazy(root, "c", &sleepingStarter{name: "c", d: time.Second, rec: rec})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-		begin := time.Now()
-		err := root.Start()
+			synctest.Test(t, func(t *testing.T) {
+				is := assert.New(t)
 
-		is.Equal(2*time.Second, time.Since(begin))
-		is.ErrorIs(err, errBoom)
-		is.ErrorContains(err, "`a`")
-		events := rec.list()
-		is.Equal(0, countOf(events, "c start"))
-		is.Equal(1, countOf(events, "b start"))
-	})
+				errBoom := errors.New("boom")
+				root := NewWithOpts(&InjectorOpts{StartParallelism: 2})
+				run := root.Start
+				if tt.incremental {
+					require.NoError(t, root.Start())
+					run = root.Refresh
+				}
+				rec := &callRecorder{}
+				provideLazy(root, "a", &sleepingStarter{name: "a", d: time.Second, err: errBoom, rec: rec})
+				provideLazy(root, "b", &sleepingStarter{name: "b", d: 2 * time.Second, rec: rec})
+				provideLazy(root, "c", &sleepingStarter{name: "c", d: time.Second, rec: rec})
+
+				begin := time.Now()
+				err := run()
+
+				// the first failure stops scheduling; the run waits for "b"
+				is.Equal(2*time.Second, time.Since(begin))
+				is.ErrorIs(err, errBoom)
+				is.ErrorContains(err, "`a`")
+				events := rec.list()
+				is.Equal(0, countOf(events, "c start"))
+				is.Equal(1, countOf(events, "b start"))
+			})
+		})
+	}
 }
 
 func TestStart_FailureThenShutdown(t *testing.T) {
