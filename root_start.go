@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strings"
 )
 
 // startPhase is the start state of a root container.
@@ -175,7 +176,11 @@ func (s *RootScope) keepFirstPanic(first *hookPanic, p hookPanic) {
 	}
 
 	if first.panicked {
-		s.opts.Logf("DI: container %s hook panicked: %v", p.point, p.value)
+		if strings.HasPrefix(p.point, "scope-") {
+			s.opts.Logf("DI: %s hook panicked: %v", p.point, p.value)
+		} else {
+			s.opts.Logf("DI: container %s hook panicked: %v", p.point, p.value)
+		}
 		return
 	}
 	*first = p
@@ -373,7 +378,7 @@ func (s *RootScope) runPipeline(ctx context.Context, roots []*Scope) (closing bo
 // error or panic is a veto: the remaining hooks do not run and Start fails
 // with it.
 func (s *RootScope) runStartingHooks(startCtx context.Context) error {
-	if err := runVetoHooks(startCtx, s.opts.HookContainerStarting, s, startingHookPanicError); err != nil {
+	if err := runVetoHooks(startCtx, s.opts.HookContainerStarting, s, startingHookPanicError("container")); err != nil {
 		return withAbortCause(startCtx, fmt.Errorf("DI: container start aborted: %w", err))
 	}
 
@@ -401,14 +406,17 @@ func runVetoHooks[T any](ctx context.Context, hooks []func(context.Context, T) e
 	return nil
 }
 
-// startingHookPanicError turns a Starting hook panic into a veto error. An
-// error value is wrapped, so errors.Is and errors.As reach it.
-func startingHookPanicError(recovered any) error {
-	if err, ok := recovered.(error); ok {
-		return fmt.Errorf("DI: container starting hook panicked: %w", err)
-	}
+// startingHookPanicError returns how a panic in a Starting hook of subject
+// ("container" or "scope") becomes a veto error. An error value is wrapped,
+// so errors.Is and errors.As reach it.
+func startingHookPanicError(subject string) func(recovered any) error {
+	return func(recovered any) error {
+		if err, ok := recovered.(error); ok {
+			return fmt.Errorf("DI: %s starting hook panicked: %w", subject, err)
+		}
 
-	return fmt.Errorf("DI: container starting hook panicked: %v", recovered)
+		return fmt.Errorf("DI: %s starting hook panicked: %v", subject, recovered)
+	}
 }
 
 func (c *startCandidate) desc() ServiceDescription {

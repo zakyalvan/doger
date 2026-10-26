@@ -3,6 +3,7 @@ package doger
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -62,7 +63,19 @@ func TestScopeStartingHook_Veto(t *testing.T) {
 		{
 			name:     "panics",
 			behavior: func() error { panic("veto-boom") },
-			check:    func(t *testing.T, err error) { t.Helper(); assert.ErrorContains(t, err, "veto-boom") },
+			check: func(t *testing.T, err error) {
+				t.Helper()
+				assert.EqualError(t, err, "DI: scope `tenant` start aborted: DI: scope starting hook panicked: veto-boom")
+			},
+		},
+		{
+			name:     "panics with errVeto",
+			behavior: func() error { panic(errVeto) },
+			check: func(t *testing.T, err error) {
+				t.Helper()
+				assert.ErrorIs(t, err, errVeto)
+				assert.ErrorContains(t, err, "scope starting hook panicked")
+			},
 		},
 	}
 
@@ -87,6 +100,32 @@ func TestScopeStartingHook_Veto(t *testing.T) {
 			assert.Equal(t, tt.starts, starts.count("worker"))
 			assert.Equal(t, tt.recorded, started.list())
 		})
+	}
+}
+
+func TestScopeHooks_LaterPanicLogged(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+	is := assert.New(t)
+
+	logs := &callRecorder{}
+	panics := &callRecorder{}
+	root := NewWithOpts(&InjectorOpts{
+		Logf: func(format string, args ...any) { logs.record(fmt.Sprintf(format, args...)) },
+		HookContainerPanic: func(_ *RootScope, point string, recovered any) {
+			panics.record(fmt.Sprintf("%s %v", point, recovered))
+		},
+	})
+	root.AddScopeClosingHook(func(context.Context, *Scope) { panic("first") })
+	root.AddScopeClosingHook(func(context.Context, *Scope) { panic("second") })
+	tenant := root.Scope("tenant")
+
+	tenant.Shutdown()
+
+	is.Equal([]string{"scope-closing first"}, panics.list())
+	is.Contains(logs.list(), "DI: scope-closing hook panicked: second")
+	for _, line := range logs.list() {
+		is.NotContains(line, "container scope-closing")
 	}
 }
 

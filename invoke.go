@@ -288,7 +288,11 @@ func orderValue(name string, instance any, opts *serviceOptions) (order int, err
 
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("DI: Order() of collection member `%s` panicked: %w", name, recoverAsError(r))
+			if e, ok := r.(error); ok {
+				err = fmt.Errorf("DI: Order() of collection member `%s` panicked: %w", name, e)
+			} else {
+				err = fmt.Errorf("DI: Order() of collection member `%s` panicked: %v", name, r)
+			}
 		}
 	}()
 

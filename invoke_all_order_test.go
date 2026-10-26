@@ -323,7 +323,10 @@ func TestInvokeAll_OrderPanic(t *testing.T) {
 			bad: func(Injector) (EventHandler, error) {
 				return &panickingOrder{handlerBase: handlerBase{"bad"}, value: "boom"}, nil
 			},
-			match: func(t *testing.T, err error) { t.Helper(); assert.ErrorContains(t, err, "boom") },
+			match: func(t *testing.T, err error) {
+				t.Helper()
+				assert.EqualError(t, err, "DI: Order() of collection member `bad` panicked: boom")
+			},
 		},
 		{
 			name: "Order() on a nil *Handler",

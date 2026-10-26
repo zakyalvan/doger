@@ -69,7 +69,7 @@ func (s *RootScope) startIncremental(ctx context.Context, root *Scope) (closing 
 // The first error or panic is a veto: the remaining hooks do not run and
 // Scope.Start fails with it.
 func (s *RootScope) runScopeStartingHooks(ctx context.Context, scope *Scope) error {
-	if err := runVetoHooks(ctx, s.opts.HookScopeStarting, scope, recoverAsError); err != nil {
+	if err := runVetoHooks(ctx, s.opts.HookScopeStarting, scope, startingHookPanicError("scope")); err != nil {
 		return withAbortCause(ctx, fmt.Errorf("DI: scope `%s` start aborted: %w", scope.Name(), err))
 	}
 
