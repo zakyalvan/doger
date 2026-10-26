@@ -239,11 +239,9 @@ func (s *RootScope) ShutdownWithContext(ctx context.Context) *ShutdownReport {
 	report := s.shutdownAsWinner(ctx, ticket, &first)
 
 	// pointClosed: closeDone is closed, so code here may call Shutdown().
-	for _, hook := range slices.Clone(s.opts.HookContainerClosed) {
-		if hook != nil {
-			s.callObserver(&first, "closed", func() { hook(ctx, s, report) })
-		}
-	}
+	runObserverHooksWith(s, "closed", s.opts.HookContainerClosed, &first, func(hook func(context.Context, *RootScope, *ShutdownReport)) {
+		hook(ctx, s, report)
+	})
 
 	s.dispatchFirstPanic(first)
 

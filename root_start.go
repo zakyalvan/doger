@@ -144,11 +144,9 @@ func (s *RootScope) runStartRecovering(startCtx context.Context) (recovered any,
 // outcome: Started, then Ready, on success; Failed with err otherwise.
 func (s *RootScope) dispatchAfterStart(ctx context.Context, err error, first *hookPanic) {
 	if err != nil {
-		for _, hook := range slices.Clone(s.opts.HookContainerFailed) {
-			if hook != nil {
-				s.callObserver(first, "failed", func() { hook(ctx, s, err) })
-			}
-		}
+		runObserverHooksWith(s, "failed", s.opts.HookContainerFailed, first, func(hook func(context.Context, *RootScope, error)) {
+			hook(ctx, s, err)
+		})
 		return
 	}
 
@@ -230,15 +228,25 @@ func (s *RootScope) dispatchHookPanic(point string, value any) {
 // runObserverHooks runs container hooks in order, on a copy of the list,
 // skipping nil entries.
 func (s *RootScope) runObserverHooks(ctx context.Context, point string, hooks []func(context.Context, *RootScope), first *hookPanic) {
-	runObserverHooksWith(ctx, s, point, hooks, s, first)
+	runObserverHooksWith(s, point, hooks, first, func(hook func(context.Context, *RootScope)) { hook(ctx, s) })
 }
 
-// runObserverHooksWith calls each non-nil observer hook with arg, in order,
-// recovering their panics into first under point.
-func runObserverHooksWith[T any](ctx context.Context, root *RootScope, point string, hooks []func(context.Context, T), arg T, first *hookPanic) {
+// observerHook is the type of an observer hook: a container or scope hook
+// without a veto.
+type observerHook interface {
+	~func(context.Context, *RootScope) |
+		~func(context.Context, *Scope) |
+		~func(context.Context, *RootScope, error) |
+		~func(context.Context, *RootScope, *ShutdownReport)
+}
+
+// runObserverHooksWith calls each non-nil observer hook through call, in
+// order, on a copy of the list, recovering their panics into first under
+// point.
+func runObserverHooksWith[H observerHook](root *RootScope, point string, hooks []H, first *hookPanic, call func(hook H)) {
 	for _, hook := range slices.Clone(hooks) {
 		if hook != nil {
-			root.callObserver(first, point, func() { hook(ctx, arg) })
+			root.callObserver(first, point, func() { call(hook) })
 		}
 	}
 }
