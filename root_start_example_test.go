@@ -94,3 +94,28 @@ func ExampleStartError() {
 	// op: start
 	// cause: connection refused
 }
+
+type exampleWorker struct{ name string }
+
+func (w *exampleWorker) Start() error {
+	fmt.Println(w.name, "started")
+	return nil
+}
+
+func ExampleRootScope_Refresh() {
+	root := New()
+	ProvideNamedValue(root, "api", &exampleWorker{name: "api"})
+	_ = root.Start()
+
+	// Registered after Start: not started until Refresh.
+	ProvideNamedValue(root, "reports", &exampleWorker{name: "reports"})
+	tenant := root.Scope("tenant")
+	ProvideNamedValue(tenant, "tenant-worker", &exampleWorker{name: "tenant-worker"})
+
+	_ = root.Refresh() // starts reports and tenant-worker, not api again
+	_ = root.Refresh() // nothing new
+	// Output:
+	// api started
+	// reports started
+	// tenant-worker started
+}

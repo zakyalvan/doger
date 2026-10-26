@@ -33,7 +33,7 @@ func (s *RootScope) Start() error {
 // registered type implements a Starter variant (unless
 // [InjectorOpts.DisableStarterAutoDetection] is set) or that were registered
 // with [AsStarter]. Services registered after Start, and scopes created after
-// it, are not started.
+// it, are not started until [RootScope.Refresh] or [Scope.Start].
 //
 // A container starts at most once: any later call returns an error matching
 // [ErrAlreadyStarted], even when the first one failed, and a call after root
@@ -206,6 +206,9 @@ func (s *RootScope) runStart(startCtx context.Context) (err error) {
 	panicked := true
 	defer func() { s.finishStart(startCtx, &err, panicked) }()
 
+	s.pipelineMu.Lock()
+	defer s.pipelineMu.Unlock()
+
 	err = s.runStartPipeline(startCtx)
 	panicked = false
 
@@ -254,13 +257,20 @@ func (s *RootScope) runStartPipeline(startCtx context.Context) error {
 		return err
 	}
 
-	candidates := s.discoverCandidates()
+	return s.runPipeline(startCtx, []*Scope{s.self})
+}
 
-	if err := buildCandidates(startCtx, candidates); err != nil {
+// runPipeline builds, handles and starts what is not started or handled yet
+// in the subtrees of roots, with the abort checks of start-lifecycle D7.
+// Start, Refresh and Scope.Start share it.
+func (s *RootScope) runPipeline(ctx context.Context, roots []*Scope) error {
+	candidates := s.discoverCandidates(roots)
+
+	if err := buildCandidates(ctx, candidates); err != nil {
 		return err
 	}
 
-	if err := s.runStage(startCtx, StageBeforeStart, candidates); err != nil {
+	if err := s.runStage(ctx, StageBeforeStart, candidates); err != nil {
 		return err
 	}
 
@@ -268,20 +278,16 @@ func (s *RootScope) runStartPipeline(startCtx context.Context) error {
 		return err
 	}
 
-	if err := s.startStarters(startCtx, s.orderByDependencies(starterCandidates(candidates))); err != nil {
+	if err := s.startStarters(ctx, s.orderByDependencies(starterCandidates(candidates))); err != nil {
 		return err
 	}
 
 	// pointStartersUp
-	if err := s.runStage(startCtx, StageAfterStart, candidates); err != nil {
+	if err := s.runStage(ctx, StageAfterStart, candidates); err != nil {
 		return err
 	}
 
-	if err := checkAbort(startCtx); err != nil {
-		return err
-	}
-
-	return nil
+	return checkAbort(ctx)
 }
 
 // runStartingHooks runs the container Starting hooks in order. The first
@@ -319,17 +325,20 @@ func (c *startCandidate) desc() ServiceDescription {
 	return newServiceDescription(c.scope.ID(), c.scope.Name(), c.name)
 }
 
-// discoverCandidates snapshots the scope tree breadth-first, root first, and
-// returns the services Start must build, ordered by scope depth then
-// registration order.
-func (s *RootScope) discoverCandidates() []*startCandidate {
+// discoverCandidates snapshots the subtrees of roots breadth-first and
+// returns the services the pipeline must build, ordered by absolute scope
+// depth then registration order. Starters already started are skipped.
+func (s *RootScope) discoverCandidates(roots []*Scope) []*startCandidate {
 	candidates := []*startCandidate{}
 
 	type level struct {
 		scope *Scope
 		depth int
 	}
-	queue := []level{{scope: s.self, depth: 0}}
+	queue := make([]level, 0, len(roots))
+	for _, root := range roots {
+		queue = append(queue, level{scope: root, depth: scopeDepth(root)})
+	}
 	for len(queue) > 0 {
 		current := queue[0]
 		queue = queue[1:]
@@ -367,8 +376,9 @@ func (s *RootScope) newStartCandidate(scope *Scope, name string, depth int, serv
 	}
 
 	opts := service.getOptions()
-	starter := (opts != nil && opts.starter) ||
-		(!s.opts.DisableStarterAutoDetection && typeIsStarter(service.getReflectType()))
+	starter := ((opts != nil && opts.starter) ||
+		(!s.opts.DisableStarterAutoDetection && typeIsStarter(service.getReflectType()))) &&
+		!s.isStarted(service)
 	var kinds []kindBinding
 	if opts != nil {
 		kinds = opts.kinds
@@ -458,6 +468,7 @@ func (s *RootScope) startStarters(startCtx context.Context, candidates []*startC
 			err = newStartError(StartOpStart, candidate.scope, candidate.name, "", err)
 			return withAbortCause(startCtx, err)
 		}
+		s.markStarted(candidate.service)
 	}
 
 	return nil

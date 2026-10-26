@@ -126,8 +126,17 @@ type RootScope struct {
 	startCancel context.CancelCauseFunc // cancels the running Start's context
 	startDone   chan struct{}           // closed when the running Start returned
 	closePhase  closePhase
-	closeDone   chan struct{}   // closed when the winning Shutdown finished
-	closeReport *ShutdownReport // private copy of the winner's report
+	closeDone   chan struct{}           // closed when the winning Shutdown finished
+	closeReport *ShutdownReport         // private copy of the winner's report
+	incCancel   context.CancelCauseFunc // cancels the running Refresh or Scope.Start
+	incDone     chan struct{}           // closed when the running Refresh or Scope.Start returned
+
+	// pipelineMu serializes the Start, Refresh and Scope.Start pipelines. It
+	// is held across their user code; Shutdown never takes it, and nothing
+	// takes it while holding lifecycleMu.
+	pipelineMu sync.Mutex
+	startedMu  sync.Mutex       // guards started; never held across user code
+	started    map[any]struct{} // Starters already started, keyed by wrapper
 }
 
 // closePhase is the shutdown state of a root container.

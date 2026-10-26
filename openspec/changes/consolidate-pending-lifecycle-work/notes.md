@@ -53,3 +53,9 @@ Each was shown to fail with a temporary, uncommitted mutation:
 | `BenchmarkInvokeAll/1000` | 594,513 | 293,626 | 2,424 |
 | `BenchmarkInvokeAllParallel` (100) | 46,748 | 24,406 | 224 |
 - 31.1 `TestInvokeAllMap_IgnoresOrdered` passes on arrival; running the ordering pass in `InvokeAllMap` fails it. `TestMustInvokeAll_OrderPanic` also passes on arrival, because the raw escaping panic value is the error itself; after 31.2 it is the wrapped error naming the member.
+
+## Part P: incremental start
+
+- 33.1 `TestIncrementalStart_Phase`: "w was started 0 times" is read as "the operation started nothing". In the "Start then Shutdown" row the first `Start` itself starts "w" (the tenant scope exists before `Start`), so the test compares the count before and after the operation.
+- 33.2 takes `pipelineMu` before the phase guard of `beginIncremental`, so a Shutdown that began while a Refresh waited for the lock is seen (`ErrStartAfterShutdown`). `Start` keeps its guard before the lock, as designed.
+- 33.3 `runPipeline(ctx, roots)` takes no `incremental` flag: container hooks run outside it, so the flag would be unused.

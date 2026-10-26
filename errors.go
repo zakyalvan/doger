@@ -21,6 +21,9 @@ var (
 	// ErrStartAfterShutdown is returned by Start once root Shutdown has begun.
 	// It is also the cause Shutdown gives the context of a running Start.
 	ErrStartAfterShutdown = errors.New("DI: container is shut down")
+	// ErrNotStarted is returned by Refresh and Scope.Start while the
+	// container's first Start has not succeeded.
+	ErrNotStarted = errors.New("DI: container not started")
 )
 
 // StartOp names the step of Start that failed for a service.

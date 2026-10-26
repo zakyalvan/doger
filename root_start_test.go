@@ -3,6 +3,7 @@ package doger
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -1271,6 +1272,166 @@ func TestStartError_NotForGuards(t *testing.T) {
 			var startErr *StartError
 			assert.NotErrorAs(t, err, &startErr)
 			assert.ErrorIs(t, err, tt.sentinel)
+		})
+	}
+}
+
+// countingStarters counts Start calls per service name and records their order.
+type countingStarters struct {
+	mu     sync.Mutex
+	counts map[string]int
+	order  []string
+}
+
+func (c *countingStarters) record(name string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.counts == nil {
+		c.counts = map[string]int{}
+	}
+	c.counts[name]++
+	c.order = append(c.order, name)
+}
+
+func (c *countingStarters) count(name string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.counts[name]
+}
+
+func (c *countingStarters) reset() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.order = nil
+}
+
+func (c *countingStarters) list() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.order)
+}
+
+// countedStarter is a Starter reporting its starts to starts.
+type countedStarter struct {
+	name   string
+	starts *countingStarters
+}
+
+func (s *countedStarter) Start() error {
+	s.starts.record(s.name)
+	return nil
+}
+
+// provideCountedStarter registers lazy Starter name in scope.
+func provideCountedStarter(scope Injector, starts *countingStarters, name string, opts ...ProvideOption) {
+	ProvideNamed(scope, name, func(Injector) (*countedStarter, error) {
+		return &countedStarter{name: name, starts: starts}, nil
+	}, opts...)
+}
+
+func TestRefresh_StartsNew(t *testing.T) {
+	t.Parallel()
+
+	for _, times := range []int{1, 2} {
+		t.Run(fmt.Sprintf("%d", times), func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+			is := assert.New(t)
+
+			root := New()
+			starts := &countingStarters{}
+			provideCountedStarter(root, starts, "a")
+			require.NoError(t, root.Start())
+			starts.reset()
+
+			provideCountedStarter(root, starts, "late")
+			tenant := root.Scope("tenant")
+			provideCountedStarter(tenant, starts, "worker")
+
+			for call := range times {
+				is.NoError(root.Refresh())
+				if call == 0 {
+					is.Equal([]string{"late", "worker"}, starts.list())
+				}
+			}
+
+			is.Equal(1, starts.count("a"))
+			is.Equal(1, starts.count("late"))
+			is.Equal(1, starts.count("worker"))
+		})
+	}
+}
+
+func TestRefresh_NothingNew(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	starts := &countingStarters{}
+	provideCountedStarter(root, starts, "a")
+	require.NoError(t, root.Start())
+
+	assert.NoError(t, root.Refresh())
+	assert.Equal(t, 1, starts.count("a"))
+}
+
+func TestIncrementalStart_Phase(t *testing.T) {
+	t.Parallel()
+
+	errBuild := errors.New("build failed")
+
+	tests := []struct {
+		name      string
+		failA     bool
+		previous  func(root *RootScope)
+		operation func(root *RootScope, tenant *Scope) error
+		want      error
+	}{
+		{
+			name:      "nothing done, root.Refresh",
+			previous:  func(*RootScope) {},
+			operation: func(root *RootScope, _ *Scope) error { return root.Refresh() },
+			want:      ErrNotStarted,
+		},
+		{
+			name:      "Start failed, root.Refresh",
+			failA:     true,
+			previous:  func(root *RootScope) { _ = root.Start() },
+			operation: func(root *RootScope, _ *Scope) error { return root.Refresh() },
+			want:      ErrNotStarted,
+		},
+		{
+			name: "Start then Shutdown, root.Refresh",
+			previous: func(root *RootScope) {
+				_ = root.Start()
+				root.Shutdown()
+			},
+			operation: func(root *RootScope, _ *Scope) error { return root.Refresh() },
+			want:      ErrStartAfterShutdown,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+
+			root := New()
+			starts := &countingStarters{}
+			if tt.failA {
+				ProvideNamed(root, "a", func(Injector) (*countedStarter, error) { return nil, errBuild })
+			} else {
+				provideCountedStarter(root, starts, "a")
+			}
+			tenant := root.Scope("tenant")
+			provideCountedStarter(tenant, starts, "w")
+			tt.previous(root)
+			before := starts.count("w") // the first Start may have started "w"
+
+			err := tt.operation(root, tenant)
+
+			assert.ErrorIs(t, err, tt.want)
+			assert.Equal(t, before, starts.count("w"), "the operation started nothing")
 		})
 	}
 }

@@ -52,7 +52,7 @@ doger.Provide(root, NewLifecycle, doger.AsStarter())
 
 With `AsStarter()` on an interface-typed registration, the instance is checked when `Start` runs.
 
-`Start` covers the root scope and every child scope that exists when it runs. Services registered after `Start`, and scopes created after it, are not started; they stay invokable as usual.
+`Start` covers the root scope and every child scope that exists when it runs. Services registered after `Start`, and scopes created after it, are not started; they stay invokable as usual, and [`Refresh`](#refresh) starts them.
 
 ### Disabling auto-detection {#disable-auto-detection}
 
@@ -184,3 +184,22 @@ A container starts at most once:
 - `Start` after root `Shutdown()` began returns an error matching `doger.ErrStartAfterShutdown`.
 
 A clone starts independently of its source. Clones share eager instances, so starting a clone starts an eager starter a second time.
+
+## Refresh {#refresh}
+
+`Start` takes a snapshot of the scope tree: services registered after it, and scopes created after it, are not started automatically. `root.Refresh()` (or `RefreshWithContext(ctx)`) starts them: it runs the same pipeline over everything not started or handled yet, with the same order, context, error and per-service hook rules as `Start`.
+
+```go
+_ = root.Start()
+
+doger.Provide(root, NewReportsWorker) // registered after Start
+tenant := root.Scope("tenant")       // created after Start
+doger.Provide(tenant, NewTenantWorker)
+
+err := root.Refresh() // starts both workers
+```
+
+- Each service starts **at most once** per container: a second `Refresh` starts nothing again, and services started by `Start` are never restarted. An `Override` registered after `Start` is a new service, so `Refresh` starts it.
+- `Refresh` fires no [container hook](./container-hooks.md).
+- Before the first successful `Start`, it returns an error matching `doger.ErrNotStarted`. Once root `Shutdown` began, it returns an error matching `doger.ErrStartAfterShutdown`, which takes precedence. It starts nothing in either case.
+- Concurrent `Refresh` calls run one at a time. Never call `Refresh` synchronously from code that runs during a `Refresh` (a Starter, a kind handler, a provider or a hook): it would wait for itself.

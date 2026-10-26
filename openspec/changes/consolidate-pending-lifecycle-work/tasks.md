@@ -228,10 +228,10 @@ Rules:
 
 ## 33. Refresh starts what is not started yet (container-start; design P1–P3)
 
-- [ ] 33.1 RED: add `TestRefresh_StartsNew` (scenario "Refresh starts late registrations and new scopes once", 2 rows), `TestRefresh_NothingNew` and `TestIncrementalStart_Phase` (scenario "Incremental start in the wrong phase", the 3 `root.Refresh()` rows) to `root_start_test.go`; verify `go test -race -run 'TestRefresh_(StartsNew|NothingNew)|TestIncrementalStart_Phase' .` fails to compile only on `Refresh` and `ErrNotStarted`
-- [ ] 33.2 GREEN: add `ErrNotStarted`, `pipelineMu` with the `started`/`handled` sets keyed by wrapper (Start records them), `beginIncremental` with the phase guard, and `RootScope.Refresh`/`RefreshWithContext` running the pipeline over unstarted candidates of the whole tree (design P1–P3); verify the 33.1 command passes and `make test` is green
-- [ ] 33.3 REFACTOR: *Extract Function* `runPipeline(ctx, roots, incremental)` shared by `Start` and `Refresh`, and *Parameterize Function* `discoverCandidates(roots, skip)`; verify `make test` and `make lint` pass
-- [ ] 33.4 Add `ExampleRootScope_Refresh` and a "Refresh" section on the starter page (late registrations, at-most-once, `ErrNotStarted`, never call it from Start-time code); verify the example and the docs lint and build pass
+- [x] 33.1 RED: add `TestRefresh_StartsNew` (scenario "Refresh starts late registrations and new scopes once", 2 rows), `TestRefresh_NothingNew` and `TestIncrementalStart_Phase` (scenario "Incremental start in the wrong phase", the 3 `root.Refresh()` rows) to `root_start_test.go`; verify `go test -race -run 'TestRefresh_(StartsNew|NothingNew)|TestIncrementalStart_Phase' .` fails to compile only on `Refresh` and `ErrNotStarted`
+- [x] 33.2 GREEN: add `ErrNotStarted`, `pipelineMu` with the `started`/`handled` sets keyed by wrapper (Start records them), `beginIncremental` with the phase guard, and `RootScope.Refresh`/`RefreshWithContext` running the pipeline over unstarted candidates of the whole tree (design P1–P3); verify the 33.1 command passes and `make test` is green
+- [x] 33.3 REFACTOR: *Extract Function* `runPipeline(ctx, roots, incremental)` shared by `Start` and `Refresh`, and *Parameterize Function* `discoverCandidates(roots, skip)`; verify `make test` and `make lint` pass
+- [x] 33.4 Add `ExampleRootScope_Refresh` and a "Refresh" section on the starter page (late registrations, at-most-once, `ErrNotStarted`, never call it from Start-time code); verify the example and the docs lint and build pass
 
 ## 34. Scope.Start starts a subtree (container-start; design P2)
 
