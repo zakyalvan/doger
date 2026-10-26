@@ -315,10 +315,10 @@ Rules:
 
 ## 46. Live collections (live-collections; design S4)
 
-- [ ] 46.1 RED: add `collection_test.go` with `TestCollection_LaterRegistrations` (2 rows), `TestCollection_CreationBuildsNothing`, `TestCollection_HeldByProvider`, `TestCollection_ReadOutcomes` (3 rows) and `TestCollection_ConcurrentReads`; verify `go test -race -run TestCollection_ .` fails to compile only on `Collection` and `InvokeCollection`
-- [ ] 46.2 GREEN: add `Collection[T]` with `All`/`Map` over the captured injector and `InvokeCollection` (design S4); verify the 46.1 command passes and `make test` is green
-- [ ] 46.3 REFACTOR: none needed if `All`/`Map` only delegate to the Part K pipeline; verify `make test` and `make lint` pass
-- [ ] 46.4 Add `ExampleInvokeCollection` and the live-collection section of the collection-invocation page (snapshot vs live); verify the example and the docs lint and build pass
+- [x] 46.1 RED: add `collection_test.go` with `TestCollection_LaterRegistrations` (2 rows), `TestCollection_CreationBuildsNothing`, `TestCollection_HeldByProvider`, `TestCollection_ReadOutcomes` (3 rows) and `TestCollection_ConcurrentReads`; verify `go test -race -run TestCollection_ .` fails to compile only on `Collection` and `InvokeCollection`
+- [x] 46.2 GREEN: add `Collection[T]` with `All`/`Map` over the captured injector and `InvokeCollection` (design S4); verify the 46.1 command passes and `make test` is green
+- [x] 46.3 REFACTOR: none needed if `All`/`Map` only delegate to the Part K pipeline; verify `make test` and `make lint` pass
+- [x] 46.4 Add `ExampleInvokeCollection` and the live-collection section of the collection-invocation page (snapshot vs live); verify the example and the docs lint and build pass
 
 ## 47. Per-service health checks honor HealthCheckTimeout (health-check-timeouts; design S6)
 

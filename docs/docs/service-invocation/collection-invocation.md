@@ -127,3 +127,24 @@ If `Order()` panics, `InvokeAll` returns no collection and an error naming the m
 - **shutdown** follows the dependency graph: a provider that collected members is shut down **before** them, whatever their order.
 
 To order a lifecycle, declare dependencies instead.
+
+## Snapshots and live collections {#live-collections}
+
+`InvokeAll` and `InvokeAllMap` return a **snapshot**: services registered after the call are not added to it, and changing the result does not affect later calls. Resolve once and keep the result outside hot loops.
+
+`doger.InvokeCollection[T]` returns a **live** `doger.Collection[T]` instead. Creating it builds nothing; each `All()` or `Map()` call resolves the members again, with the same rules as `InvokeAll` and `InvokeAllMap`:
+
+```go
+type Bus struct {
+    handlers doger.Collection[EventHandler]
+}
+
+doger.Provide(injector, func(i doger.Injector) (*Bus, error) {
+    return &Bus{handlers: doger.InvokeCollection[EventHandler](i)}, nil
+})
+
+// later, after more handlers were registered:
+handlers, err := bus.handlers.All() // includes them
+```
+
+When the collection was created from a provider's injector, every read excludes that provider's service and records its dependency on each member, so shutdown order stays correct. A `Collection` is safe to copy and to read concurrently.

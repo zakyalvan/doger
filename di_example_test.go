@@ -597,3 +597,21 @@ func ExampleInvokeStruct_collection() {
 	// sms: hi
 	// 2
 }
+
+func ExampleInvokeCollection() {
+	injector := New()
+	ProvideNamed(injector, "email", func(Injector) (*exampleEmailNotifier, error) { return &exampleEmailNotifier{}, nil })
+
+	notifiers := InvokeCollection[exampleNotifier](injector)
+
+	// Registered after the collection was created: still a member.
+	ProvideNamed(injector, "sms", func(Injector) (*exampleSMSNotifier, error) { return &exampleSMSNotifier{}, nil })
+
+	all, _ := notifiers.All() // resolved now
+	for _, notifier := range all {
+		fmt.Println(notifier.Notify("hi"))
+	}
+	// Output:
+	// email: hi
+	// sms: hi
+}
