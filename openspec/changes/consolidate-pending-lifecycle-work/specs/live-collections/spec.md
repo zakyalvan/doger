@@ -75,7 +75,7 @@ And the "console" provider was called exactly 1 time
 <!-- cases: N/A 10 compatibility: new API -->
 
 ### Requirement: Reads after the holder's provider returned
-When `i` is a provider's injector and that provider has returned, `All()`/`Map()` SHALL resolve from the provider's scope, excluding only the holder, without the provider's build-time invoker chain and without recording dependency edges. Reads made while the provider runs keep the rules of `InvokeAll`.
+When `i` is a provider's injector and that provider has returned, `All()`/`Map()` SHALL resolve from the provider's scope, excluding only the holder, without recording dependency edges, and keeping from its build-time invoker chain only the providers still running. Reads made while the provider runs keep the rules of `InvokeAll`.
 
 #### Scenario: Reads after the holder's provider returned
 ```gherkin
@@ -92,12 +92,29 @@ Examples:
   | c.Map() | {"app"} keys, nil error      |
 ```
 
+#### Scenario: A read while an outer provider still runs
+```gherkin
+Given lazy "app" implementing "EventHandler" whose provider invokes "bus", then calls All() on bus's collection and returns its error
+And lazy "bus" implementing "EventHandler" whose provider stores c := InvokeCollection[EventHandler](i)
+When the consumer invokes "app" within 1s
+Then the invocation returns an error matching ErrCircularDependency that names "app"
+```
+
+#### Scenario: A read while the holder's provider runs
+```gherkin
+Given lazy "console" implementing "EventHandler"
+And lazy "bus" implementing "EventHandler" whose provider calls All() on c := InvokeCollection[EventHandler](i) and records the result
+When the consumer invokes "bus"
+Then the recorded result is [console], without "bus"
+And ExplainNamedService(root, "bus") lists dependency console
+```
+
 <!-- cases: 1 default: a holder built through one of its members -->
 <!-- cases: N/A 2 overrides: there is no option -->
 <!-- cases: N/A 3 zero values, 4 boundaries: covered by the main requirement -->
 <!-- cases: N/A 5 errors: member failures are returned as for InvokeAll -->
 <!-- cases: 6 duplicates: the holder stays excluded -->
-<!-- cases: 7 lifecycle: during versus after the provider -->
+<!-- cases: 7 lifecycle: during versus after the provider; an outer provider still running keeps cycle detection -->
 <!-- cases: N/A 8 concurrency: covered by "Concurrent reads are race-free" -->
 <!-- cases: N/A 9 panics: as for InvokeAll -->
 <!-- cases: N/A 10 compatibility: new API -->

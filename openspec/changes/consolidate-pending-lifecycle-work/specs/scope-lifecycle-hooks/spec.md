@@ -59,6 +59,29 @@ Examples:
 <!-- cases: 9 panics: the panic row -->
 <!-- cases: N/A 10 compatibility: new API -->
 
+### Requirement: Scope hooks receive a non-nil context
+Every scope hook SHALL receive a non-nil context: a nil context passed to `Scope.ShutdownWithContext` or `Scope.StartWithContext` SHALL reach the hooks as `context.Background()`, as for container hooks.
+
+#### Scenario: Nil context reaches scope hooks as non-nil
+```gherkin
+Given a started root container and child scope "tenant" with scope hooks recording their contexts
+When the consumer calls <operation>
+Then every recorded context is non-nil
+And <count> contexts were recorded
+
+Examples:
+  | operation                       | count |
+  | tenant.StartWithContext(nil)    | 2     |
+  | tenant.ShutdownWithContext(nil) | 2     |
+```
+
+<!-- cases: 1 default: the nil context is the subject -->
+<!-- cases: N/A 2 overrides: a non-nil context is passed through unchanged (existing scenarios) -->
+<!-- cases: 3 zero values: nil -->
+<!-- cases: N/A 4 boundaries, 5 errors, 6 duplicates, 8 concurrency, 9 panics: none -->
+<!-- cases: 7 lifecycle: start and shutdown -->
+<!-- cases: N/A 10 compatibility: new API -->
+
 ### Requirement: Scope Closing and Closed hooks bracket a child scope shutdown
 When a child scope shuts down, directly or as part of its parent's shutdown, `HookScopeClosing` SHALL run with that scope before its services are shut down and `HookScopeClosed` after. They SHALL run once per shutdown of each child scope, children before their parent.
 

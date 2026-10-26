@@ -193,7 +193,7 @@ A `HookContainerStarting` or `HookContainerClosing` hook MUST NOT call root `Shu
 #### Scenario: Starting or Closing hook calls Shutdown with a deadline
 ```gherkin
 Given a root container with counting Closing, Closed and Failed hooks
-And a <hook> hook that calls root.ShutdownWithContext with a 1s deadline, records the report and returns nil
+And a <hook> hook that calls root.ShutdownWithContext with a 1s deadline, records the report and returns <returns>
 When the consumer calls <operation> inside synctest.Test
 Then the recorded report has Succeed false and every error in it matches context.DeadlineExceeded
 And <outcome>
@@ -201,9 +201,10 @@ And the counting Closing hook ran exactly 1 time
 And the counting Closed hook ran exactly 1 time
 
 Examples:
-  | hook     | operation | outcome                                                                                   |
-  | Starting | Start     | Start returns an error matching ErrStartAfterShutdown and the Failed hook ran 1 time      |
-  | Closing  | Shutdown  | Shutdown returns a report with Succeed true and the Failed hook ran 0 times               |
+  | hook     | returns | operation | outcome                                                                                              |
+  | Starting | nil     | Start     | Start returns an error matching ErrStartAfterShutdown and the Failed hook ran 1 time                 |
+  | Starting | errVeto | Start     | Start returns an error matching both ErrStartAfterShutdown and errVeto and the Failed hook ran 1 time |
+  | Closing  | nil     | Shutdown  | Shutdown returns a report with Succeed true and the Failed hook ran 0 times                          |
 ```
 
 <!-- cases: N/A 2 overrides: the deadline is the consumer's escape hatch -->
@@ -274,6 +275,21 @@ Examples:
   | Start finishes first      | a Started hook that blocks until Shutdown has returned                                                  | nil                                                              | 1       | 1     | 0      | the recorded order is "started-hook, closing-hook, closed-hook, ready-hook" |
   | Shutdown cancels Start    | a Starter "a" whose Start(ctx) blocks until ctx.Done() and returns ctx.Err()                            | an error for which errors.Is(err, ErrStartAfterShutdown) is true | 0       | 0     | 1      | the Closing hook ran after "a".Start returned                               |
   | Shutdown in the last step | a StageAfterStart kind handler that starts Shutdown in a goroutine, waits until synctest.Wait shows it blocked, and returns nil | an error for which errors.Is(err, ErrStartAfterShutdown) is true | 0       | 0     | 1      | the Closing hook ran after the handler returned                             |
+```
+
+#### Scenario: Shutdown interrupts a Starting hook or a late pipeline step
+```gherkin
+Given a root container inside synctest.Test with a Failed hook recording its error
+And <setup>
+When the consumer calls Start
+Then Start returns an error for which errors.Is(err, ErrStartAfterShutdown) is true
+And the Failed hook received that same error
+
+Examples:
+  | setup                                                                                                                                         |
+  | a Starting hook that starts Shutdown in a goroutine, waits for ctx.Done() and returns ctx.Err()                                                |
+  | lazy "x" registered as any with kind "k" for Job, whose provider starts Shutdown in a goroutine, waits until it is blocked and returns a non-Job value |
+  | a StageBeforeStart handler of kind "k" for lazy "j" that declares the dependency cycle a -> b -> a, starts Shutdown in a goroutine, waits until it is blocked and returns nil |
 ```
 
 #### Scenario: A start finishing as Shutdown begins

@@ -432,3 +432,46 @@ Rules:
 - [x] 64.1 Full run: `make test`, `make lint`, per-module `go vet ./... && go test -race ./...` in every `go.work` module, `npm --prefix docs run lint && npm --prefix docs run build`, and `openspec validate consolidate-pending-lifecycle-work --strict`
 - [x] 64.2 Traceability: run every test named in the design's Test Strategy rows for Part V with `-race -v` and verify each lists PASS with row counts matching the scenarios
 - [x] 64.3 Benchmarks: compare `BenchmarkInvokeAs`, `BenchmarkInvokeAlias`, `BenchmarkProvide`, `BenchmarkNew`, `BenchmarkShutdown` and the invoke benchmarks against `ed65bdc` with `benchstat` (20 interleaved runs) and record them in notes.md
+
+## 65. Live-collection reads keep the still-running chain (live-collections; design V17)
+
+- [ ] 65.1 RED: add `TestCollection_ReadDuringOuterProvider` to `collection_test.go`; verify `go test -race -run TestCollection_ReadDuringOuterProvider .` times out on the deadlock
+- [ ] 65.2 GREEN: link each provider's virtual scope to its invoker's, and resolve a read on a returned scope through a detached virtual scope that keeps the still-running providers, records no edge and excludes only the holder; verify the 65.1 command passes, `TestCollection_*` pass unchanged, and `make test` is green
+- [ ] 65.3 REFACTOR: *Extract Function* `runningChain(vScope)`; verify `make test` and `make lint` pass
+
+## 66. Start failures after Shutdown began carry the abort cause (container-lifecycle-hooks, container-start; design V18)
+
+- [ ] 66.1 RED: add the errVeto row to `TestContainerHooks_HookCallsShutdownWithDeadline`, `TestContainerHooks_ShutdownInterruptsLateStep` (3 rows) and `TestScopeStartingHook_ShutdownCause`; verify `go test -race -run 'TestContainerHooks_HookCallsShutdownWithDeadline|TestContainerHooks_ShutdownInterruptsLateStep|TestScopeStartingHook_ShutdownCause' .` fails because the errors do not match `ErrStartAfterShutdown`
+- [ ] 66.2 GREEN: wrap the Starting-hook vetoes, the deferred kind-binding error and the cycle error with `withAbortCause`; verify the 66.1 command passes, the Part H tables pass unchanged, and `make test` is green
+- [ ] 66.3 REFACTOR: none needed if each site is one wrap; verify `make test` and `make lint` pass
+
+## 67. Scope hooks get a non-nil context (scope-lifecycle-hooks; design V20)
+
+- [ ] 67.1 RED: add `TestScopeHooks_NilContext` (2 rows) to `scope_hooks_test.go`; verify `go test -race -run TestScopeHooks_NilContext .` fails on the shutdown row and record whether the start row passes on arrival
+- [ ] 67.2 GREEN: normalize a nil context at the top of `Scope.ShutdownWithContext` (and `Scope.StartWithContext` if needed); verify the 67.1 command passes and `make test` is green
+- [ ] 67.3 REFACTOR: drop the now redundant nil check in `beginClosing`; verify `make test` and `make lint` pass
+
+## 68. Bookkeeping skips services that left their scope (container-start; design V21)
+
+- [ ] 68.1 RED: extend `TestScopeShutdown_WaitBounded` with the bookkeeping assertion; verify `go test -race -run TestScopeShutdown_WaitBounded .` fails because the shut-down wrapper is in `started`
+- [ ] 68.2 GREEN: mark started and handled only while the candidate's scope still holds its wrapper; verify the 68.1 command passes and `make test` is green
+- [ ] 68.3 REFACTOR: *Extract Function* `stillRegistered(candidate)`; verify `make test` and `make lint` pass
+
+## 69. A scope's shutdown covers its descendants (container-start; design V22)
+
+- [ ] 69.1 RED: add `TestScopeShutdown_DescendantSkipped` to `root_refresh_test.go`; verify `go test -race -run TestScopeShutdown_DescendantSkipped .` fails because "w" was started
+- [ ] 69.2 GREEN: drop candidates whose scope or any ancestor is closing in `claimCandidates`; verify the 69.1 command passes, `TestScopeShutdown_*` pass unchanged, and `make test` is green
+- [ ] 69.3 REFACTOR: *Extract Function* `closingInLine(scope)`; update the `Scope.ShutdownWithContext` godoc and the starter page; verify `make test`, `make lint` and the docs lint and build pass
+
+## 70. Test corrections (design V19)
+
+- [ ] 70.1 Fix the `TestRefresh_ShutdownCancels` flake with `synctest.Wait()`; verify `go test -race -count=20000 -run '^TestRefresh_ShutdownCancels$' .` passes
+- [ ] 70.2 Require the events before the `indexOf` comparisons in `invoke_all_test.go` and `invoke_all_order_test.go`, assert non-nil in `TestInvokeAll_AfterShutdown`, and create the collection before the shutdown in `TestCollection_ReadOutcomes`; verify the tests pass and each strengthened check fails under a temporary mutation (reverted)
+- [ ] 70.3 Assert the phase reached after each row of `TestContainerHooks_ObserverPanicDefault`; verify it passes
+- [ ] 70.4 Switch the eager fixtures to lazy where the spec says lazy (`TestPhase_Lifecycle`, `TestPhase_RaceFree`, `TestScopeHooks_ObserverPanic`, `TestStartError_Fields`, `TestStartError_Incremental`, `TestStart_ParallelFailure`, `TestRefresh_ShutdownCancels`) and assert the failed row's error in `TestPhase_Lifecycle`; verify they pass
+- [ ] 70.5 Add `TestCollection_ReadDuringHolderProvider` and an `InvokeCollection(nil)` row; make `TestScopeStart_RootScope` use a provider's scope; verify they pass, and that the new tests fail under a temporary mutation (reverted)
+
+## 71. Integration checks after the second verification
+
+- [ ] 71.1 Full run: `make test`, `make lint`, per-module `go vet ./... && go test -race ./...` in every `go.work` module, the docs lint and build, and `openspec validate consolidate-pending-lifecycle-work --strict`
+- [ ] 71.2 Stress: run the Part V and V2 lifecycle tests with `-race -count=2000`; verify no failure

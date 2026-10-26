@@ -203,6 +203,22 @@ Found by `/opsx:verify` and a code review, each reproduced by a failing test bef
 
 **V15, V16. Duplication (refactors).** `queueServiceHealthcheck` calls `perServiceHealthCheckContext`. One generic veto loop serves container and scope Starting hooks, and one observer loop serves container and scope observer hooks, each taking its panic-wrapping function, so messages are unchanged.
 
+### Part V2 — Second verification
+
+A second `/opsx:verify` found four defects, each reproduced by a probe test, plus test gaps. The user asked to fix every warning and apply every suggestion.
+
+**V17. Live-collection reads keep the still-running part of the chain (fixes a V5 regression).** Each virtual scope a provider receives links to the virtual scope of its invoker (`parent`). A read on a returned scope keeps, root first, the names of the providers on that parent chain that have not returned. When some are still running, the read resolves through a detached virtual scope holding those names, so `detectCircularDependency` still rejects a member whose provider is running (as before V5) instead of deadlocking on its lock. A detached virtual scope never records edges, and the holder stays the only excluded service.
+
+**V18. Every Start failure after Shutdown began carries the abort cause.** `runStartingHooks`, `runScopeStartingHooks`, the deferred kind-binding check of `buildCandidates` and `checkCycles` wrap their errors with `withAbortCause`, like the other pipeline failures.
+
+**V19. Test-only fixes.** `TestRefresh_ShutdownCancels` waits for the Refresh goroutine (`synctest.Wait`) before its non-blocking check; vacuous `indexOf` comparisons first require the events; result checks assert non-nil; the observer-panic tests assert the phase reached afterwards; fixtures follow the spec's lazy wording; `TestScopeStart_RootScope` uses a provider's scope.
+
+**V20. Scope hooks get a non-nil context.** `Scope.ShutdownWithContext` and `Scope.StartWithContext` normalize a nil context before any hook runs.
+
+**V21. Bookkeeping skips services that left their scope.** `startCandidate` marks a Starter started, and the kind stage marks a component handled, only while its scope still holds that wrapper. After a bounded child shutdown gave up waiting, a run finishing later no longer re-adds the shut-down wrapper.
+
+**V22. A scope's shutdown covers its descendants (user decision, "apply suggestions").** `claimCandidates` drops a candidate when its scope or any ancestor scope is closing, so a scope created under a scope that is shutting down is not started.
+
 ### Part H — Container lifecycle hooks (folded from `add-container-lifecycle-hooks`)
 
 #### H: Context
@@ -584,6 +600,14 @@ All tests run under `go test -race` with goleak (`TestMain`). Tests that could h
 | service-build-hooks | A build hook can use its own service (3 rows) | `build_hooks_test.go: TestAfterBuildHook_ReentersService/<row>` | table (regression, V10) |
 | dependency-declaration | Explained output round-trips through JSON (4 rows) | `dependency_test.go: TestDependencySource_UnmarshalText/<text>` | table (regression, V11) |
 | type-resolution | A shadowed service is not a candidate (3 rows) | `invoke_test.go: TestInvokeAs_Shadowing/<row>` | table (regression, V14) |
+| live-collections | A read while an outer provider still runs | `collection_test.go: TestCollection_ReadDuringOuterProvider` | unit (regression, V17) |
+| live-collections | A read while the holder's provider runs | `collection_test.go: TestCollection_ReadDuringHolderProvider` | unit (V19) |
+| container-lifecycle-hooks | Starting or Closing hook calls Shutdown with a deadline (new errVeto row) | `container_hooks_test.go: TestContainerHooks_HookCallsShutdownWithDeadline/<row>` | synctest (regression, V18) |
+| container-lifecycle-hooks | Shutdown interrupts a Starting hook or a late pipeline step (3 rows) | `container_hooks_test.go: TestContainerHooks_ShutdownInterruptsLateStep/<row>` | synctest (regression, V18) |
+| container-start | Shutdown interrupts a scope Starting hook | `root_refresh_test.go: TestScopeStartingHook_ShutdownCause` | synctest (V18) |
+| container-start | A scope created under a shutting-down scope is skipped | `root_refresh_test.go: TestScopeShutdown_DescendantSkipped` | unit (regression, V22) |
+| container-start | A child shutdown bounded by its context (new bookkeeping line) | `root_refresh_test.go: TestScopeShutdown_WaitBounded` | synctest (regression, V21) |
+| scope-lifecycle-hooks | Nil context reaches scope hooks as non-nil (2 rows) | `scope_hooks_test.go: TestScopeHooks_NilContext/<operation>` | table (regression, V20) |
 
 Finding tests without a spec scenario (F2, F4, F5, V12):
 - `root_refresh_test.go: TestRootScope_ForgetsShutDownServices` (group 49) and `TestRootScope_ForgetsOverriddenServices` (regression, V12, internal);

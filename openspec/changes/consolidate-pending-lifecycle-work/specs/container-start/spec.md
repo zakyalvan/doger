@@ -152,7 +152,7 @@ Given a root scope with lazy Starter "a" and child scope "tenant" with lazy Star
 And the consumer has <previous>
 When the consumer calls <operation>
 Then the result matches <result>
-And "w" was started 0 times
+And the operation started nothing ("w" is started by no Refresh or Scope.Start)
 
 Examples:
   | previous                                                   | operation      | result                |
@@ -210,6 +210,14 @@ When the consumer calls Shutdown()
 Then Shutdown returns after Refresh returned
 And the report succeeds
 And Refresh returns an error matching ErrStartAfterShutdown
+```
+
+#### Scenario: Shutdown interrupts a scope Starting hook
+```gherkin
+Given a started root container inside synctest.Test and child scope "tenant", created after Start
+And a HookScopeStarting hook that starts root Shutdown in a goroutine, waits for ctx.Done() and returns ctx.Err()
+When the consumer calls tenant.Start()
+Then it returns an error for which errors.Is(err, ErrStartAfterShutdown) is true
 ```
 
 <!-- cases: N/A 2 overrides: serialization is not configurable -->
@@ -376,7 +384,7 @@ Examples:
 <!-- cases: 10 compatibility: messages and errors.Is behavior are unchanged; errors.As is additive -->
 
 ### Requirement: Child scope shutdown waits for a start that is starting its services
-A child scope's `Shutdown`/`ShutdownWithContext` that begins while a `Start`, `Refresh` or `Scope.Start` is running, and that run has services of this scope among its candidates, SHALL wait for that run to return, without cancelling it, before shutting anything down. A run that begins while the scope shuts down SHALL NOT start or handle services of that scope. Shutting such a scope down synchronously from code running in that run deadlocks, as for root Shutdown.
+A child scope's `Shutdown`/`ShutdownWithContext` that begins while a `Start`, `Refresh` or `Scope.Start` is running, and that run has services of this scope among its candidates, SHALL wait for that run to return, without cancelling it, before shutting anything down. A run that begins while the scope shuts down SHALL NOT start or handle services of that scope or of its descendant scopes. Shutting such a scope down synchronously from code running in that run deadlocks, as for root Shutdown.
 
 #### Scenario: Child shutdown waits for a running start
 ```gherkin
@@ -429,6 +437,16 @@ And tmp.Shutdown() returned a successful report while Start was running
 ### Requirement: A child shutdown wait is bounded by its context
 If the context of a child scope's `ShutdownWithContext` ends while it waits for a running start, the report SHALL fail with an error keyed by the scope with an empty service name wrapping `ctx.Err()`, and the shutdown SHALL proceed.
 
+#### Scenario: A scope created under a shutting-down scope is skipped
+```gherkin
+Given a started root container and child scope "tenant"
+And tenant.Shutdown() is running in another goroutine, blocked in a HookScopeClosing hook
+And the consumer then creates grandchild "jobs" under "tenant" with lazy Starter "w"
+When the consumer calls root.Refresh()
+Then Refresh returns nil
+And "w" was started 0 times
+```
+
 #### Scenario: A child shutdown bounded by its context
 ```gherkin
 Given a started root container inside synctest.Test and child scope "tenant" with lazy Starter "w", registered after Start, whose Start blocks until released
@@ -436,6 +454,7 @@ And root.Refresh() is running in another goroutine and "w" has entered Start
 When the consumer calls tenant.ShutdownWithContext(ctx) with a 1s timeout
 Then it returns after 1s of bubble time with a failed report
 And the report has an error keyed by scope "tenant" with an empty service name, matching context.DeadlineExceeded
+And once "w" is released and Refresh returned, the start bookkeeping holds no entry for "w"
 ```
 
 <!-- cases: 1 default: Shutdown() uses context.Background() and waits until the run returns -->
