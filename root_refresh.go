@@ -33,15 +33,18 @@ func (s *RootScope) RefreshWithContext(ctx context.Context) error {
 		ctx = context.Background()
 	}
 
-	return s.startIncremental(ctx, s.self)
+	_, err := s.startIncremental(ctx, s.self)
+	return err
 }
 
 // startIncremental runs the pipeline over the subtree of root. For a child
-// scope, the scope Starting hooks run first and can veto it.
-func (s *RootScope) startIncremental(ctx context.Context, root *Scope) (err error) {
+// scope, the scope Starting hooks run first and can veto it. closing reports
+// that root was shutting down, or under a scope that was, so that nothing of
+// it was started.
+func (s *RootScope) startIncremental(ctx context.Context, root *Scope) (closing bool, err error) {
 	// fail fast instead of waiting for a running Start on pipelineMu
 	if err := s.incrementalPhaseError(); err != nil {
-		return err
+		return false, err
 	}
 
 	s.pipelineMu.Lock()
@@ -49,13 +52,13 @@ func (s *RootScope) startIncremental(ctx context.Context, root *Scope) (err erro
 
 	incCtx, err := s.beginIncremental(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer func() { s.finishIncremental(incCtx, &err) }()
 
 	if root != s.self {
 		if err := s.runScopeStartingHooks(incCtx, root); err != nil {
-			return err
+			return false, err
 		}
 	}
 
@@ -172,11 +175,13 @@ func (s *Scope) StartWithContext(ctx context.Context) error {
 		ctx = context.Background()
 	}
 
-	if err := s.rootScope.startIncremental(ctx, s); err != nil {
+	closing, err := s.rootScope.startIncremental(ctx, s)
+	if err != nil {
 		return err
 	}
 
-	if s != s.rootScope.self {
+	// a scope shutting down started nothing: it has no Started hooks
+	if s != s.rootScope.self && !closing {
 		var first hookPanic
 		s.runScopeObserverHooks(ctx, "scope-started", s.rootScope.opts.HookScopeStarted, &first)
 		s.rootScope.dispatchFirstPanic(first)

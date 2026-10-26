@@ -111,6 +111,59 @@ func provideBuiltScopeShutdowner(t *testing.T, scope *Scope, rec *callRecorder) 
 	require.NoError(t, err)
 }
 
+func TestScopeStartedHook_SkippedWhileClosing(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		closing string // the scope whose shutdown is held in its Closing hook
+	}{
+		{name: "the scope itself", closing: "tenant"},
+		{name: "its parent", closing: "parent"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+			is := assert.New(t)
+
+			entered := make(chan struct{})
+			release := make(chan struct{})
+			var started atomic.Int32
+			root := New()
+			root.AddScopeStartedHook(func(context.Context, *Scope) { started.Add(1) })
+			root.AddScopeClosingHook(func(_ context.Context, scope *Scope) {
+				if scope.Name() == tt.closing {
+					close(entered)
+					<-release
+				}
+			})
+			require.NoError(t, root.Start())
+			parent := root.Scope("parent")
+			tenant := parent.Scope("tenant")
+			errUnused := errors.New("unused")
+			w := &flakyStarter{err: errUnused}
+			provideLazy(tenant, "w", w)
+			shuttingDown := map[string]*Scope{"parent": parent, "tenant": tenant}[tt.closing]
+
+			shutdownDone := make(chan struct{})
+			go func() {
+				defer close(shutdownDone)
+				shuttingDown.Shutdown()
+			}()
+			<-entered
+
+			is.NoError(tenant.Start())
+
+			close(release)
+			<-shutdownDone
+			is.Equal(int32(0), w.calls.Load(), "w was started")
+			is.Equal(int32(0), started.Load(), "HookScopeStarted ran")
+		})
+	}
+}
+
 func TestScopeHooks_ClosingClosed(t *testing.T) {
 	t.Parallel()
 

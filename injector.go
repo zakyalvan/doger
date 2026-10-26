@@ -218,7 +218,9 @@ type InjectorOpts struct {
 	HookScopeStarting []func(ctx context.Context, scope *Scope) error
 
 	// HookScopeStarted is called by Scope.Start on a child scope once its
-	// services started successfully.
+	// services started successfully. It is not called when the scope, or one
+	// of its ancestors, was shutting down, so that Scope.Start started
+	// nothing.
 	HookScopeStarted []func(ctx context.Context, scope *Scope)
 
 	// HookScopeClosing is called when a child scope shuts down, directly or

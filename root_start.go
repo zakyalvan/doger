@@ -333,37 +333,40 @@ func (s *RootScope) runStartPipeline(startCtx context.Context) error {
 		return err
 	}
 
-	return s.runPipeline(startCtx, []*Scope{s.self})
+	_, err := s.runPipeline(startCtx, []*Scope{s.self})
+	return err
 }
 
 // runPipeline builds, handles and starts what is not started or handled yet
 // in the subtrees of roots, with the abort checks of start-lifecycle D7.
-// Start, Refresh and Scope.Start share it.
-func (s *RootScope) runPipeline(ctx context.Context, roots []*Scope) error {
-	candidates := s.claimCandidates(s.discoverCandidates(roots))
+// Start, Refresh and Scope.Start share it. closing reports that every root
+// was shutting down, or under a scope that was, when the candidates were
+// claimed, so that nothing of them was started.
+func (s *RootScope) runPipeline(ctx context.Context, roots []*Scope) (closing bool, err error) {
+	candidates, closing := s.claimCandidates(roots, s.discoverCandidates(roots))
 
 	if err := buildCandidates(ctx, candidates); err != nil {
-		return err
+		return closing, err
 	}
 
 	if err := s.runStage(ctx, StageBeforeStart, candidates); err != nil {
-		return err
+		return closing, err
 	}
 
 	if err := s.checkCycles(candidates); err != nil {
-		return withAbortCause(ctx, err)
+		return closing, withAbortCause(ctx, err)
 	}
 
 	if err := s.startStarters(ctx, s.orderByDependencies(starterCandidates(candidates))); err != nil {
-		return err
+		return closing, err
 	}
 
 	// pointStartersUp
 	if err := s.runStage(ctx, StageAfterStart, candidates); err != nil {
-		return err
+		return closing, err
 	}
 
-	return checkAbort(ctx)
+	return closing, checkAbort(ctx)
 }
 
 // runStartingHooks runs the container Starting hooks in order. The first
@@ -451,8 +454,9 @@ func (s *RootScope) discoverCandidates(roots []*Scope) []*startCandidate {
 
 // claimCandidates drops the candidates of scopes that are shutting down, or
 // whose ancestor is, and records the scopes of the others, so that a child
-// scope shutdown waits for this run (see Scope.ShutdownWithContext).
-func (s *RootScope) claimCandidates(candidates []*startCandidate) []*startCandidate {
+// scope shutdown waits for this run (see Scope.ShutdownWithContext). closing
+// reports that every root was shutting down, or under a scope that was.
+func (s *RootScope) claimCandidates(roots []*Scope, candidates []*startCandidate) (claimed []*startCandidate, closing bool) {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
 
@@ -462,7 +466,7 @@ func (s *RootScope) claimCandidates(candidates []*startCandidate) []*startCandid
 		s.runScopes[candidate.scope] = struct{}{}
 	}
 
-	return candidates
+	return candidates, !slices.ContainsFunc(roots, func(root *Scope) bool { return !closingInLine(root) })
 }
 
 // closingInLine reports whether scope or one of its ancestors is shutting
