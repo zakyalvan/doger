@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -788,4 +789,38 @@ func TestRunnable_RefreshRunsOnce(t *testing.T) {
 	require.NoError(t, root.Refresh())
 
 	assert.Equal(t, []string{"run migrate", "run seed"}, events.list())
+}
+
+func TestKind_HandledGuard(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		is := assert.New(t)
+
+		root := New()
+		k := NewKind[Job, Spec]("k")
+		entered, release := make(chan struct{}), make(chan struct{})
+		k.Handle(root, StageBeforeStart, func(context.Context, Component[Job, Spec]) error {
+			close(entered)
+			<-release
+			return nil
+		})
+		require.NoError(t, root.Start())
+		tenant := root.Scope("tenant")
+		ProvideNamed(tenant, "j", func(Injector) (*CleanupJob, error) { return &CleanupJob{name: "j"}, nil }, k.With(Spec{}))
+		runErr := make(chan error, 1)
+		go func() { runErr <- root.Refresh() }()
+		<-entered
+		wrapper := wrapperOf(t, tenant, "j")
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+		defer cancel()
+
+		// gives up waiting for the handler and shuts "j" down
+		report := tenant.ShutdownWithContext(ctx)
+
+		is.False(report.Succeed)
+		close(release)
+		is.NoError(<-runErr)
+		_, handled := tracked(root, wrapper)
+		is.False(handled, "shut-down j re-added to handled")
+	})
 }
