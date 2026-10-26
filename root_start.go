@@ -790,13 +790,8 @@ func withAbortCause(startCtx context.Context, err error) error {
 // order of first Handle, each over its components in dependency order.
 func (s *RootScope) runStage(startCtx context.Context, stage Stage, candidates []*startCandidate) error {
 	s.kindsMu.Lock()
-	entries := slices.Clone(s.kinds)
+	entries := s.kinds // never written in place
 	s.kindsMu.Unlock()
-
-	if !slices.ContainsFunc(entries, func(e kindEntry) bool { return e.id == runnableKind.id }) {
-		// the built-in Runnable kind has an implicit default handler
-		entries = slices.Insert(entries, 0, defaultRunnableEntry)
-	}
 
 	for _, entry := range entries {
 		if entry.stage != stage {

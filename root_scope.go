@@ -76,6 +76,7 @@ func NewWithOpts(opts *InjectorOpts, packages ...func(Injector)) *RootScope {
 		opts:            opts,
 		dag:             newDAG(),
 		healthCheckPool: nil,
+		kinds:           defaultKinds,
 	}
 	root.self.rootScope = root
 
@@ -115,7 +116,7 @@ type RootScope struct {
 	declareMu    sync.Mutex    // serializes DeclareDependency (cycle check plus add)
 
 	kindsMu sync.Mutex
-	kinds   []kindEntry // kind handlers, in order of first Handle
+	kinds   []kindEntry // kind handlers, in order of first Handle; copied before written, as it may be shared
 
 	// Lifecycle state. Phases change only by compare-and-set under lifecycleMu,
 	// which is never held while user code runs.
@@ -719,11 +720,12 @@ func (s *RootScope) CloneWithOpts(opts *InjectorOpts) *RootScope {
 	return clone
 }
 
-// copyKindsTo copies the kind handler entries, in their order, into clone.
-// Entries do not depend on the container, so they can be shared.
+// copyKindsTo gives clone the kind handler entries, in their order. Entries
+// do not depend on the container, and kind lists are copied before they are
+// written, so the list itself is shared.
 func (s *RootScope) copyKindsTo(clone *RootScope) {
 	s.kindsMu.Lock()
-	kinds := slices.Clone(s.kinds)
+	kinds := s.kinds
 	s.kindsMu.Unlock()
 
 	clone.kindsMu.Lock()

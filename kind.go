@@ -120,18 +120,17 @@ func (k Kind[T, M]) Handle(root *RootScope, stage Stage, handler func(context.Co
 	root.kindsMu.Lock()
 	defer root.kindsMu.Unlock()
 
-	for i := range root.kinds {
-		if root.kinds[i].id == k.id {
-			root.kinds[i] = entry // keeps the slot: order of first Handle
+	// copy on write: the list may be shared with other containers
+	kinds := slices.Clone(root.kinds)
+	for i := range kinds {
+		if kinds[i].id == k.id {
+			kinds[i] = entry // keeps the slot: order of first Handle
+			root.kinds = kinds
 			return
 		}
 	}
-	if k.id == runnableKind.id {
-		// the implicit default handler occupies the first slot: keep it
-		root.kinds = slices.Insert(root.kinds, 0, entry)
-		return
-	}
-	root.kinds = append(root.kinds, entry)
+	kinds = append(kinds, entry)
+	root.kinds = kinds
 }
 
 // newEntry type-erases handler into a kind entry for stage.

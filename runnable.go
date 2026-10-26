@@ -32,10 +32,13 @@ func AsRunnable() ProvideOption {
 	return runnableKind.With(struct{}{})
 }
 
-// defaultRunnableEntry is the default Runnable handler entry. A container
-// without its own Runnable entry runs it in the first StageAfterStart slot,
-// so New does not allocate it per container.
+// defaultRunnableEntry is the default Runnable handler entry.
 var defaultRunnableEntry = runnableKind.newEntry(StageAfterStart, runRunner)
+
+// defaultKinds is the kind list every new container starts with: the
+// default Runnable handler in the first slot. Containers share it, so New
+// does not allocate it; kind lists are copied before they are written.
+var defaultKinds = []kindEntry{defaultRunnableEntry}
 
 // runRunner is the default Runnable handler: it runs the runner inline.
 func runRunner(ctx context.Context, c Component[Runner, struct{}]) error {
