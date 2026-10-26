@@ -374,11 +374,11 @@ func (s *Scope) Shutdown() *ShutdownReport {
 //
 // On a child scope, it first waits, without cancelling it, for a running
 // Start, Refresh or Scope.Start that is starting services of this scope, and
-// a run that begins while the scope shuts down skips it and its descendants. If ctx ends first,
-// the report fails with an error keyed by this scope with an empty service
-// name, wrapping ctx.Err(), and the shutdown proceeds. Never shut down,
-// synchronously from code running in such a start, a scope that the start is
-// starting: it would wait for itself.
+// a run that begins while the scope shuts down skips it and its descendants.
+// If ctx ends first, the report fails with an error keyed by this scope with
+// an empty service name, wrapping ctx.Err(), and the shutdown proceeds. Never
+// shut down, synchronously from code running in such a start, a scope that
+// the start is starting: it would wait for itself.
 //
 // Parameters:
 //   - ctx: Context for cancellation and timeout control
