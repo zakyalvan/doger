@@ -6,27 +6,20 @@ Lets a consumer classify each health check at registration, by tags such as read
 
 ## ADDED Requirements
 
-### Requirement: A health checker counts toward readiness and is critical unless its registration says otherwise
-With no classification option, a health checker SHALL carry the single tag `HealthTagReadiness` ("readiness") and SHALL be critical. `WithHealthTags(tags...)` SHALL replace the default tags with the given ones, accumulating across repeats with duplicates collapsed. `AsOptionalHealth()` SHALL mark the service optional. Report entries SHALL expose `Tags` (sorted) and `Optional`.
+### Requirement: An unclassified health checker counts toward readiness and is critical
+A health checker registered without `WithHealthTags` SHALL carry the single tag `HealthTagReadiness` ("readiness"), and one registered without `AsOptionalHealth` SHALL be critical. Report entries SHALL expose `Tags`, sorted, and `Optional`.
 
-#### Scenario: Classification of a registration
+#### Scenario: Default classification
 ```gherkin
 Given an injector that is never started
 And a Healthchecker value "db" registered with options <options>
 When the consumer calls HealthReport() on the root scope
-Then the entry for "db" has Tags <tags> and Optional <optional>
+Then the entry for "db" has Tags ["readiness"] and Optional false
 
 Examples:
-  | options                                                       | tags                      | optional |
-  | none                                                          | ["readiness"]             | false    |
-  | WithHealthTags(HealthTagLiveness)                             | ["liveness"]              | false    |
-  | WithHealthTags(HealthTagLiveness, HealthTagReadiness)         | ["liveness", "readiness"] | false    |
-  | WithHealthTags("db"), WithHealthTags("db", "external")        | ["db", "external"]        | false    |
-  | WithHealthTags()                                              | []                        | false    |
-  | AsOptionalHealth()                                            | ["readiness"]             | true     |
-  | AsOptionalHealth(), AsOptionalHealth()                        | ["readiness"]             | true     |
-  | AsOptionalHealth(), WithHealthTags("cache")                   | ["cache"]                 | true     |
-  | nil                                                           | ["readiness"]             | false    |
+  | options |
+  | none    |
+  | nil     |
 ```
 
 #### Scenario: Predefined tag values
@@ -41,16 +34,73 @@ Examples:
   | HealthTagLiveness  | liveness  |
 ```
 
-<!-- cases: 1 default: the "none" row -->
-<!-- cases: 2 overrides: every option and their combinations -->
-<!-- cases: 3 zero values: WithHealthTags() with no tags; a nil option is ignored as in registration-options -->
-<!-- cases: 4 boundaries: 0, 1 and 2 tags; repeats -->
-<!-- cases: N/A 5 errors: invalid options are the next requirement -->
-<!-- cases: 6 not found/duplicate: duplicate tags collapse; a repeated AsOptionalHealth is idempotent -->
+<!-- cases: 1 default: this requirement -->
+<!-- cases: N/A 2 overrides: the next two requirements -->
+<!-- cases: 3 zero values: a nil option is ignored as in registration-options -->
+<!-- cases: N/A 4 boundaries: not applicable -->
+<!-- cases: N/A 5 errors: invalid options are a later requirement -->
+<!-- cases: N/A 6 not found/duplicate: not applicable -->
 <!-- cases: N/A 7 lifecycle: Clone and Override are a later requirement -->
 <!-- cases: N/A 8 concurrency: options are values fixed at registration -->
-<!-- cases: N/A 9 panics: next requirement -->
+<!-- cases: N/A 9 panics: a later requirement -->
 <!-- cases: 10 backward compatibility: a registration without options behaves as before; every checker is in the unfiltered report -->
+
+### Requirement: WithHealthTags replaces the default tags
+`WithHealthTags(tags...)` SHALL replace the default tags with the given ones. Repeated `WithHealthTags` options SHALL accumulate, with duplicates collapsed, and `WithHealthTags()` with no tag SHALL leave the service with no tag.
+
+#### Scenario: Tags of a registration
+```gherkin
+Given an injector that is never started
+And a Healthchecker value "db" registered with options <options>
+When the consumer calls HealthReport() on the root scope
+Then the entry for "db" has Tags <tags>
+
+Examples:
+  | options                                                 | tags                      |
+  | WithHealthTags(HealthTagLiveness)                       | ["liveness"]              |
+  | WithHealthTags(HealthTagLiveness, HealthTagReadiness)   | ["liveness", "readiness"] |
+  | WithHealthTags("db"), WithHealthTags("db", "external")  | ["db", "external"]        |
+  | WithHealthTags()                                        | []                        |
+```
+
+<!-- cases: N/A 1 default: previous requirement -->
+<!-- cases: 2 overrides: single, several and repeated options -->
+<!-- cases: 3 zero values: no tag given -->
+<!-- cases: 4 boundaries: 0, 1 and 2 tags; repeats -->
+<!-- cases: N/A 5 errors: invalid options are a later requirement -->
+<!-- cases: 6 not found/duplicate: duplicate tags collapse -->
+<!-- cases: N/A 7 lifecycle: a later requirement -->
+<!-- cases: N/A 8 concurrency: not applicable -->
+<!-- cases: N/A 9 panics: a later requirement -->
+<!-- cases: N/A 10 backward compatibility: new option -->
+
+### Requirement: AsOptionalHealth marks a service optional
+`AsOptionalHealth()` SHALL mark the service optional, whatever its tags. Repeating it SHALL be equivalent to giving it once.
+
+#### Scenario: Severity of a registration
+```gherkin
+Given an injector that is never started
+And a Healthchecker value "db" registered with options <options>
+When the consumer calls HealthReport() on the root scope
+Then the entry for "db" has Tags <tags> and Optional <optional>
+
+Examples:
+  | options                                     | tags          | optional |
+  | AsOptionalHealth()                          | ["readiness"] | true     |
+  | AsOptionalHealth(), AsOptionalHealth()      | ["readiness"] | true     |
+  | AsOptionalHealth(), WithHealthTags("cache") | ["cache"]     | true     |
+```
+
+<!-- cases: N/A 1 default: first requirement -->
+<!-- cases: 2 overrides: with and without tags -->
+<!-- cases: N/A 3 zero values: not applicable -->
+<!-- cases: 4 boundaries: repeated option -->
+<!-- cases: N/A 5 errors: a later requirement -->
+<!-- cases: 6 not found/duplicate: idempotent repeat -->
+<!-- cases: N/A 7 lifecycle: a later requirement -->
+<!-- cases: N/A 8 concurrency: not applicable -->
+<!-- cases: N/A 9 panics: a later requirement -->
+<!-- cases: N/A 10 backward compatibility: new option -->
 
 ### Requirement: Invalid health classification panics at registration
 Registration SHALL panic before the service is stored, naming the service, when `WithHealthTags` is given an empty tag, or when `WithHealthTags` or `AsOptionalHealth` is applied to a transient registration. Classification options on a service that turns out not to be a health checker SHALL have no effect.
@@ -83,7 +133,7 @@ Examples:
 <!-- cases: N/A 10 backward compatibility: new options -->
 
 ### Requirement: Classification follows clones, overrides and aliases
-`Clone` and `CloneWithOpts` SHALL copy each registration's classification. `Override*` SHALL replace it with the new call's options, and no options SHALL mean the default. An alias SHALL report its target's tags and severity and SHALL carry none of its own.
+`Clone` and `CloneWithOpts` SHALL copy each registration's classification. `Override*` SHALL replace it with the new call's options, and no options SHALL mean the default. An alias carries no classification of its own; its report entry SHALL show its target's tags and severity because it reports the target's result.
 
 #### Scenario: Classification across clone, override and alias
 ```gherkin
@@ -115,8 +165,7 @@ Examples:
 
 #### Scenario: Filtered reports
 ```gherkin
-Given a started injector with Healthchecker values "db" (no options, returns errors.New("down")), "proc" (WithHealthTags(HealthTagLiveness), returns nil) and "cache" (WithHealthTags("cache", HealthTagReadiness), returns nil)
-And the first round finished
+Given an injector that is never started, with Healthchecker values "db" (no options, returns errors.New("down")), "proc" (WithHealthTags(HealthTagLiveness), returns nil) and "cache" (WithHealthTags("cache", HealthTagReadiness), returns nil)
 When the consumer calls HealthReport(<options>) on the root scope
 Then the report lists <listed>
 And its State is <state>
@@ -157,8 +206,7 @@ A failing check of an optional service SHALL give its entry `State` `HealthDegra
 
 #### Scenario: Degraded entries
 ```gherkin
-Given a started injector with a Healthchecker value "cache" registered with <options>, whose check returns <result>
-And the first round finished
+Given an injector that is never started, with HealthCheckTimeout 10ms and a Healthchecker value "cache" registered with <options>, whose check returns <result>
 When the consumer calls HealthReport() on the root scope
 Then the entry for "cache" has State <state> and Err <err>
 
@@ -166,7 +214,7 @@ Examples:
   | options              | result               | state           | err                    |
   | AsOptionalHealth()   | errors.New("slow")   | HealthDegraded  | the same "slow" error  |
   | AsOptionalHealth()   | nil                  | HealthHealthy   | nil                    |
-  | AsOptionalHealth()   | a timeout            | HealthDegraded  | an error matching ErrHealthCheckTimeout |
+  | AsOptionalHealth()   | ctx.Err() after blocking until ctx is done (past the 10ms timeout) | HealthDegraded  | an error matching ErrHealthCheckTimeout |
   | AsOptionalHealth()   | a panic "boom"       | HealthDegraded  | an error matching ErrHealthCheckPanic   |
   | none                 | errors.New("slow")   | HealthUnhealthy | the same "slow" error  |
 ```
