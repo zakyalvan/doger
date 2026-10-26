@@ -39,7 +39,7 @@ func newVirtualScope(predecessor Injector, invokerChain []string) *virtualScope 
 type virtualScope struct {
 	self         Injector
 	invokerChain []string
-	returned     atomic.Bool   // the provider that received it has returned
+	returned     atomic.Bool   // its provider returned, or its invocation is over
 	parent       *virtualScope // the virtual scope of the invoking provider, if any
 	detached     bool          // a live-collection read after its provider returned: records no edge
 }

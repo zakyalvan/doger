@@ -62,7 +62,10 @@ func invokeAnyByNameAs(i Injector, name string, source DependencySource) (any, e
 	}
 
 	injector.RootScope().opts.onBeforeInvocation(serviceScope, name)
-	instance, err := service.getInstanceAny(newChildVirtualScope(vScope, serviceScope, invokerChain))
+	child := newChildVirtualScope(vScope, serviceScope, invokerChain)
+	instance, err := service.getInstanceAny(child)
+	// the invocation is over, even when no provider ran with child
+	child.returned.Store(true)
 	injector.RootScope().opts.onAfterInvocation(serviceScope, name, err)
 	if err != nil {
 		return nil, err
@@ -119,7 +122,10 @@ func invokeByName[T any](i Injector, name string) (T, error) {
 	}
 
 	injector.RootScope().opts.onBeforeInvocation(serviceScope, name)
-	instance, err := service.getInstance(newChildVirtualScope(vScope, serviceScope, invokerChain))
+	child := newChildVirtualScope(vScope, serviceScope, invokerChain)
+	instance, err := service.getInstance(child)
+	// the invocation is over, even when no provider ran with child
+	child.returned.Store(true)
 	injector.RootScope().opts.onAfterInvocation(serviceScope, name, err)
 
 	if err != nil {
@@ -183,9 +189,10 @@ func invokeServiceInstance(injector Injector, vScope *virtualScope, hookName, re
 	}
 
 	injector.RootScope().opts.onBeforeInvocation(scope, hookName)
-	instance, err := service.(serviceWrapperGetInstanceAny).getInstanceAny( //nolint:errcheck,forcetypeassert
-		newChildVirtualScope(vScope, scope, append(slices.Clip(invokerChain), realName)),
-	)
+	child := newChildVirtualScope(vScope, scope, append(slices.Clip(invokerChain), realName))
+	instance, err := service.(serviceWrapperGetInstanceAny).getInstanceAny(child) //nolint:errcheck,forcetypeassert
+	// the invocation is over, even when no provider ran with child
+	child.returned.Store(true)
 	injector.RootScope().opts.onAfterInvocation(scope, hookName, err)
 	if err != nil {
 		return nil, err

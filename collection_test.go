@@ -223,6 +223,54 @@ func TestCollection_HolderAfterSiblings(t *testing.T) {
 	}
 }
 
+func TestCollection_InvocationsWithoutProvider(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, root *RootScope) string
+	}{
+		{name: "eager value resolving its DependsOn", setup: func(t *testing.T, root *RootScope) string {
+			t.Helper()
+			ProvideNamedValue(root, "e", newConsole("e"), DependsOnNamed("bus"))
+			_, err := InvokeNamed[*ConsoleHandler](root, "e")
+			require.NoError(t, err)
+			return "e"
+		}},
+		{name: "lazy attempt failing before its provider", setup: func(t *testing.T, root *RootScope) string {
+			t.Helper()
+			ProvideNamed(root, "l", func(Injector) (*ConsoleHandler, error) { return newConsole("l"), nil },
+				DependsOnNamed("bus"), DependsOnNamed("missing"))
+			_, err := InvokeNamed[*ConsoleHandler](root, "l")
+			require.ErrorIs(t, err, ErrServiceNotFound)
+			ProvideNamedValue(root, "missing", 42)
+			_, err = InvokeNamed[*ConsoleHandler](root, "l")
+			require.NoError(t, err)
+			return "l"
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+
+			root := New()
+			ProvideNamed(root, "bus", func(i Injector) (*busHandler, error) {
+				return &busHandler{handlerBase: handlerBase{"bus"}, peers: InvokeCollection[EventHandler](i)}, nil
+			})
+			dependent := tt.setup(t, root)
+			bus, err := InvokeNamed[*busHandler](root, "bus")
+			require.NoError(t, err)
+
+			peers, err := bus.peers.Map()
+
+			require.NoError(t, err)
+			assert.Equal(t, []string{dependent}, slices.Collect(maps.Keys(peers)))
+		})
+	}
+}
+
 func TestCollection_ReadOutcomes(t *testing.T) {
 	t.Parallel()
 
