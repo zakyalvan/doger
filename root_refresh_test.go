@@ -3,6 +3,9 @@ package doger
 import (
 	"context"
 	"errors"
+	"fmt"
+	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -420,6 +423,26 @@ func TestScopeShutdown_JoinedWinnerPanics(t *testing.T) {
 	})
 }
 
+// waitForBlockedPipelineLock waits until a goroutine is blocked on root's
+// pipelineMu in startIncremental, matched by the receiver the stack trace
+// prints. synctest cannot see this: a goroutine waiting for a sync.Mutex is
+// not durably blocked.
+func waitForBlockedPipelineLock(t *testing.T, root *RootScope) {
+	t.Helper()
+
+	frame := fmt.Sprintf("doger.(*RootScope).startIncremental(%p", root)
+	buf := make([]byte, 1<<20)
+	for {
+		stacks := string(buf[:runtime.Stack(buf, true)])
+		for _, stack := range strings.Split(stacks, "\n\n") {
+			if strings.Contains(stack, "sync.(*Mutex).Lock") && strings.Contains(stack, frame) {
+				return
+			}
+		}
+		runtime.Gosched()
+	}
+}
+
 func TestRefresh_QueuedBehindShutdown(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, 5*time.Second)
@@ -444,7 +467,7 @@ func TestRefresh_QueuedBehindShutdown(t *testing.T) {
 	<-entered
 	secondDone := make(chan error, 1)
 	go func() { secondDone <- root.Refresh() }()
-	time.Sleep(50 * time.Millisecond) // the second Refresh waits for the pipeline
+	waitForBlockedPipelineLock(t, root)
 
 	root.Shutdown()
 
