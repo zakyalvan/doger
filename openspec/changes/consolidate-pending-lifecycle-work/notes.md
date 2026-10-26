@@ -69,3 +69,29 @@ Each was shown to fail with a temporary, uncommitted mutation:
 - 42.2: when a parent shuts down, child scopes shut down on their own goroutines (`wg.Go`), so a re-panic there would terminate the process. Child scope shutdown therefore keeps its first hook panic and the parent merges it after `wg.Wait`; it is dispatched once, on the calling goroutine (for root `Shutdown`, through the container's own dispatch). Pinned by an extra test, `TestScopeHooks_ObserverPanicThroughParent`.
 - 45.1 the invalid-field message uses the struct name `InvokeStruct` passes to `invokeByTags` (`NameOf[S]()`, the full type name), like the existing "not assignable to field" error. The spec's `` `S.H` `` is read as shorthand for it.
 - 45.3 `invokeByTags` is still above the gocyclo limit after extracting `injectCollectionField`, so its existing `//nolint:gocyclo` stays.
+
+## Group 48: integration
+
+### 48.1 benchmarks: NOT MET, open for review
+
+Interleaved comparison against the baseline commit `ed65bdc` (two test binaries, 10 alternating runs; `InvokeAlias`/`InvokeAs` re-run with 20):
+
+| Benchmark | time | B/op | allocs/op |
+|---|---|---|---|
+| InvokeLazySteadyState, InvokeLazyParallel, InvokeNamed, InvokeTransient, InvokeNestedScopes | ~ | ~ | ~ |
+| Provide | ~ | +0.18% | -0.09% |
+| InvokeAlias | +3.0% (p=0.033, n=20) | ~ | ~ |
+| InvokeAs | +13.9% (p=0.000, n=20) | 937 → 961 | 11 → 9 |
+| New | ~ | 952 → 1232 | 13 → 11 (target met) |
+
+- `InvokeAs`: design S5 makes selection deterministic, so it must evaluate every visible service; the previous code stopped at the first (random) match. In the benchmark (19 fillers, 1 match) that is about 10 more type-assignability checks per call. Inherent to S5 as designed.
+- `InvokeAlias`: within noise or a small cost of `DAG.addDependency` now looking up the existing edge source before writing (Q3, strongest source kept). Allocations are unchanged.
+- `New`: B/op grows with the new `InjectorOpts` and `RootScope` fields; allocations dropped to 11 as targeted.
+
+Task 48.1 says to stop and investigate when invoke is not `~`; it is left unchecked pending a decision.
+
+### 48.2, 48.3, 48.4
+
+- `make test`, `make lint`, per-module `go vet ./... && go test -race ./...` on all 25 `go.work` modules, and `npm --prefix docs run lint` / `build`: all pass.
+- Traceability: all 134 tests named in design.md pass (`-race -v`), and the subtest counts of the 51 tests with row counts match their scenarios.
+- `openspec validate consolidate-pending-lifecycle-work --strict`: valid.
