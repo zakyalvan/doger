@@ -132,3 +132,12 @@ Final interleaved comparison against `ed65bdc` (20 alternating runs, head `b4564
 - `Provide` is `~`: the earlier +6.1% did not reproduce and was noise.
 - `New` meets the allocation target. Its time and bytes grow with the new `InjectorOpts` and `RootScope` fields (hook slices, phase state, incremental-start sets); the gate checks only allocs/op.
 - `InvokeAs` (+9.2%, about 0.1µs per call in a 20-service scope) is accepted: it is the cost of deterministic selection (S5), which must scan the whole nearest scope that has a match. It now allocates less than before. Closing the gap would need a cached assignability index, judged not worth its invalidation complexity. The cost is documented in the upgrade guide.
+
+### 49. Forget shut-down services in the start bookkeeping
+
+The design's Risks section required the `started`/`handled` entries of a scope's wrappers to be cleared on shutdown; no task covered it, so group 49 was added.
+
+- RED: `TestRootScope_ForgetsShutDownServices` failed on all 3 rows (`worker still in started`, `job still in handled`; on `root.Shutdown()` also `keeper in started`). A first run failed for the wrong reason (`require.NoError` on the `*ShutdownReport` that `Shutdown` returns); the assertions were fixed to `Succeed` before the RED was accepted.
+- GREEN: `serviceShutdown`, the one place a wrapper leaves its scope, now calls `RootScope.forget`. This covers child-scope shutdown, root shutdown and `ShutdownNamed`. The design sentence was updated to say so.
+- Residual: a pipeline that already collected a wrapper as a candidate and starts it after a concurrent `ShutdownNamed` can re-add its entry. Starting a service that is being shut down concurrently is outside the container-start spec.
+- `BenchmarkShutdown` against `ed65bdc` (15 interleaved runs): `~` on time (p=0.935), B/op and allocs/op.

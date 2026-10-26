@@ -189,3 +189,13 @@ func (s *RootScope) markHandled(service any, id *kindID) {
 	}
 	s.handled[service][id] = struct{}{}
 }
+
+// forget drops service from the started and handled sets once shutdown
+// removed it from its scope, so they only hold live registrations.
+func (s *RootScope) forget(service any) {
+	s.startedMu.Lock()
+	defer s.startedMu.Unlock()
+
+	delete(s.started, service)
+	delete(s.handled, service)
+}

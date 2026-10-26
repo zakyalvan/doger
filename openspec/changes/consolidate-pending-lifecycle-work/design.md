@@ -407,7 +407,7 @@ Return `[]T{}` / `map[string]T{}` when nothing matches. On error, return `nil, e
 ## Risks / Trade-offs
 
 - [`pipelineMu` held across user code: `Refresh`/`Scope.Start` called synchronously from Start-time code deadlocks] → Documented on `Refresh`, `Scope.Start` and the starter page, next to the existing Shutdown rule. `Start` from such code still returns `ErrAlreadyStarted` (guard before the lock).
-- [Started set keyed by wrapper pointer keeps wrappers reachable until shutdown] → The set is cleared for a scope's wrappers when the scope shuts down. Memory is bounded by the registrations.
+- [Started set keyed by wrapper pointer keeps wrappers reachable until shutdown] → A wrapper is dropped from `started` and `handled` when shutdown removes it from its scope: its scope's shutdown (child or root) or its own `ShutdownNamed`. Memory is bounded by the live registrations.
 - [Parallel start runs per-service hooks concurrently] → Opt-in only; documented on `StartParallelism` and `HookBeforeStart`/`HookAfterStart`.
 - [Alias shutdown change: child-scope shutdown no longer stops a parent target through an alias] → Flagged, on the upgrading page, pinned by the service-aliases rows.
 - [`InvokeAs` determinism changes which service some consumers get] → Flagged. The previous pick was random, so no consumer could rely on it.

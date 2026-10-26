@@ -838,6 +838,8 @@ func (s *Scope) serviceShutdown(ctx context.Context, name string) error {
 		return serviceNotFound(s, ErrServiceNotFound, []string{name})
 	}
 
+	s.RootScope().forget(serviceAny)
+
 	var err error
 
 	service, ok := serviceAny.(serviceWrapperShutdown)

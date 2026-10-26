@@ -338,3 +338,10 @@ Rules:
 
 - Archive this change after review (`/opsx:archive`).
 - The folded changes' own follow-ups are all absorbed here; there is no remaining phase-2 list.
+
+## 49. Forget shut-down services in the start bookkeeping (design P1, Risks)
+
+- [x] 49.1 RED: add `root_refresh_test.go` with `TestRootScope_ForgetsShutDownServices` (3 rows: `tenant.Shutdown()`, `ShutdownNamed(tenant, …)`, `root.Shutdown()`), checking that a started Starter and a handled kind component of the shut-down scope are no longer in `started`/`handled`, while a service of a scope that stays up is kept; verify `go test -race -run TestRootScope_ForgetsShutDownServices .` fails because the entries remain
+- [x] 49.2 GREEN: drop the wrapper from `started` and `handled` when `serviceShutdown` removes it from its scope; verify the 49.1 command passes, the Part P tests pass unchanged, and `make test` is green
+- [x] 49.3 REFACTOR: none needed if the change is one `forget` helper next to `markStarted`/`markHandled`; verify `make test` and `make lint` pass
+- [x] 49.4 Re-run the integration checks touched by the change: `make test`, `make lint`, `openspec validate consolidate-pending-lifecycle-work --strict`, and `BenchmarkShutdown` against `ed65bdc` with `benchstat`
