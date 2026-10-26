@@ -39,7 +39,7 @@ And "bus" has been invoked
 And the consumer then registers lazy "audit" implementing "EventHandler"
 When the bus calls All() on its collection
 Then the result is [console, audit], without "bus"
-And ExplainNamedService(root, "bus") lists dependencies audit, console
+And ExplainNamedService(root, "bus") lists no dependency on "audit" or "console"
 ```
 
 #### Scenario: Reads after shutdown and failures
@@ -69,7 +69,35 @@ And the "console" provider was called exactly 1 time
 <!-- cases: N/A 4 boundaries: covered by collection-invocation -->
 <!-- cases: 5 errors: member failure row -->
 <!-- cases: 6 duplicates: self-exclusion and alias exclusion as for InvokeAll -->
-<!-- cases: 7 lifecycle: after shutdown, late registration, held by a provider with edges recorded at read time -->
+<!-- cases: 7 lifecycle: after shutdown, late registration, held by a provider (reads after the provider returned have their own requirement) -->
 <!-- cases: 8 concurrency: concurrent reads and registrations -->
 <!-- cases: N/A 9 panics: an Order() panic is returned by All(), as in collection-ordering -->
+<!-- cases: N/A 10 compatibility: new API -->
+
+### Requirement: Reads after the holder's provider returned
+When `i` is a provider's injector and that provider has returned, `All()`/`Map()` SHALL resolve from the provider's scope, excluding only the holder, without the provider's build-time invoker chain and without recording dependency edges. Reads made while the provider runs keep the rules of `InvokeAll`.
+
+#### Scenario: Reads after the holder's provider returned
+```gherkin
+Given lazy "app" implementing "EventHandler" whose provider invokes "bus"
+And lazy "bus" implementing "EventHandler" whose provider stores c := InvokeCollection[EventHandler](i)
+And "app" has been invoked, which built "bus"
+When the bus calls <read> on its collection
+Then the result is <result>
+And ExplainNamedService(root, "bus") lists no dependency on "app"
+
+Examples:
+  | read    | result                       |
+  | c.All() | [app], nil error             |
+  | c.Map() | {"app"} keys, nil error      |
+```
+
+<!-- cases: 1 default: a holder built through one of its members -->
+<!-- cases: N/A 2 overrides: there is no option -->
+<!-- cases: N/A 3 zero values, 4 boundaries: covered by the main requirement -->
+<!-- cases: N/A 5 errors: member failures are returned as for InvokeAll -->
+<!-- cases: 6 duplicates: the holder stays excluded -->
+<!-- cases: 7 lifecycle: during versus after the provider -->
+<!-- cases: N/A 8 concurrency: covered by "Concurrent reads are race-free" -->
+<!-- cases: N/A 9 panics: as for InvokeAll -->
 <!-- cases: N/A 10 compatibility: new API -->

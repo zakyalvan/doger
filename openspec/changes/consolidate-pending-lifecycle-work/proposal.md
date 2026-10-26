@@ -42,6 +42,16 @@ Several separate plans and loose ends build on `add-start-lifecycle-and-kinds`: 
 - A service literally named `*` can no longer be injected through a struct tag, because `do:"*"` now means a collection.
 - Adding exported fields to `InjectorOpts` and `ExplainServiceDependencyOutput` breaks only unkeyed struct literals, which the Go 1 compatibility guidelines exclude.
 
+**Fixes from verification (design Part V).** `/opsx:verify` and a code review found defects, each reproduced by a failing test first:
+- Shutdown during a start could yield an error that does not match `ErrStartAfterShutdown` (`DI: start aborted: %!w(<nil>)`), from a race between setting the close phase and setting the cancel cause.
+- With `StartParallelism > 1`, a panicking per-service start hook crashed the process. It now reaches the caller as in sequential mode.
+- `Refresh`/`Scope.Start` during a running Start blocked (or deadlocked from Start-time code). They now fail fast with `ErrNotStarted`.
+- A child scope shutdown could race a running start, leaving a started service unowned. It now waits for a run that is starting its services (**behavior change, flagged**).
+- A live collection held by a provider failed with a false circular dependency once its provider had returned. Reads after the provider returned drop the build-time chain.
+- `HookAfterBuild` ran under the wrapper lock, so a hook touching its own service deadlocked. It now runs after the lock is released.
+- `InvokeAs` returned services hidden by a same-name service in a nearer scope. It now honors shadowing (**behavior change, flagged**).
+- Also: `DependencySource` decodes from JSON; Override drops replaced wrappers from the start bookkeeping; `StartParallelism` beyond the number of Starters no longer wraps negative; the `*` tag requires exactly `map[string]E`.
+
 ## Capabilities
 
 ### New Capabilities
@@ -99,6 +109,11 @@ These capabilities come from `add-start-lifecycle-and-kinds` and exist under `op
 | Start failure error | `*StartError` with unchanged messages | `errors.As(err, &startErr)` to inspect |
 | Explained edges | `Source` reported; invoked edges print as before | Read `Source` |
 | Container phase | `Phase()` is read-only | None needed: observation only |
+| Incremental start during Start | Fails fast with `ErrNotStarted` | Call `Refresh` after `Start` returned |
+| Child scope shutdown during a start | Waits for a run that is starting the scope's services | Bound the wait with `ShutdownWithContext` |
+| Live collection after its provider returned | Resolves from the provider's scope without its chain; no edges | Use `InvokeAll` inside the provider for recorded edges |
+| `InvokeAs` and shadowing | A shadowed ancestor service is not a candidate | Invoke the ancestor by name from its own scope |
+| Post-build hook and locking | Runs after the wrapper lock is released | None needed |
 
 ### Assumptions to confirm in review
 

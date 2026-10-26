@@ -345,3 +345,90 @@ Rules:
 - [x] 49.2 GREEN: drop the wrapper from `started` and `handled` when `serviceShutdown` removes it from its scope; verify the 49.1 command passes, the Part P tests pass unchanged, and `make test` is green
 - [x] 49.3 REFACTOR: none needed if the change is one `forget` helper next to `markStarted`/`markHandled`; verify `make test` and `make lint` pass
 - [x] 49.4 Re-run the integration checks touched by the change: `make test`, `make lint`, `openspec validate consolidate-pending-lifecycle-work --strict`, and `BenchmarkShutdown` against `ed65bdc` with `benchstat`
+
+## 50. Shutdown sets the cancel cause under the lifecycle lock (container-lifecycle-hooks; design V1)
+
+- [ ] 50.1 RED: add `TestContainerHooks_ShutdownCauseRace` (2 rows, 20000 fresh containers each) to `container_hooks_test.go`; verify `go test -race -run TestContainerHooks_ShutdownCauseRace .` fails with `DI: start aborted: %!w(<nil>)`
+- [ ] 50.2 GREEN: cancel the in-flight run with `ErrStartAfterShutdown` inside `beginClose` while holding `lifecycleMu`, leaving `waitForStart` to wait only; verify the 50.1 command passes, the Part H and Refresh suites pass unchanged, and `make test` is green
+- [ ] 50.3 REFACTOR: *Rename* `waitForStart`'s role in its godoc only if the name no longer fits; verify `make test` and `make lint` pass
+
+## 51. Parallel start re-raises hook panics on the caller (container-start; design V2)
+
+- [ ] 51.1 RED: add `TestStart_ParallelHookPanic` (3 rows) to `root_start_test.go`; verify `go test -race -run TestStart_ParallelHookPanic .` crashes the test binary with `panic: hook-boom` created by `startStartersParallel`
+- [ ] 51.2 GREEN: recover the per-service hook panic in the parallel worker, report it to the coordinator, stop dispatching, drain the running workers and re-panic the first value; verify the 51.1 command passes and `make test` is green
+- [ ] 51.3 REFACTOR: *Extract Function* for the worker body if `startStartersParallel` grows past the gocyclo limit; verify `make test` and `make lint` pass
+
+## 52. Incremental start fails fast while Start runs (container-start; design V3)
+
+- [ ] 52.1 RED: add `TestIncrementalStart_DuringStart` (3 rows) to `root_refresh_test.go`; verify `go test -race -run TestIncrementalStart_DuringStart .` fails: the synchronous rows time out and the goroutine row gets nil instead of `ErrNotStarted`
+- [ ] 52.2 GREEN: check the phase under `lifecycleMu` before `pipelineMu` in `startIncremental`, keeping the re-check in `beginIncremental`; verify the 52.1 command passes, `TestIncrementalStart_Phase` and the Refresh suites pass unchanged, and `make test` is green
+- [ ] 52.3 REFACTOR: *Extract Function* `checkIncrementalPhase()` shared by the pre-check and `beginIncremental`; update the `Refresh`/`Scope.Start` godoc and the starter page; verify `make test`, `make lint` and the docs lint and build pass
+
+## 53. Child scope shutdown waits for a start that is starting it (container-start; design V4)
+
+- [ ] 53.1 RED: add `TestScopeShutdown_WaitsForStart` (3 rows), `TestScopeShutdown_LaterStartSkips`, `TestScopeShutdown_CreatedDuringStart` and `TestScopeShutdown_WaitBounded` to `root_refresh_test.go`; verify `go test -race -run TestScopeShutdown_ .` fails on WaitsForStart, LaterStartSkips and WaitBounded, and record that CreatedDuringStart passes on arrival
+- [ ] 53.2 GREEN: record `runScopes` under `lifecycleMu` after discovery (dropping closing scopes), mark a child scope closing under `lifecycleMu` at shutdown and wait, bounded by its context, for an in-flight run that has it in `runScopes`; verify the 53.1 command passes, `TestRootScope_ForgetsShutDownServices` and the scope-hook suites pass unchanged, and `make test` is green
+- [ ] 53.3 REFACTOR: *Extract Function* `awaitRunForScope(ctx)` out of `shutdownWithContext`; verify `make test` and `make lint` pass
+- [ ] 53.4 Document the wait and its deadlock rule on `Scope.Shutdown`/`ShutdownWithContext`, the starter page and an upgrading-page entry (flagged); verify the docs lint and build pass
+
+## 54. Live-collection reads after the provider returned (live-collections; design V5)
+
+- [ ] 54.1 RED: add `TestCollection_AfterProviderReturned` (2 rows) to `collection_test.go` and change `TestCollection_HeldByProvider`'s explain assertion to the updated scenario (no edges recorded by reads after the provider returned); verify `go test -race -run TestCollection_ .` fails with a circular-dependency error and with the recorded edges
+- [ ] 54.2 GREEN: mark a provider's virtual scope returned once `getInstance` returned, and resolve reads on a returned scope from its underlying scope, excluding only the holder, without recording edges; verify the 54.1 command passes, the Part K tables pass unchanged, and `make test` is green
+- [ ] 54.3 REFACTOR: *Introduce Parameter Object* for the collection pipeline's exclusion and edge options if it takes more than three parameters; update the `InvokeCollection` godoc and the collection page; verify `make test`, `make lint` and the docs lint and build pass
+
+## 55. The `*` tag requires exactly map[string] (collection-struct-injection; design V6)
+
+- [ ] 55.1 RED: add the string-kinded key row to `TestInvokeStruct_CollectionInvalidField`; verify `go test -race -run TestInvokeStruct_CollectionInvalidField .` fails because no error is returned
+- [ ] 55.2 GREEN: compare the map key type with `reflect.TypeFor[string]()`; verify the 55.1 command passes and `make test` is green
+- [ ] 55.3 REFACTOR: none needed for a one-line check; verify `make test` and `make lint` pass
+
+## 56. Missing incremental-start tests (container-start; design V7, V8)
+
+- [ ] 56.1 Add `TestStartError_Incremental` (3 rows), `TestScopeStart_AncestorsNotStarted` (to `root_refresh_test.go`) and `TestStart_ParallelIncremental` (2 rows, to `root_start_test.go`); verify they pass, record the pass on arrival, and show each fails under a temporary mutation of the code it covers (reverted)
+
+## 57. Build hooks run outside the wrapper lock (service-build-hooks; design V10)
+
+- [ ] 57.1 RED: add `TestAfterBuildHook_ReentersService` (3 rows) to `build_hooks_test.go`; verify `go test -race -run TestAfterBuildHook_ReentersService .` fails by timing out on the lazy rows
+- [ ] 57.2 GREEN: fire `HookAfterBuild` after the lazy wrapper releases `s.mu` and after the eager wrapper releases its dependency lock; verify the 57.1 command passes, `TestAfterBuildHook_*` pass unchanged, and `make test` is green
+- [ ] 57.3 REFACTOR: *Extract Function* if the lazy `getInstance` gains a second unlock path; update the `HookAfterBuild` godoc; verify `make test` and `make lint` pass
+
+## 58. DependencySource decodes from text (dependency-declaration; design V11)
+
+- [ ] 58.1 RED: add `TestDependencySource_UnmarshalText` (4 rows) to `dependency_test.go`; verify `go test -race -run TestDependencySource_UnmarshalText .` fails to decode the string into a `DependencySource`
+- [ ] 58.2 GREEN: add `DependencySource.UnmarshalText`; verify the 58.1 command passes and `make test` is green
+- [ ] 58.3 REFACTOR: *Extract Variable* a shared text table if `String` and `UnmarshalText` repeat the names; verify `make test` and `make lint` pass
+
+## 59. Override forgets the replaced wrapper (design V12)
+
+- [ ] 59.1 RED: add `TestRootScope_ForgetsOverriddenServices` (5 overrides plus Refresh) to `root_refresh_test.go`; verify `go test -race -run TestRootScope_ForgetsOverriddenServices .` fails with 6 started entries instead of 1
+- [ ] 59.2 GREEN: drop the replaced wrapper from `started` and `handled` where registration replaces it; verify the 59.1 command passes and `make test` is green
+- [ ] 59.3 REFACTOR: none needed if it reuses `forget`; verify `make test` and `make lint` pass
+
+## 60. StartParallelism is clamped to the number of Starters (container-start; design V13)
+
+- [ ] 60.1 RED: add the max-uint row to `TestStart_Parallel`; verify `go test -race -run TestStart_Parallel/max .` fails because no Starter is started
+- [ ] 60.2 GREEN: clamp the parallelism to the number of Starters before the `int` conversion and drop the `nolint`; verify the 60.1 command passes and `make test` is green
+- [ ] 60.3 REFACTOR: none needed; verify `make test` and `make lint` pass
+
+## 61. InvokeAs honors shadowing (type-resolution; design V14)
+
+- [ ] 61.1 RED: add `TestInvokeAs_Shadowing` (3 rows) to `invoke_test.go`; verify `go test -race -run TestInvokeAs_Shadowing .` fails on the two shadowed rows
+- [ ] 61.2 GREEN: skip a candidate whose name is registered in a scope between the invoking scope and its own; verify the 61.1 command passes, `TestInvokeAs_*` and `TestInvokeStruct_*` pass unchanged, and `make test` is green
+- [ ] 61.3 REFACTOR: *Extract Function* `shadowedBetween(from, to *Scope, name string) bool`; verify `make test` and `make lint` pass
+- [ ] 61.4 Document shadowing in the `InvokeAs`/`InvokeStruct` godoc, the invocation docs and the upgrading-page entry (flagged); re-measure `BenchmarkInvokeAs` against `ed65bdc` and record it in notes.md; verify the docs lint and build pass
+
+## 62. Health-check timeout in one place (design V15)
+
+- [ ] 62.1 REFACTOR: *Replace Inline Code with Function Call* - `queueServiceHealthcheck` uses `perServiceHealthCheckContext`; verify `make test` (health-check suites unchanged) and `make lint` pass
+
+## 63. One veto loop and one observer loop for container and scope hooks (design V16)
+
+- [ ] 63.1 REFACTOR: *Extract Function* a generic veto loop taking the panic-wrapping function and use it from `runStartingHooks` and `runScopeStartingHooks`; verify `make test` (messages unchanged) and `make lint` pass
+- [ ] 63.2 REFACTOR: *Extract Function* a generic observer loop and use it from `runObserverHooks` and `runScopeObserverHooks`; verify `make test` and `make lint` pass
+
+## 64. Integration checks after the verification fixes
+
+- [ ] 64.1 Full run: `make test`, `make lint`, per-module `go vet ./... && go test -race ./...` in every `go.work` module, `npm --prefix docs run lint && npm --prefix docs run build`, and `openspec validate consolidate-pending-lifecycle-work --strict`
+- [ ] 64.2 Traceability: run every test named in the design's Test Strategy rows for Part V with `-race -v` and verify each lists PASS with row counts matching the scenarios
+- [ ] 64.3 Benchmarks: compare `BenchmarkInvokeAs`, `BenchmarkInvokeAlias`, `BenchmarkProvide`, `BenchmarkNew`, `BenchmarkShutdown` and the invoke benchmarks against `ed65bdc` with `benchstat` (20 interleaved runs) and record them in notes.md

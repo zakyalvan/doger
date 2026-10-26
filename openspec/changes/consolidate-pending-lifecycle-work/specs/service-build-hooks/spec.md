@@ -70,6 +70,34 @@ Then the invocation panics with "hook-boom"
 <!-- cases: 5 errors: failed and panicking builds fire nothing -->
 <!-- cases: 6 duplicates: a cached lazy instance does not fire again; an alias does not fire for its own name -->
 <!-- cases: 7 lifecycle: child scopes and clones -->
-<!-- cases: N/A 8 concurrency: a lazy instance is built once under its wrapper's lock, so the hook fires once; covered by the existing single-build tests plus the first row under -race -->
+<!-- cases: N/A 8 concurrency: a lazy instance is built once under its wrapper's lock, so the hook fires once; re-entry has its own requirement -->
 <!-- cases: 9 panics: a panicking hook propagates, consistent with the existing per-service hooks -->
+<!-- cases: N/A 10 compatibility: new API -->
+
+### Requirement: Build hooks run outside the wrapper lock
+A `HookAfterBuild` hook SHALL run after the wrapper released its lock, so it may invoke, health-check or explain the service it receives. Another goroutine MAY obtain the instance before the hook returned.
+
+#### Scenario: A build hook can use its own service
+```gherkin
+Given a root scope with a HookAfterBuild hook that calls <call> for the scope and service name it receives, and records the result
+And "<service>" registered as <registration>
+When the consumer invokes "<service>" within 1s
+Then the invocation returns the instance and a nil error
+And the hook recorded a nil error
+
+Examples:
+  | service | registration                                              | call             |
+  | hc      | lazy, provider returns a Healthchecker                    | HealthCheckNamed |
+  | db      | lazy, provider returns &DB{}                               | InvokeNamed      |
+  | cfg     | eager value &Cfg{}, registered with DependsOnNamed("db")   | InvokeNamed      |
+```
+
+<!-- cases: 1 default: lazy rows -->
+<!-- cases: N/A 2 overrides: there is no option -->
+<!-- cases: N/A 3 zero values, 4 boundaries: one hook -->
+<!-- cases: N/A 5 errors: the call results are asserted -->
+<!-- cases: 6 duplicates: the hook still fires once per build -->
+<!-- cases: 7 lifecycle: an eager value with DependsOn -->
+<!-- cases: 8 concurrency: re-entry from the hook does not deadlock; tests run under testWithTimeout -->
+<!-- cases: N/A 9 panics: covered by "A panicking build hook propagates" -->
 <!-- cases: N/A 10 compatibility: new API -->

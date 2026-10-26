@@ -48,3 +48,28 @@ And the JSON encoding has field "source" with value "invoked" for "db"
 <!-- cases: N/A 8 concurrency: covered by "Concurrent declarations are race-free" -->
 <!-- cases: N/A 9 panics: none -->
 <!-- cases: 10 compatibility: String() of invoked-only graphs is unchanged; adding the field breaks only unkeyed struct literals -->
+
+### Requirement: Dependency sources round-trip as text
+`DependencySource` SHALL encode as and decode from the texts `invoked`, `depends-on` and `declared`, so explained output round-trips through JSON. Any other text SHALL be a decoding error.
+
+#### Scenario: Explained output round-trips through JSON
+```gherkin
+Given the JSON object {"service": "db", "source": <text>}
+When the consumer decodes it into an ExplainServiceDependencyOutput
+Then the result is <result>
+
+Examples:
+  | text         | result                                                           |
+  | "invoked"    | Source DependencySourceInvoked, nil error                        |
+  | "depends-on" | Source DependencySourceDependsOn, nil error                      |
+  | "declared"   | Source DependencySourceDeclared, nil error                       |
+  | "other"      | an error naming "other"                                          |
+```
+
+<!-- cases: 1 default: the three texts -->
+<!-- cases: N/A 2 overrides: the texts are fixed -->
+<!-- cases: N/A 3 zero values: the zero value encodes as "invoked" ("Output without declared edges is unchanged") -->
+<!-- cases: N/A 4 boundaries: one value per text -->
+<!-- cases: 5 errors: an unknown text -->
+<!-- cases: N/A 6 duplicates, 7 lifecycle, 8 concurrency, 9 panics: a pure value conversion -->
+<!-- cases: 10 compatibility: additive; JSON encoding is unchanged -->

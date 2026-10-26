@@ -7,7 +7,7 @@ Makes resolution by assignable type deterministic: `InvokeAs[T]`, `MustInvokeAs[
 ## ADDED Requirements
 
 ### Requirement: InvokeAs picks the first match deterministically
-When several visible services are assignable to `T`, `InvokeAs[T]` and `MustInvokeAs[T]` SHALL select the one in the nearest scope (the invoking scope before its ancestors), then the earliest registration, then the smallest service name. Aliases SHALL remain candidates, as today.
+When several visible services are assignable to `T`, `InvokeAs[T]` and `MustInvokeAs[T]` SHALL select the one in the nearest scope (the invoking scope before its ancestors), then the earliest registration, then the smallest service name. A service hidden by a service of the same name in a nearer scope SHALL NOT be a candidate, as for collections. Aliases SHALL remain candidates, as today.
 
 #### Scenario: Selection among several matches
 ```gherkin
@@ -24,6 +24,20 @@ Examples:
   | "a" in root, "z" in "request"                              | root      | a        |
   | "b" in root, "a" in root, then Override of "b" in root     | root      | b        |
   | "b" in root, then root cloned, "a" in the clone's root     | the clone | b        |
+```
+
+#### Scenario: A shadowed service is not a candidate
+```gherkin
+Given a root scope with lazy "db" implementing "Store"
+And a child scope "request" where "db" is registered as <child_db>
+When the consumer calls <call> from "request"
+Then the result is <result>
+
+Examples:
+  | child_db                     | call                                                    | result                                           |
+  | the value "a string"         | InvokeAs[Store]                                          | an error matching ErrServiceNotMatch             |
+  | the value "a string"         | InvokeStruct for a struct with field `S Store \`do:""\`` | an error matching ErrServiceNotMatch             |
+  | lazy "db" implementing Store | InvokeAs[Store]                                          | the child's "db"                                 |
 ```
 
 #### Scenario: Selection is stable across runs
@@ -50,11 +64,11 @@ Examples:
 <!-- cases: 3 zero values: no matching service keeps ErrServiceNotMatch -->
 <!-- cases: 4 boundaries: one match, two, twenty -->
 <!-- cases: N/A 5 errors: error paths are unchanged -->
-<!-- cases: 6 duplicates: Override keeps the position of the first registration (registration-options) -->
+<!-- cases: 6 duplicates: Override keeps the position of the first registration (registration-options); a same-name service in a nearer scope hides an ancestor's -->
 <!-- cases: 7 lifecycle: child scope and clone rows -->
 <!-- cases: 8 concurrency: the stable scenario replaces the former random pick; runs under -race -->
 <!-- cases: N/A 9 panics: unchanged -->
-<!-- cases: 10 compatibility: BEHAVIOR CHANGE (flagged) - the pick was random, so no consumer could rely on a specific one; hooks still receive the requested type name -->
+<!-- cases: 10 compatibility: BEHAVIOR CHANGE (flagged) - the pick was random, so no consumer could rely on a specific one; hooks still receive the requested type name. BEHAVIOR CHANGE (flagged) - a shadowed ancestor service is no longer returned -->
 
 ### Requirement: Implicit-aliasing struct injection uses the same selection
 When `InvokeStruct` falls back to type-based resolution for an empty tag (`do:""`) because no service has the field type's name, it SHALL select the candidate by the same rule as `InvokeAs`.

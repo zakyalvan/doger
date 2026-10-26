@@ -45,6 +45,7 @@ Examples:
   | field                                        | message                                                                    |
   | `H EventHandler \`do:"*"\``                   | DI: tag `*` requires a slice or map[string] field, got `S.H`               |
   | `M map[int]EventHandler \`do:"*"\``           | DI: tag `*` requires a slice or map[string] field, got `S.M`               |
+  | `K map[handlerKey]EventHandler \`do:"*"\`` (type handlerKey string) | DI: tag `*` requires a slice or map[string] field, got `S.K` |
 ```
 
 #### Scenario: A failing member fails the struct
@@ -68,7 +69,7 @@ Then Others is [console]
 <!-- cases: 2 overrides: StructTagKey; ordering overrides (Ordered, WithOrder) apply as for InvokeAll -->
 <!-- cases: 3 zero values: an empty collection is a non-nil empty slice/map -->
 <!-- cases: N/A 4 boundaries: covered by collection-invocation -->
-<!-- cases: 5 errors: non-collection field kinds and member failures -->
+<!-- cases: 5 errors: non-collection field kinds, map keys other than exactly string, and member failures -->
 <!-- cases: N/A 6 duplicates: shadowing and alias exclusion follow collection-invocation -->
 <!-- cases: 7 lifecycle: self-exclusion inside a provider -->
 <!-- cases: N/A 8 concurrency: covered by collection-invocation -->

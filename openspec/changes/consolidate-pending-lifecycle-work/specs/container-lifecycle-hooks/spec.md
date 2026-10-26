@@ -276,9 +276,21 @@ Examples:
   | Shutdown in the last step | a StageAfterStart kind handler that starts Shutdown in a goroutine, waits until synctest.Wait shows it blocked, and returns nil | an error for which errors.Is(err, ErrStartAfterShutdown) is true | 0       | 0     | 1      | the Closing hook ran after the handler returned                             |
 ```
 
+#### Scenario: A start finishing as Shutdown begins
+```gherkin
+Given 20000 fresh root containers, each with a StageAfterStart handler of kind "k" for lazy "j" that signals another goroutine to call Shutdown() and then returns nil
+When the consumer calls <operation> on each and waits for its Shutdown
+Then every call returns nil or an error for which errors.Is(err, ErrStartAfterShutdown) is true
+
+Examples:
+  | operation                                                   |
+  | Start()                                                     |
+  | Refresh(), after Start() and registering "j" with the handler |
+```
+
 <!-- cases: N/A 2 overrides: the Shutdown context deadline is the only control and is covered by "Starting and Closing hooks must not call Shutdown synchronously" -->
 <!-- cases: N/A 3 zero values, 4 boundaries: one Start and one Shutdown are sufficient; many callers are covered by the at-most-once requirement -->
-<!-- cases: N/A 5 errors: the cancellation error is asserted in each row -->
+<!-- cases: 5 errors: the cancellation error is asserted in each row, and holds when the pipeline returns at the moment Shutdown begins -->
 <!-- cases: N/A 9 panics: covered by the panic requirements -->
 <!-- cases: N/A 10 compatibility: new API -->
 

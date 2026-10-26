@@ -88,14 +88,14 @@ Facts verified for the new parts (scratch probes on a copy of the repo at `e116a
 ### Part P — Phase 2 of the start lifecycle
 
 **P1. Started and handled bookkeeping.**
-- Under a new `pipelineMu sync.Mutex`, the `RootScope` keeps `started map[any]struct{}`, keyed by **wrapper pointer**, and `handled map[kindKey]struct{}` (`kindKey{id *kindID; wrapper any}`).
+- The `RootScope` keeps `started map[any]struct{}`, keyed by **wrapper pointer**, and `handled map[any]map[*kindID]struct{}` (wrapper → kinds that handled it), both guarded by `startedMu`, which is never held across user code, so shutdown can drop entries while a pipeline runs (V12, group 49).
 - Keying by wrapper means an `Override` after Start registers a new wrapper, which a later `Refresh` starts.
-- `pipelineMu` serializes `Start`, `Refresh` and `Scope.Start` pipelines. It **is** held across user code, unlike `lifecycleMu`. Shutdown never takes it and nothing takes it while holding `lifecycleMu`, so Shutdown cannot deadlock on it.
-- Calling `Refresh`/`Scope.Start` synchronously from code running inside a pipeline deadlocks, like calling `Shutdown` there (start-lifecycle Risks). Documented.
+- A new `pipelineMu sync.Mutex` serializes `Start`, `Refresh` and `Scope.Start` pipelines. It **is** held across user code, unlike `lifecycleMu`. Shutdown never takes it and nothing takes it while holding `lifecycleMu`, so Shutdown cannot deadlock on it.
+- `Refresh`/`Scope.Start` check the phase before taking `pipelineMu` (V3), so a call made while the first Start runs fails fast with `ErrNotStarted`. Calling them synchronously from code running inside a Refresh or Scope.Start still deadlocks, like calling `Shutdown` there (start-lifecycle Risks). Documented.
 
 **P2. One incremental pipeline.**
-- `runPipeline(ctx, roots []*Scope, incremental bool)` discovers candidates in the subtrees of `roots`, using the absolute depth from the root container for ordering. It skips wrappers in `started` (Starters) and pairs in `handled` (kinds), then builds, runs stages, checks cycles and starts, as start-lifecycle D7 does.
-- `Start` runs it with `roots = [root.self]`, `incremental = false`. `Refresh` uses `[root.self]` and `incremental = true`; `Scope.Start` uses `[s]`, and on `root.self` behaves as Refresh.
+- `runPipeline(ctx, roots []*Scope)` discovers candidates in the subtrees of `roots`, using the absolute depth from the root container for ordering. It skips wrappers in `started` (Starters) and pairs in `handled` (kinds), then builds, runs stages, checks cycles and starts, as start-lifecycle D7 does. The first Start has nothing in either set, so one code path serves both; no `incremental` flag is needed.
+- `Start` runs it with `roots = [root.self]`. `Refresh` uses `[root.self]`; `Scope.Start` uses `[s]`, and on `root.self` behaves as Refresh.
 - Ancestors that the subtree depends on are built through normal invocation, but are not candidates, so they are not started.
 - Lifecycle state for an incremental run:
   - `beginIncremental` (under `lifecycleMu`) checks the phase (Q-P3), then records `incCancel`/`incDone` for the running run;
@@ -143,11 +143,11 @@ Facts verified for the new parts (scratch probes on a copy of the repo at `e116a
 
 **S4. Live collections.**
 - `type Collection[T any] struct{ injector Injector }`, created by `InvokeCollection[T](i)` with `getInjectorOrDefault(i)`, so creation builds nothing.
-- `All()`/`Map()` run the Part K pipeline on the captured injector at read time. When `i` was a provider's virtual scope, its invoker chain gives self-exclusion and edge recording, as in `InvokeAll`.
+- `All()`/`Map()` run the Part K pipeline on the captured injector at read time. While `i`, a provider's virtual scope, belongs to a provider that is still running, its invoker chain gives self-exclusion and edge recording, as in `InvokeAll`. Once that provider has returned, reads drop the chain (V5).
 - The value is safe to copy and to read concurrently, because the pipeline shares no new state (Part K D8).
 
 **S5. Deterministic `InvokeAs`.**
-- `invokeByGenericType` collects every candidate, aliases included, with its distance from the invoking scope (0 = invoking scope), its registration index and its name. It picks the minimum of `(distance asc, regIndex asc, name asc)` and keeps its current per-member semantics (Part K D3 helper).
+- `selectByType` walks the visible services nearest scope first, aliases included, and picks the minimum of `(distance asc, regIndex asc, name asc)`. Because distance comes first, it stops after the nearest scope that has a match; the result equals collecting every candidate. A candidate hidden by a same-name service in a nearer scope is skipped (V14).
 - The `invokeByTags` implicit-aliasing fallback uses the same selection.
 - This is nearest-first, the opposite direction of collection order (ancestors first, Part K D2), on purpose: it preserves today's "current scope first" behavior.
 
@@ -166,6 +166,41 @@ Facts verified for the new parts (scratch probes on a copy of the repo at `e116a
 **X3. Lock rules.** `lifecycleMu` is never held across user code (start-lifecycle D6). `pipelineMu` (P1) is held across pipeline user code and never taken under `lifecycleMu` or by Shutdown. `kindsMu` and `declareMu` keep their scopes.
 
 **X4. Upgrading page.** Every flagged item gets an entry in `docs/docs/upgrading/start-lifecycle.md`, renamed in title to cover this release: alias shutdown, `InvokeAs` determinism, the `*` struct tag, the per-service health-check timeout, and clone handler copying. (The health-check timeout rule from #5 is already documented in `migrating-from-samber-do.md`.)
+
+### Part V — Verification fixes
+
+Found by `/opsx:verify` and a code review, each reproduced by a failing test before its fix (CLAUDE.md rule 5). Decisions V3, V4, V5, V6, V10 and V14 were made by the user.
+
+**V1. Shutdown sets the cancel cause while it holds `lifecycleMu`.** `beginClose` calls the in-flight run's cancel function with `ErrStartAfterShutdown` before releasing `lifecycleMu`; `waitForStart` only waits. `finishStart` and `finishIncremental` therefore always see the cause when the close phase is not open. Before, a pipeline returning between `beginClose` and `waitForStart` produced `DI: start aborted: %!w(<nil>)`.
+
+**V2. Parallel start re-raises per-service hook panics on the caller.** The worker goroutine recovers a panic from `startCandidate` (the per-service hooks; a Starter's own panic is already an error) and reports it to the coordinator, which stops dispatching, waits for the running workers, then re-panics the first value. `finishStart` then sees `panicked` as in sequential mode.
+
+**V3. Incremental start fails fast while Start runs (user decision).** `startIncremental` checks the phase under `lifecycleMu` before taking `pipelineMu` and returns `ErrNotStarted` (or `ErrStartAfterShutdown`, which takes precedence) without waiting. `beginIncremental` re-checks after the lock, because Shutdown may begin meanwhile.
+
+**V4. A child scope shutdown waits for a run that is starting its services (user decision).**
+- Under `lifecycleMu`, the running pipeline records `runScopes`, the scopes of its candidates, after discovery, and drops candidates whose scope is closing. A child scope's shutdown marks the scope closing under `lifecycleMu` and, if the in-flight run has it in `runScopes`, waits for that run's done channel without cancelling it, bounded by its context (failure keyed by the scope with an empty service name, like root).
+- Only runs with candidates in the scope are waited for, so a scope created and shut down by a provider during Start does not deadlock. Shutting a scope down synchronously from code of a run that is starting it deadlocks, as for root; documented.
+- The root's own scope keeps root Shutdown's model (start-lifecycle D6).
+
+**V5. Live-collection reads drop a returned provider's chain (user decision).** `virtualScope` gets a `returned atomic.Bool`, set by `invokeAnyByNameAs` once the wrapper's `getInstance` returned. A read on a returned virtual scope resolves from its underlying `*Scope`, excludes only the holder (the chain's last name), and records no edge. Reads while the provider runs keep the chain.
+
+**V6. The `*` tag requires `map[string]E` exactly (user decision).** The key check compares the key type with `reflect.TypeFor[string]()`, matching the spec and S3.
+
+**V7, V8. Missing tests.** `Refresh`/`Scope.Start` StartError rows, Scope.Start ancestors, and parallel incremental start get tests. They are expected to pass on arrival; each is mutation-checked and recorded in notes.md.
+
+**V9. Stale design text.** P1, P2, S4 and S5 above now describe the implementation.
+
+**V10. `HookAfterBuild` runs outside the wrapper lock (user decision).** `serviceLazy.build` returns whether it built; `getInstance` fires the hook after releasing `s.mu`. `serviceEager` fires it after releasing its dependency lock. The hook still fires once per build, on the building goroutine, between the invocation hooks.
+
+**V11. `DependencySource.UnmarshalText`** decodes `invoked`, `depends-on` and `declared`, and rejects other text with an error naming it.
+
+**V12. Override forgets the replaced wrapper.** When registration replaces a wrapper (Override), the old wrapper is dropped from `started` and `handled`, like shutdown does (group 49).
+
+**V13. `StartParallelism` is clamped to the number of Starters** before the `int` conversion, so huge values (`^uint(0)`) behave as "all at once" instead of wrapping negative.
+
+**V14. `InvokeAs` honors shadowing (user decision).** A candidate in an ancestor scope is skipped when a scope between the invoking scope and it registers the same name. The check runs only for matching candidates and walks parent pointers, so it allocates nothing. The struct fallback is then consistent: the selected name always resolves to the selected service.
+
+**V15, V16. Duplication (refactors).** `queueServiceHealthcheck` calls `perServiceHealthCheckContext`. One generic veto loop serves container and scope Starting hooks, and one observer loop serves container and scope observer hooks, each taking its panic-wrapping function, so messages are unchanged.
 
 ### Part H — Container lifecycle hooks (folded from `add-container-lifecycle-hooks`)
 
@@ -406,7 +441,9 @@ Return `[]T{}` / `map[string]T{}` when nothing matches. On error, return `nil, e
 
 ## Risks / Trade-offs
 
-- [`pipelineMu` held across user code: `Refresh`/`Scope.Start` called synchronously from Start-time code deadlocks] → Documented on `Refresh`, `Scope.Start` and the starter page, next to the existing Shutdown rule. `Start` from such code still returns `ErrAlreadyStarted` (guard before the lock).
+- [`pipelineMu` held across user code: `Refresh`/`Scope.Start` called synchronously from Refresh-time code deadlocks] → Documented on `Refresh`, `Scope.Start` and the starter page, next to the existing Shutdown rule. From Start-time code they fail fast with `ErrNotStarted` (V3), and `Start` still returns `ErrAlreadyStarted` (guards before the lock).
+- [A child scope shutdown waits for a run that is starting its services (V4)] → Shutting such a scope down synchronously from that run's code deadlocks. Documented on `Scope.Shutdown`; runs without candidates in the scope never wait.
+- [Build hooks run outside the wrapper lock (V10)] → Another goroutine may receive the instance before the hook returned. Documented on `HookAfterBuild`.
 - [Started set keyed by wrapper pointer keeps wrappers reachable until shutdown] → A wrapper is dropped from `started` and `handled` when shutdown removes it from its scope: its scope's shutdown (child or root) or its own `ShutdownNamed`. Memory is bounded by the live registrations.
 - [Parallel start runs per-service hooks concurrently] → Opt-in only; documented on `StartParallelism` and `HookBeforeStart`/`HookAfterStart`.
 - [Alias shutdown change: child-scope shutdown no longer stops a parent target through an alias] → Flagged, on the upgrading page, pinned by the service-aliases rows.
@@ -455,6 +492,7 @@ Added (all additive unless flagged):
   - `InjectorOpts.HookScopeStarting/Started/Closing/Closed`, `RootScope.AddScopeStartingHook` … `AddScopeClosedHook`;
   - `ContainerPhase`, `PhaseIdle` … `PhaseClosed`, `RootScope.Phase`;
   - `Collection[T]`, `InvokeCollection`.
+- **Part V:** `DependencySource.UnmarshalText`.
 
 Changed behavior, flagged, with migration:
 - Per-service `HealthCheck*` honor `HealthCheckTimeout`. Migration: none if the option is 0; otherwise expect the bound.
@@ -462,6 +500,8 @@ Changed behavior, flagged, with migration:
 - `InvokeAs` / implicit struct aliasing pick deterministically. Migration: use `InvokeNamed` to pin a specific service.
 - **BREAKING (edge case):** the struct tag `do:"*"` means a collection. Migration: rename a service called `*`.
 - Clones copy replaced kind handlers. Migration: re-register a different handler on the clone if needed.
+- `InvokeAs` / implicit struct aliasing skip services shadowed by a same-name service in a nearer scope (V14). Migration: invoke the ancestor service by name from its own scope.
+- A child scope `Shutdown` waits for a running Start, Refresh or Scope.Start that is starting its services (V4). Migration: do not shut down, from Start-time code, a scope that the running start is starting.
 
 Defaults: see the proposal's Defaults & Control table. Every new hook list defaults to empty, and `StartParallelism` to sequential.
 
@@ -527,8 +567,25 @@ All tests run under `go test -race` with goleak (`TestMain`). Tests that could h
 | health-check-timeouts | Per-service checks are bounded by HealthCheckTimeout (6 rows) | `healthcheck_timeout_test.go: TestHealthCheck_PerServiceTimeout/<row>` | table / synctest |
 | health-check-timeouts | A per-service check returning an error in time keeps it | `healthcheck_timeout_test.go: TestHealthCheck_PerServiceErrorInTime` | unit |
 | container-lifecycle-hooks | Refresh after Start fires no container hook (2 rows) | `container_hooks_test.go: TestContainerHooks_IncrementalStartFiresNone/<row>` | table |
+| container-lifecycle-hooks | A start finishing as Shutdown begins (2 rows, 20000 runs) | `container_hooks_test.go: TestContainerHooks_ShutdownCauseRace/<row>` | stress (regression, V1) |
+| container-start | Independent Starters start concurrently (new max-uint row) | `root_start_test.go: TestStart_Parallel/max_uint` | synctest (regression, V13) |
+| container-start | Parallel incremental start (2 rows) | `root_start_test.go: TestStart_ParallelIncremental/<operation>` | synctest (V8) |
+| container-start | A panicking start hook under parallel start (3 rows) | `root_start_test.go: TestStart_ParallelHookPanic/<row>` | table (regression, V2) |
+| container-start | Incremental start while Start runs (3 rows) | `root_refresh_test.go: TestIncrementalStart_DuringStart/<row>` | table (regression, V3) |
+| container-start | Scope.Start builds ancestors but does not start them | `root_refresh_test.go: TestScopeStart_AncestorsNotStarted` | unit (V8) |
+| container-start | Incremental start failures are StartError values (3 rows) | `root_refresh_test.go: TestStartError_Incremental/<row>` | table (V7) |
+| container-start | Child shutdown waits for a running start (3 rows) | `root_refresh_test.go: TestScopeShutdown_WaitsForStart/<row>` | table / race (regression, V4) |
+| container-start | A start that begins during a child shutdown skips the scope | `root_refresh_test.go: TestScopeShutdown_LaterStartSkips` | unit (V4) |
+| container-start | A scope created during a running start does not wait | `root_refresh_test.go: TestScopeShutdown_CreatedDuringStart` | unit (V4) |
+| container-start | A child shutdown bounded by its context | `root_refresh_test.go: TestScopeShutdown_WaitBounded` | synctest (V4) |
+| live-collections | Reads after the holder's provider returned (2 rows) | `collection_test.go: TestCollection_AfterProviderReturned/<read>` | table (regression, V5) |
+| collection-struct-injection | Invalid collection fields (new string-kinded key row) | `invoke_all_struct_test.go: TestInvokeStruct_CollectionInvalidField/map_with_string-kinded_keys` | table (regression, V6) |
+| service-build-hooks | A build hook can use its own service (3 rows) | `build_hooks_test.go: TestAfterBuildHook_ReentersService/<row>` | table (regression, V10) |
+| dependency-declaration | Explained output round-trips through JSON (4 rows) | `dependency_test.go: TestDependencySource_UnmarshalText/<text>` | table (regression, V11) |
+| type-resolution | A shadowed service is not a candidate (3 rows) | `invoke_test.go: TestInvokeAs_Shadowing/<row>` | table (regression, V14) |
 
-Finding tests without a spec scenario (F2, F4, F5):
+Finding tests without a spec scenario (F2, F4, F5, V12):
+- `root_refresh_test.go: TestRootScope_ForgetsShutDownServices` (group 49) and `TestRootScope_ForgetsOverriddenServices` (regression, V12, internal);
 - `errors_test.go: TestMergeShutdownReports_Succeed` (regression, internal);
 - `bench/do_bench_test.go: BenchmarkNew`, with benchstat allocs/op = 11;
 - `root_scope_test.go: TestRootScope_HealthCheckDuringShutdown` (race guard, `-count=2000`).
