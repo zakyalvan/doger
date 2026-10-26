@@ -652,8 +652,49 @@ Each test that passes on arrival is checked with a temporary mutation (reverted)
 
 - [x] 96.1 Add `ExampleInvokeAs_decorator`, `ExampleMustInvokeAll`, `ExampleRootScope_AddContainerStartedHook`, `ExampleRootScope_AddContainerClosingHook`, `ExampleRootScope_AddContainerClosedHook`, `ExampleRootScope_AddScopeClosedHook`, `ExampleRootScope_RefreshWithContext` and `ExampleScope_StartWithContext`; verify `go test -race -run Example .` passes
 
-## 97. Integration checks after the fourth verification
+## 97. DefaultRootScope tests are safe to repeat (design V50; test-only)
 
-- [ ] 97.1 Full run: `make test`, `make lint`, per-module `go vet ./... && go test -race ./...` in every `go.work` module, the docs lint and build, and `openspec validate consolidate-pending-lifecycle-work --strict`
-- [ ] 97.2 Stress: run the lifecycle and collection tests with `-race -count=2000 -timeout 110m`; verify no failure
-- [ ] 97.3 Benchmarks: `benchstat` against `ed65bdc` (10 runs, alternating the two test binaries; the base built from a temporary worktree with `GOWORK=off`), recorded in notes.md
+- [ ] 97.1 RED: `go test -race -count=2 -run '^TestInvokeByName$' .` panics with ``DI: service `foo` has already been declared``; record it
+- [ ] 97.2 GREEN: `TestInvokeByName` stops running in parallel, swaps in a fresh `DefaultRootScope` with a unique service name and restores it in `t.Cleanup`; `TestGetInjectorOrDefault` restores `DefaultRootScope` in `t.Cleanup`; verify `go test -race -count=3 -run '^(TestInvokeByName|TestGetInjectorOrDefault|TestDeclareDependency|TestInvokeAll_NilInjector|TestCollection_NilInjector|TestKind_NilRootUsesDefault)$' .` passes and `make test` is green
+- [ ] 97.3 Audit every test that uses `DefaultRootScope` or a nil injector against the V50 rule; record the result in notes.md
+
+## 98. Live-collection reads take the reader's injector: API (live-collections; design V51)
+
+- [ ] 98.1 *Change Function Declaration* (Add Parameter): `All(i Injector)` and `Map(i Injector)`, ignoring `i` for now; every caller passes nil (mechanical edit of the same change); verify `make test` and `make lint` pass with no other test change
+
+## 99. Reads follow the reader's injector (live-collections; design V51)
+
+- [ ] 99.1 RED: add `TestCollection_ReaderInjector` (2 rows: app not an EventHandler, app implementing it), `TestCollection_ReadWithNilRecordsNoEdge`, `TestCollection_GoroutineReadDuringOuterProvider` (former hazard 1) and `TestCollection_MemberProviderReads` (2 rows, former hazard 2, 1s timeout) to `collection_test.go`; verify `go test -race -run 'TestCollection_ReaderInjector|TestCollection_ReadWithNil|TestCollection_GoroutineRead|TestCollection_MemberProviderReads' .` fails for the expected reasons (no reader edges, a false ErrCircularDependency, a deadlock)
+- [ ] 99.2 GREEN: `InvokeCollection` keeps the holder's scope and name; a read enumerates from the holder's scope, excludes the holder and the reader's own service, and builds through the reader's injector; update the tests whose expectations the spec changed (`TestCollection_ReadDuringOuterProvider`, `TestCollection_DetachedRead*`, `TestCollection_ReadDuringHolderProvider`, `TestCollection_HeldByProvider`); verify the 99.1 command and `TestCollection_*` pass and `make test` is green
+- [ ] 99.3 REFACTOR: *Extract Function* for the shared collection read if InvokeAll and Collection duplicate it; verify `make test` and `make lint` pass
+
+## 100. Remove the machinery the reader's injector made unnecessary (design V51; refactors)
+
+Each step runs `make test` and `make lint`, and uses gopls references to prove the removed code unused first.
+
+- [ ] 100.1 *Remove Dead Code*: `Collection.reader`, `runningChain`, `detachedInjector` (and its cases in `invokingServiceName` and `buildMembers`)
+- [ ] 100.2 *Remove Dead Code*: the virtual scope's `detached` flag, its edge guard and the holder appended to messages (V47)
+- [ ] 100.3 *Remove Dead Code*: `virtualScope.returned` and the four sites that mark it (V5, V24)
+- [ ] 100.4 Update the `Collection`/`InvokeCollection` godoc, `collection-invocation.md`, the Examples and design S4 (V5, V17, V24 and V47 marked superseded by V51); verify the docs lint and build pass
+
+## 101. Single-service health-check timeout (health-check-timeouts; design V52)
+
+- [ ] 101.1 RED: add `TestHealthCheckSingleTimeout` (8 rows, synctest and fake clock) to `healthcheck_timeout_test.go`; verify it fails to compile only for the missing field, then, with the field added and unused, fails the rows where the option changes the bound
+- [ ] 101.2 GREEN: single-service checks use `HealthCheckSingleTimeout` (0 inherits `HealthCheckTimeout`, negative unbounded); `HealthCheck()` keeps `HealthCheckTimeout`; copy the field in `copy()`; verify the 101.1 command passes and `make test` is green
+- [ ] 101.3 REFACTOR: *Extract Function* the bound selection; update the godoc, the health-check docs page, `ExampleInjectorOpts_healthCheckSingleTimeout`; verify `make test`, `make lint` and the docs lint and build pass
+
+## 102. InvokeAs performance (design V53; refactor)
+
+- [ ] 102.1 Profile `BenchmarkInvokeAs` (`-cpuprofile`, `-memprofile`) and record the findings
+- [ ] 102.2 Try a per-scope target-type cache, invalidated on registration, override and removal; verify every test passes unchanged under `-race`, then `benchstat` against `ed65bdc` and the head before it (10 alternating runs); keep it only with a significant gain, otherwise revert and record why
+
+## 103. New performance (design V53; refactor)
+
+- [ ] 103.1 Profile `BenchmarkNew` and record the findings
+- [ ] 103.2 Shrink `RootScope` or allocate rarely used state lazily, keeping 11 allocs/op or fewer; verify every test passes unchanged under `-race`, then `benchstat` as in 102.2; keep it only with a significant gain, otherwise revert and record why
+
+## 104. Integration checks after the fourth verification
+
+- [ ] 104.1 Full run: `make test`, `make lint`, per-module `go vet ./... && go test -race ./...` in every `go.work` module, the docs lint and build, and `openspec validate consolidate-pending-lifecycle-work --strict`
+- [ ] 104.2 Stress (design V54): run the lifecycle and collection tests with `-race -count=2000 -timeout 110m` in several processes, and `TestContainerHooks_ShutdownCauseRace` alone with `-count=50`; verify no failure and record the peak RSS
+- [ ] 104.3 Benchmarks: `benchstat` against `ed65bdc` (10 runs, alternating the two test binaries; the base built from a temporary worktree with `GOWORK=off`), recorded in notes.md

@@ -2,12 +2,12 @@
 
 ## Purpose
 
-Lets a component hold a collection that re-resolves its members on every read, so services registered after the component was built are included, unlike the snapshot returned by `InvokeAll`.
+Lets a component hold a collection that re-resolves its members on every read, so services registered after the component was built are included, unlike the snapshot returned by `InvokeAll`. Each read takes the reader's injector, so cycle detection and dependency edges follow the code that reads, not the code that created the collection.
 
 ## ADDED Requirements
 
 ### Requirement: A live collection re-resolves on every read
-`InvokeCollection[T](i) Collection[T]` SHALL return a value whose `All() ([]T, error)` and `Map() (map[string]T, error)` resolve the members on each call, with the same membership, order, self-exclusion, error and hook rules as `InvokeAll[T]`/`InvokeAllMap[T]` applied from `i`. `InvokeCollection` SHALL build nothing itself.
+`InvokeCollection[T](i) Collection[T]` SHALL return a value whose `All(r Injector) ([]T, error)` and `Map(r Injector) (map[string]T, error)` resolve the members on each call, from the scope of `i`, with the membership, order, error and hook rules of `InvokeAll[T]`/`InvokeAllMap[T]`. `InvokeCollection` SHALL build nothing itself.
 
 #### Scenario: Later registrations are visible
 ```gherkin
@@ -18,9 +18,9 @@ When the consumer calls <read>
 Then the result is <result>
 
 Examples:
-  | read    | result                                |
-  | c.All() | [console, audit], nil error           |
-  | c.Map() | {"console", "audit"} keys, nil error  |
+  | read         | result                                |
+  | c.All(nil)   | [console, audit], nil error           |
+  | c.Map(nil)   | {"console", "audit"} keys, nil error  |
 ```
 
 #### Scenario: Creating a live collection builds nothing
@@ -28,24 +28,13 @@ Examples:
 Given a root scope with lazy "console" implementing "EventHandler" whose provider counts its calls
 When the consumer calls InvokeCollection[EventHandler](root)
 Then the provider was called 0 times
-And after c.All() it was called 1 time
-```
-
-#### Scenario: A live collection held by a provider
-```gherkin
-Given lazy "bus" whose provider stores InvokeCollection[EventHandler](i), and "bus" implements EventHandler
-And lazy "console" implementing "EventHandler"
-And "bus" has been invoked
-And the consumer then registers lazy "audit" implementing "EventHandler"
-When the bus calls All() on its collection
-Then the result is [console, audit], without "bus"
-And ExplainNamedService(root, "bus") lists no dependency on "audit" or "console"
+And after c.All(nil) it was called 1 time
 ```
 
 #### Scenario: Reads after shutdown and failures
 ```gherkin
 Given a root scope with <setup> and c := InvokeCollection[EventHandler](root)
-When the consumer calls c.All()
+When the consumer calls c.All(nil)
 Then the result is <result>
 
 Examples:
@@ -58,96 +47,126 @@ Examples:
 #### Scenario: Concurrent reads are race-free
 ```gherkin
 Given a root scope with lazy "console" implementing "EventHandler" whose provider counts its calls, and c := InvokeCollection[EventHandler](root)
-When 50 goroutines call c.All() while 10 goroutines register lazy "h-<n>" implementing "EventHandler"
+When 50 goroutines call c.All(nil) while 10 goroutines register lazy "h-<n>" implementing "EventHandler"
 Then no data race is reported
 And the "console" provider was called exactly 1 time
 ```
 
 <!-- cases: 1 default: re-resolution on read -->
 <!-- cases: 2 overrides: ordering overrides apply as for InvokeAll; a snapshot is InvokeAll -->
-<!-- cases: 3 zero values: no member yields an empty non-nil slice; a nil injector means DefaultRootScope, as for InvokeAll -->
+<!-- cases: 3 zero values: no member yields an empty non-nil slice; a nil i means DefaultRootScope, as for InvokeAll -->
 <!-- cases: N/A 4 boundaries: covered by collection-invocation -->
 <!-- cases: 5 errors: member failure row -->
-<!-- cases: 6 duplicates: self-exclusion and alias exclusion as for InvokeAll -->
-<!-- cases: 7 lifecycle: after shutdown, late registration, held by a provider (reads after the provider returned have their own requirement) -->
+<!-- cases: 6 duplicates: alias exclusion as for InvokeAll; the holder has its own requirement -->
+<!-- cases: 7 lifecycle: after shutdown, late registration -->
 <!-- cases: 8 concurrency: concurrent reads and registrations -->
-<!-- cases: N/A 9 panics: an Order() panic is returned by All(), as in collection-ordering -->
-<!-- cases: N/A 10 compatibility: new API -->
+<!-- cases: N/A 9 panics: an Order() panic is returned by All, as in collection-ordering -->
+<!-- cases: N/A 10 compatibility: new API; the read signature changed before any release, so no consumer breaks -->
 
-### Requirement: Reads after the holder's provider returned
-When `i` is a provider's injector and that provider has returned, `All()`/`Map()` SHALL resolve from the provider's scope, excluding only the holder, without recording dependency edges, and keeping from its build-time invoker chain only the providers still running. Reads made while the provider runs keep the rules of `InvokeAll`.
+### Requirement: The holder is excluded from every read
+When `i` is a provider's injector, the service that provider builds (the holder) SHALL be excluded from every read of the collection, whoever reads and whenever, even after its provider returned. `InvokeCollection` SHALL keep the holder's scope and name, not its provider's build chain.
 
-#### Scenario: Reads after the holder's provider returned
+#### Scenario: The holder stays excluded
 ```gherkin
 Given lazy "app" implementing "EventHandler" whose provider invokes "bus"
 And lazy "bus" implementing "EventHandler" whose provider stores c := InvokeCollection[EventHandler](i)
 And "app" has been invoked, which built "bus"
-When the bus calls <read> on its collection
+When the consumer calls <read> on bus's collection
 Then the result is <result>
 And ExplainNamedService(root, "bus") lists no dependency on "app"
 
 Examples:
-  | read    | result                       |
-  | c.All() | [app], nil error             |
-  | c.Map() | {"app"} keys, nil error      |
+  | read        | result                       |
+  | c.All(nil)  | [app], nil error             |
+  | c.Map(nil)  | {"app"} keys, nil error      |
 ```
 
-#### Scenario: A read while an outer provider still runs
+#### Scenario: The holder stays excluded after its invoker builds siblings
 ```gherkin
-Given lazy "app" implementing "EventHandler" whose provider invokes "bus", then calls All() on bus's collection and returns its error
-And lazy "bus" implementing "EventHandler" whose provider stores c := InvokeCollection[EventHandler](i)
-When the consumer invokes "app" within 1s
-Then the invocation returns an error matching ErrCircularDependency
-And its message contains "`app` -> `bus` -> `app`", naming the holder
+Given lazy "a", "b", "c", "d" and "e", each implementing "EventHandler", where "a" invokes "b", "b" invokes "c", and "c" invokes "d" and then "e"
+And "d"'s provider stores c := InvokeCollection[EventHandler](i)
+And the consumer has invoked "a"
+When the consumer calls c.Map(nil)
+Then the result has keys {"a", "b", "c", "e"} and a nil error
 ```
 
-#### Scenario: A read while an outer provider runs records no edge
+<!-- cases: 1 default: a holder built through one of its members -->
+<!-- cases: N/A 2 overrides: there is no option -->
+<!-- cases: 3 zero values: InvokeCollection(root) has no holder -->
+<!-- cases: 4 boundaries: a chain three deep -->
+<!-- cases: N/A 5 errors: member failures are returned as for InvokeAll -->
+<!-- cases: 6 duplicates: a sibling built after the holder ("e") stays a member -->
+<!-- cases: 7 lifecycle: the reads happen after the whole chain returned -->
+<!-- cases: N/A 8 concurrency, 9 panics: as for the main requirement -->
+<!-- cases: N/A 10 compatibility: new API -->
+
+### Requirement: Reads follow the reader's injector
+A read with `r` SHALL apply the self-exclusion, cycle detection and dependency edges of `InvokeAll` called from `r`. When `r` is a provider's injector, its service SHALL be excluded, its dependency on each member SHALL be recorded, and cycles through its build chain SHALL be reported. When `r` is nil, or not a provider's injector, the read SHALL use no build chain and record no edge.
+
+#### Scenario: A provider reads with its own injector
 ```gherkin
-Given lazy "app", not an EventHandler, whose provider invokes "bus", then calls All() on bus's collection and keeps the member names
+Given lazy "console" implementing "EventHandler"
 And lazy "bus" implementing "EventHandler" whose provider stores c := InvokeCollection[EventHandler](i)
-And lazy "console" implementing "EventHandler"
+And lazy "app" whose provider invokes "bus", then calls c.All(i) on bus's collection with its own injector and keeps the member names
+And "app" is <app_kind>
 When the consumer invokes "app"
-Then the invocation returns nil error and "app" kept [console]
-And ExplainNamedService(root, "app") lists exactly the dependency bus
+Then the invocation returns a nil error and "app" kept [console]
+And ExplainNamedService(root, "app") lists exactly the dependencies bus and console
+
+Examples:
+  | app_kind                     |
+  | not an EventHandler          |
+  | implementing "EventHandler"  |
 ```
 
-#### Scenario: A member built by such a read keeps the running chain
+#### Scenario: A read with nil records no edge
 ```gherkin
-Given lazy "app" implementing "AppMarker", not an EventHandler, whose provider invokes "bus", calls All() on bus's collection, then invokes "member" and calls All() on member's collection
-And lazy "bus" implementing "EventHandler" whose provider stores InvokeCollection[EventHandler](i)
-And lazy "member" implementing "EventHandler" whose provider stores InvokeCollection[AppMarker](i)
-When the consumer invokes "app" within 1s
-Then the invocation returns an error matching ErrCircularDependency
+Given lazy "console" implementing "EventHandler"
+And lazy "bus" implementing "EventHandler" whose provider stores c := InvokeCollection[EventHandler](i)
+And lazy "app", not an EventHandler, whose provider invokes "bus", then calls c.All(nil) on bus's collection
+When the consumer invokes "app"
+Then the invocation returns a nil error
+And ExplainNamedService(root, "app") lists exactly the dependency bus
 ```
 
 #### Scenario: A read while the holder's provider runs
 ```gherkin
 Given lazy "console" implementing "EventHandler"
-And lazy "bus" implementing "EventHandler" whose provider calls All() on c := InvokeCollection[EventHandler](i) and records the result
+And lazy "bus" implementing "EventHandler" whose provider calls c.All(i) on c := InvokeCollection[EventHandler](i) and records the result
 When the consumer invokes "bus"
 Then the recorded result is [console], without "bus"
 And ExplainNamedService(root, "bus") lists dependency console
 ```
 
-<!-- cases: 1 default: a holder built through one of its members -->
-<!-- cases: N/A 2 overrides: there is no option -->
-<!-- cases: N/A 3 zero values, 4 boundaries: covered by the main requirement -->
-<!-- cases: N/A 5 errors: member failures are returned as for InvokeAll -->
-<!-- cases: 6 duplicates: the holder stays excluded ("The holder is the service its provider builds") -->
-<!-- cases: 7 lifecycle: during versus after the provider; an outer provider still running keeps cycle detection -->
-<!-- cases: N/A 8 concurrency: covered by "Concurrent reads are race-free". Two hazards are documented on Collection, not specified as behavior, because a read cannot know its goroutine or build chain: a goroutine outside the build chain that reads while an outer provider of the holder still runs gets ErrCircularDependency for that provider's service; a read from inside a member's provider, by code not on the holder's build chain, waits for that member's own build and never returns -->
-<!-- cases: N/A 9 panics: as for InvokeAll -->
-<!-- cases: N/A 10 compatibility: new API -->
+#### Scenario: A goroutine reads while an outer provider runs (former hazard 1)
+```gherkin
+Given lazy "app" implementing "EventHandler" whose provider invokes "bus", then blocks until released
+And lazy "bus" implementing "EventHandler" whose provider stores c := InvokeCollection[EventHandler](i)
+And the consumer invokes "app" in another goroutine, and "app" is blocked
+When a third goroutine calls c.All(nil), and "app" is released 100ms later
+Then that read returns [app] and a nil error, not ErrCircularDependency
+```
 
-### Requirement: An invocation that ran no provider is over once it returned
-An invocation SHALL stop counting as a running provider of the build chain once it has returned, even when no provider ran in it: the resolution of an eager value's declared dependencies, or an attempt that failed before its provider ran. A later read of a collection created below it SHALL NOT report a circular dependency on it.
+#### Scenario: A member's provider reads the collection (former hazard 2)
+```gherkin
+Given lazy "bus" implementing "EventHandler" whose provider stores c := InvokeCollection[EventHandler](i), already invoked
+And lazy "audit" implementing "EventHandler"
+And lazy "console" implementing "EventHandler" whose provider <reads>
+When the consumer invokes "console" within 1s
+Then <result>
 
-#### Scenario: Invocations that ran no provider are not running
+Examples:
+  | reads                                                                      | result                                                  |
+  | calls c.All(i) with its own injector and keeps the member names            | a nil error, and console kept [audit]                   |
+  | invokes lazy "helper", whose provider calls c.All(j) with its own injector | an error matching ErrCircularDependency naming "console" |
+```
+
+#### Scenario: Reads outside providers ignore finished invocations
 ```gherkin
 Given lazy "bus" implementing "EventHandler" whose provider stores c := InvokeCollection[EventHandler](i)
 And <dependent> implementing "EventHandler", registered with DependsOnNamed("bus")
 And <steps>
-When the bus calls c.Map()
+When the consumer calls c.Map(nil)
 Then the result has keys <keys> and a nil error
 
 Examples:
@@ -158,31 +177,13 @@ Examples:
   | lazy "l", also with DependsOnNamed("missing") | the consumer invoked "l", which failed, then registered lazy "missing" (not an EventHandler) and invoked "l" again | {"l"} |
 ```
 
-<!-- cases: 1 default: the eager row -->
-<!-- cases: N/A 2 overrides: there is no option -->
-<!-- cases: N/A 3 zero values, 4 boundaries: one dependent per row -->
-<!-- cases: 5 errors: the failed-attempt row -->
-<!-- cases: N/A 6 duplicates: a second invocation is over as well -->
-<!-- cases: 7 lifecycle: the read happens after the dependent's invocation returned -->
-<!-- cases: N/A 8 concurrency, 9 panics: as for the main requirement -->
-<!-- cases: N/A 10 compatibility: new API -->
-
-### Requirement: The holder is the service its provider builds
-The holder a live collection excludes SHALL be the service whose provider received `i`, whatever that provider's invoker builds afterwards from the same depth of the build chain.
-
-#### Scenario: The holder stays excluded after its invoker builds siblings
-```gherkin
-Given lazy "a", "b", "c", "d" and "e", each implementing "EventHandler", where "a" invokes "b", "b" invokes "c", and "c" invokes "d" and then "e"
-And "d"'s provider stores c := InvokeCollection[EventHandler](i)
-And the consumer has invoked "a"
-When "d" calls c.Map()
-Then the result has keys {"a", "b", "c", "e"} and a nil error
-```
-
-<!-- cases: 1 default: the scenario -->
-<!-- cases: N/A 2 overrides: there is no option -->
-<!-- cases: 4 boundaries: a chain three deep, where the invoker chain's backing array has spare capacity -->
-<!-- cases: N/A 3 zero values, 5 errors, 8 concurrency, 9 panics: as for the main requirement -->
-<!-- cases: 6 duplicates: a sibling built after the holder ("e") stays a member -->
-<!-- cases: 7 lifecycle: the read happens after the whole chain returned -->
-<!-- cases: N/A 10 compatibility: new API -->
+<!-- cases: 1 default: nil reader, no chain, no edge -->
+<!-- cases: 2 overrides: a provider's injector as reader -->
+<!-- cases: 3 zero values: nil reader -->
+<!-- cases: N/A 4 boundaries: covered by the main requirement -->
+<!-- cases: 5 errors: a cycle through the reader's own chain -->
+<!-- cases: 6 duplicates: the reader's own service is excluded, as for InvokeAll -->
+<!-- cases: 7 lifecycle: reads during and after providers; finished invocations never count -->
+<!-- cases: 8 concurrency: a goroutine outside the build chain waits for the outer provider instead of failing (former hazard 1) -->
+<!-- cases: N/A 9 panics: as for InvokeAll -->
+<!-- cases: 10 compatibility: replaces the reads-after-the-holder-returned rules of this unreleased change; both documented hazards are gone -->

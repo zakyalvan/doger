@@ -34,7 +34,7 @@ Several separate plans and loose ends build on `add-start-lifecycle-and-kinds`: 
 **Phase 2 of hooks and collections, and the remaining follow-ups**
 - Per-scope hooks `HookScopeStarting/Started/Closing/Closed` for child scopes, and `RootScope.Phase()` returning `ContainerPhase`.
 - Struct-tag injection of collections: `do:"*"` on a `[]T` field means `InvokeAll[T]`, and on a `map[string]T` field `InvokeAllMap[T]`.
-- Live collections: `InvokeCollection[T](i) Collection[T]`, whose `All()`/`Map()` re-resolve on each call.
+- Live collections: `InvokeCollection[T](i) Collection[T]`, whose `All(r)`/`Map(r)` re-resolve on each call. `r` is the reader's injector: cycle detection and edges follow the reader, as for `InvokeAll` from `r`. (The reads first took no argument; they changed before any release, so no consumer breaks.)
 - **Behavior change (flagged):** `InvokeAs[T]` and the implicit-aliasing struct fallback pick the first match deterministically: nearest scope, then registration order, then name.
 - **Behavior change (flagged):** per-service `HealthCheck*` functions honor `HealthCheckTimeout` when it is set.
 
@@ -58,6 +58,7 @@ Several separate plans and loose ends build on `add-start-lifecycle-and-kinds`: 
 - A start that Shutdown interrupts matches `ErrStartAfterShutdown` even when the caller had cancelled its context first, and so does the Failed error after a pipeline panic (**behavior change, flagged**, V38, V39).
 - `Scope.Start` on a scope that is shutting down runs no scope Starting hook (**behavior change, flagged**, V41).
 - A child scope shutdown that ran entirely between a run's collection and its claim no longer makes the run fail with `ErrServiceNotFound`, or start a same-name ancestor Starter twice (V37).
+- Scope extension (V50–V53): the `DefaultRootScope` tests are safe under `-count` > 1; live-collection reads take the reader's injector, which removes both documented hazards (internal to this unreleased change); `InjectorOpts.HealthCheckSingleTimeout` overrides the single-service bound (additive, default unchanged); `InvokeAs` and `New` are optimized where `benchstat` proves a gain.
 
 ## Capabilities
 
@@ -106,7 +107,7 @@ These capabilities come from `add-start-lifecycle-and-kinds` and exist under `op
 | Scope hooks | None registered | `HookScope*` fields / `AddScope*Hook` |
 | Collections | Every visible non-alias service assignable to `T`, deterministic order | `Ordered`, `WithOrder(n)`, distinct names/scopes |
 | Collection struct tag | `do:"*"` on `[]T`/`map[string]T` | Use a named tag to inject a single service |
-| Live collection | Re-resolves on every `All()`/`Map()` | Use `InvokeAll` for a snapshot |
+| Live collection | Re-resolves on every `All(r)`/`Map(r)` | Use `InvokeAll` for a snapshot |
 | `InvokeAs` pick | Nearest scope, then registration order, then name | Use `InvokeNamed` for a specific service |
 | Alias shutdown | Alias never shuts its target | None needed: the target shuts down through its own registration |
 | Late registrations / new scopes | Not started until `Refresh` or `Scope.Start` | Call `Refresh`/`Scope.Start`, or start nothing |
@@ -118,7 +119,8 @@ These capabilities come from `add-start-lifecycle-and-kinds` and exist under `op
 | Container phase | `Phase()` is read-only | None needed: observation only |
 | Incremental start during Start | Fails fast with `ErrNotStarted` | Call `Refresh` after `Start` returned |
 | Child scope shutdown during a start | Waits for a run that is starting the scope's services | Bound the wait with `ShutdownWithContext` |
-| Live collection after its provider returned | Resolves from the provider's scope without its chain; no edges | Use `InvokeAll` inside the provider for recorded edges |
+| Live collection read | Follows the reader's injector: a provider passes its own (edges, self-exclusion, cycles); nil records nothing | Pass the injector of the code that reads |
+| Single-service health checks | Bounded by `HealthCheckTimeout` | `HealthCheckSingleTimeout`: positive for its own bound, negative for none |
 | `InvokeAs` and shadowing | A shadowed ancestor service is not a candidate | Invoke the ancestor by name from its own scope |
 | `InvokeAs` from a provider | The provider's own service, and its aliases, are not candidates | Use `InvokeNamed` to resolve a specific service |
 | `Scope.Start` while the scope shuts down | Starts nothing, runs no scope hook, returns nil | Call `Scope.Start` after the shutdown returned |
