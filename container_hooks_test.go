@@ -876,9 +876,11 @@ func TestContainerHooks_NilContext(t *testing.T) {
 		name      string
 		register  func(root *RootScope, record func(context.Context))
 		operation func(root *RootScope)
+		count     int
 	}{
 		{
-			name: "StartWithContext",
+			name:  "StartWithContext",
+			count: 3,
 			register: func(root *RootScope, record func(context.Context)) {
 				root.AddContainerStartingHook(func(ctx context.Context, _ *RootScope) error { record(ctx); return nil })
 				root.AddContainerStartedHook(func(ctx context.Context, _ *RootScope) { record(ctx) })
@@ -889,7 +891,8 @@ func TestContainerHooks_NilContext(t *testing.T) {
 			},
 		},
 		{
-			name: "ShutdownWithContext",
+			name:  "ShutdownWithContext",
+			count: 2,
 			register: func(root *RootScope, record func(context.Context)) {
 				root.AddContainerClosingHook(func(ctx context.Context, _ *RootScope) { record(ctx) })
 				root.AddContainerClosedHook(func(ctx context.Context, _ *RootScope, _ *ShutdownReport) { record(ctx) })
@@ -912,10 +915,75 @@ func TestContainerHooks_NilContext(t *testing.T) {
 
 			is.NotPanics(func() { tt.operation(root) })
 
-			is.NotEmpty(contexts)
+			is.Len(contexts, tt.count)
 			for _, ctx := range contexts {
 				is.NotNil(ctx)
 			}
+		})
+	}
+}
+
+func TestContainerHooks_ObserverContexts(t *testing.T) {
+	t.Parallel()
+
+	type traceKey struct{}
+	errVeto := errors.New("veto")
+
+	tests := []struct {
+		name      string
+		register  func(root *RootScope, record func(context.Context))
+		operation func(root *RootScope, ctx context.Context)
+	}{
+		{
+			name: "Started",
+			register: func(root *RootScope, record func(context.Context)) {
+				root.AddContainerStartedHook(func(ctx context.Context, _ *RootScope) { record(ctx) })
+			},
+			operation: func(root *RootScope, ctx context.Context) { _ = root.StartWithContext(ctx) },
+		},
+		{
+			name: "Ready",
+			register: func(root *RootScope, record func(context.Context)) {
+				root.AddContainerReadyHook(func(ctx context.Context, _ *RootScope) { record(ctx) })
+			},
+			operation: func(root *RootScope, ctx context.Context) { _ = root.StartWithContext(ctx) },
+		},
+		{
+			name: "Failed",
+			register: func(root *RootScope, record func(context.Context)) {
+				root.AddContainerStartingHook(func(context.Context, *RootScope) error { return errVeto })
+				root.AddContainerFailedHook(func(ctx context.Context, _ *RootScope, _ error) { record(ctx) })
+			},
+			operation: func(root *RootScope, ctx context.Context) { _ = root.StartWithContext(ctx) },
+		},
+		{
+			name: "Closing",
+			register: func(root *RootScope, record func(context.Context)) {
+				root.AddContainerClosingHook(func(ctx context.Context, _ *RootScope) { record(ctx) })
+			},
+			operation: func(root *RootScope, ctx context.Context) { _ = root.ShutdownWithContext(ctx) },
+		},
+		{
+			name: "Closed",
+			register: func(root *RootScope, record func(context.Context)) {
+				root.AddContainerClosedHook(func(ctx context.Context, _ *RootScope, _ *ShutdownReport) { record(ctx) })
+			},
+			operation: func(root *RootScope, ctx context.Context) { _ = root.ShutdownWithContext(ctx) },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+
+			root := New()
+			var traces []any
+			tt.register(root, func(ctx context.Context) { traces = append(traces, ctx.Value(traceKey{})) })
+
+			tt.operation(root, context.WithValue(context.Background(), traceKey{}, "abc"))
+
+			assert.Equal(t, []any{"abc"}, traces)
 		})
 	}
 }
