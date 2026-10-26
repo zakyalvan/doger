@@ -644,3 +644,35 @@ func TestExplain_EdgeSourceCompat(t *testing.T) {
 	require.NoError(t, err)
 	is.Contains(string(encoded), `"source":"invoked"`)
 }
+
+func TestDependencySource_UnmarshalText(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		text   string
+		source DependencySource
+		errMsg string
+	}{
+		{text: "invoked", source: DependencySourceInvoked},
+		{text: "depends-on", source: DependencySourceDependsOn},
+		{text: "declared", source: DependencySourceDeclared},
+		{text: "other", errMsg: "other"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.text, func(t *testing.T) {
+			t.Parallel()
+			is := assert.New(t)
+
+			var out ExplainServiceDependencyOutput
+			err := json.Unmarshal([]byte(`{"service": "db", "source": "`+tt.text+`"}`), &out)
+
+			if tt.errMsg != "" {
+				is.ErrorContains(err, tt.errMsg)
+				return
+			}
+			is.NoError(err)
+			is.Equal(ExplainServiceDependencyOutput{Service: "db", Source: tt.source}, out)
+		})
+	}
+}

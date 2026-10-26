@@ -395,9 +395,9 @@ Rules:
 
 ## 58. DependencySource decodes from text (dependency-declaration; design V11)
 
-- [ ] 58.1 RED: add `TestDependencySource_UnmarshalText` (4 rows) to `dependency_test.go`; verify `go test -race -run TestDependencySource_UnmarshalText .` fails to decode the string into a `DependencySource`
-- [ ] 58.2 GREEN: add `DependencySource.UnmarshalText`; verify the 58.1 command passes and `make test` is green
-- [ ] 58.3 REFACTOR: *Extract Variable* a shared text table if `String` and `UnmarshalText` repeat the names; verify `make test` and `make lint` pass
+- [x] 58.1 RED: add `TestDependencySource_UnmarshalText` (4 rows) to `dependency_test.go`; verify `go test -race -run TestDependencySource_UnmarshalText .` fails to decode the string into a `DependencySource`
+- [x] 58.2 GREEN: add `DependencySource.UnmarshalText`; verify the 58.1 command passes and `make test` is green
+- [x] 58.3 REFACTOR: *Extract Variable* a shared text table if `String` and `UnmarshalText` repeat the names; verify `make test` and `make lint` pass
 
 ## 59. Override forgets the replaced wrapper (design V12)
 

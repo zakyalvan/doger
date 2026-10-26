@@ -71,6 +71,19 @@ func (s DependencySource) MarshalText() ([]byte, error) {
 	return []byte(s.String()), nil
 }
 
+// UnmarshalText decodes "invoked", "depends-on" or "declared", so explained
+// output read back from JSON keeps its sources. Any other text is an error.
+func (s *DependencySource) UnmarshalText(text []byte) error {
+	for _, source := range []DependencySource{DependencySourceInvoked, DependencySourceDependsOn, DependencySourceDeclared} {
+		if source.String() == string(text) {
+			*s = source
+			return nil
+		}
+	}
+
+	return fmt.Errorf("DI: unknown dependency source %q", text)
+}
+
 // newDAG creates a new DAG (Directed Acyclic Graph) with initialized dependencies and dependents maps.
 // This function initializes a new dependency graph for tracking service relationships.
 //
