@@ -701,7 +701,9 @@ func MustInvokeAllMap[T any](i Injector) map[string]T {
 // Called from a provider, the service that provider builds is not a
 // candidate either, nor is an alias whose target chain resolves to it, so a
 // decorator can resolve the service it wraps; when it is the only match, the
-// error matches ErrServiceNotMatch.
+// error matches ErrServiceNotMatch. This holds for an injector a provider
+// stored and uses after it returned too: it still skips that provider's
+// service.
 // Use InvokeNamed to pin a specific service.
 //
 // Parameters:

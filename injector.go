@@ -141,15 +141,15 @@ type InjectorOpts struct {
 	// This hook can be used for logging, metrics collection, or error handling.
 	HookAfterShutdown []func(scope *Scope, serviceName string, err error)
 
-	// HookBeforeStart is called by Start just before a service's Start method.
-	// With StartParallelism > 1, calls for different services may run
-	// concurrently.
+	// HookBeforeStart is called by Start, Refresh and Scope.Start just before
+	// a service's Start method. With StartParallelism > 1, calls for
+	// different services may run concurrently.
 	HookBeforeStart []func(scope *Scope, serviceName string)
 
-	// HookAfterStart is called by Start just after a service's Start method,
-	// with the error the method returned, unwrapped (nil on success; a
-	// recovered panic as an error). With StartParallelism > 1, calls for
-	// different services may run concurrently.
+	// HookAfterStart is called by Start, Refresh and Scope.Start just after a
+	// service's Start method, with the error the method returned, unwrapped
+	// (nil on success; a recovered panic as an error). With StartParallelism
+	// > 1, calls for different services may run concurrently.
 	HookAfterStart []func(scope *Scope, serviceName string, err error)
 
 	// HookContainerStarting is called by the root container's first Start,

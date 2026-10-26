@@ -509,6 +509,9 @@ func (s *RootScope) AddAfterInvocationHook(hook func(*Scope, string, error)) {
 
 // AddAfterBuildHook adds a hook that will be called with each instance the
 // container builds. A nil hook is ignored. See [InjectorOpts.HookAfterBuild].
+//
+// Add hooks at configuration time: an adder is not safe to call
+// concurrently with invocations, Start or Shutdown.
 func (s *RootScope) AddAfterBuildHook(hook func(*Scope, string, any)) {
 	if hook == nil {
 		return
@@ -530,14 +533,22 @@ func (s *RootScope) AddAfterShutdownHook(hook func(*Scope, string, error)) {
 	s.opts.HookAfterShutdown = append(s.opts.HookAfterShutdown, hook)
 }
 
-// AddBeforeStartHook adds a hook that will be called by Start just before a
-// service's Start method.
+// AddBeforeStartHook adds a hook that will be called by Start, Refresh and
+// Scope.Start just before a service's Start method. See
+// [InjectorOpts.HookBeforeStart].
+//
+// Add hooks at configuration time: an adder is not safe to call
+// concurrently with Start, Refresh or Scope.Start.
 func (s *RootScope) AddBeforeStartHook(hook func(*Scope, string)) {
 	s.opts.HookBeforeStart = append(s.opts.HookBeforeStart, hook)
 }
 
-// AddAfterStartHook adds a hook that will be called by Start just after a
-// service's Start method, with the error the method returned.
+// AddAfterStartHook adds a hook that will be called by Start, Refresh and
+// Scope.Start just after a service's Start method, with the error the method
+// returned. See [InjectorOpts.HookAfterStart].
+//
+// Add hooks at configuration time: an adder is not safe to call
+// concurrently with Start, Refresh or Scope.Start.
 func (s *RootScope) AddAfterStartHook(hook func(*Scope, string, error)) {
 	s.opts.HookAfterStart = append(s.opts.HookAfterStart, hook)
 }
