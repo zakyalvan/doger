@@ -28,14 +28,14 @@ func InvokeCollection[T any](i Injector) Collection[T] {
 }
 
 // All resolves the members now, with the membership, order, error and hook
-// rules of [InvokeAll].
-func (c Collection[T]) All() ([]T, error) {
+// rules of [InvokeAll]. The injector is the reader's.
+func (c Collection[T]) All(_ Injector) ([]T, error) {
 	return invokeAllByGenericType[T](c.reader())
 }
 
 // Map resolves the members now, keyed by service name, with the rules of
-// [InvokeAllMap].
-func (c Collection[T]) Map() (map[string]T, error) {
+// [InvokeAllMap]. The injector is the reader's.
+func (c Collection[T]) Map(_ Injector) (map[string]T, error) {
 	return invokeAllMapByGenericType[T](c.reader())
 }
 

@@ -23,13 +23,13 @@ func TestCollection_LaterRegistrations(t *testing.T) {
 	}{
 		{name: "All", check: func(t *testing.T, c Collection[EventHandler]) {
 			t.Helper()
-			handlers, err := c.All()
+			handlers, err := c.All(nil)
 			require.NoError(t, err)
 			assert.Equal(t, []string{"console", "audit"}, handlerNames(handlers))
 		}},
 		{name: "Map", check: func(t *testing.T, c Collection[EventHandler]) {
 			t.Helper()
-			handlers, err := c.Map()
+			handlers, err := c.Map(nil)
 			require.NoError(t, err)
 			assert.ElementsMatch(t, []string{"console", "audit"}, slices.Collect(maps.Keys(handlers)))
 		}},
@@ -61,7 +61,7 @@ func TestCollection_CreationBuildsNothing(t *testing.T) {
 	c := InvokeCollection[EventHandler](root)
 	assert.Equal(t, int32(0), calls.Load())
 
-	_, err := c.All()
+	_, err := c.All(nil)
 	require.NoError(t, err)
 	assert.Equal(t, int32(1), calls.Load())
 }
@@ -85,7 +85,7 @@ func TestCollection_HeldByProvider(t *testing.T) {
 	require.NoError(t, err)
 	provideHandler(root, "audit", newAudit)
 
-	peers, err := bus.peers.All()
+	peers, err := bus.peers.All(nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, []string{"console", "audit"}, handlerNames(peers))
@@ -100,11 +100,11 @@ func TestCollection_AfterProviderReturned(t *testing.T) {
 		read func(c Collection[EventHandler]) ([]string, error)
 	}{
 		{name: "All", read: func(c Collection[EventHandler]) ([]string, error) {
-			handlers, err := c.All()
+			handlers, err := c.All(nil)
 			return handlerNames(handlers), err
 		}},
 		{name: "Map", read: func(c Collection[EventHandler]) ([]string, error) {
-			handlers, err := c.Map()
+			handlers, err := c.Map(nil)
 			return slices.Collect(maps.Keys(handlers)), err
 		}},
 	}
@@ -149,7 +149,7 @@ func TestCollection_ReadDuringOuterProvider(t *testing.T) {
 		if err != nil {
 			return nil, err
 		}
-		if _, err := bus.peers.All(); err != nil {
+		if _, err := bus.peers.All(nil); err != nil {
 			return nil, err
 		}
 		return newConsole("app"), nil
@@ -176,7 +176,7 @@ func TestCollection_DetachedReadRecordsNoEdge(t *testing.T) {
 		if err != nil {
 			return nil, err
 		}
-		handlers, err := bus.peers.All()
+		handlers, err := bus.peers.All(nil)
 		if err != nil {
 			return nil, err
 		}
@@ -217,7 +217,7 @@ func TestCollection_DetachedReadKeepsRunningChain(t *testing.T) {
 			return nil, err
 		}
 		// builds "member" through a detached read, since bus returned
-		if _, err := bus.peers.All(); err != nil {
+		if _, err := bus.peers.All(nil); err != nil {
 			return nil, err
 		}
 		member, err := InvokeNamed[*appsHandler](i, "member")
@@ -225,7 +225,7 @@ func TestCollection_DetachedReadKeepsRunningChain(t *testing.T) {
 			return nil, err
 		}
 		// app is still running: reading it must fail, not wait for itself
-		if _, err := member.apps.All(); err != nil {
+		if _, err := member.apps.All(nil); err != nil {
 			return nil, err
 		}
 		return &appService{}, nil
@@ -293,7 +293,7 @@ func TestCollection_HolderAfterSiblings(t *testing.T) {
 			d, err := InvokeNamed[*busHandler](root, "d")
 			require.NoError(t, err)
 
-			peers, err := d.peers.Map()
+			peers, err := d.peers.Map(nil)
 
 			require.NoError(t, err)
 			assert.ElementsMatch(t, []string{"a", "b", "c", "e"}, slices.Collect(maps.Keys(peers)))
@@ -357,7 +357,7 @@ func TestCollection_InvocationsWithoutProvider(t *testing.T) {
 			bus, err := InvokeNamed[*busHandler](root, "bus")
 			require.NoError(t, err)
 
-			peers, err := bus.peers.Map()
+			peers, err := bus.peers.Map(nil)
 
 			require.NoError(t, err)
 			assert.Equal(t, []string{dependent}, slices.Collect(maps.Keys(peers)))
@@ -421,7 +421,7 @@ func TestCollection_ReadOutcomes(t *testing.T) {
 			c := InvokeCollection[EventHandler](root) // live: the reads cross the setup
 			tt.setup(root)
 
-			handlers, err := c.All()
+			handlers, err := c.All(nil)
 
 			tt.check(t, handlers, err)
 		})
@@ -442,7 +442,7 @@ func TestCollection_ConcurrentReads(t *testing.T) {
 	errs := make(chan error, 50)
 	for range 50 {
 		wg.Go(func() {
-			handlers, err := c.All()
+			handlers, err := c.All(nil)
 			results <- handlerNames(handlers)
 			errs <- err
 		})
@@ -476,7 +476,7 @@ func TestCollection_ReadDuringHolderProvider(t *testing.T) {
 	var read []string
 	ProvideNamed(root, "bus", func(i Injector) (*busHandler, error) {
 		peers := InvokeCollection[EventHandler](i)
-		handlers, err := peers.All()
+		handlers, err := peers.All(nil)
 		read = handlerNames(handlers)
 		return &busHandler{handlerBase: handlerBase{"bus"}, peers: peers}, err
 	})
@@ -498,7 +498,7 @@ func TestCollection_NilInjector(t *testing.T) {
 	c := InvokeCollection[EventHandler](nil)
 	provideHandler(DefaultRootScope, "console", newConsole)
 
-	handlers, err := c.All()
+	handlers, err := c.All(nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, []string{"console"}, handlerNames(handlers))

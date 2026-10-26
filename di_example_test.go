@@ -670,7 +670,7 @@ func ExampleInvokeCollection() {
 	// Registered after the collection was created: still a member.
 	ProvideNamed(injector, "sms", func(Injector) (*exampleSMSNotifier, error) { return &exampleSMSNotifier{}, nil })
 
-	all, _ := notifiers.All() // resolved now
+	all, _ := notifiers.All(nil) // resolved now
 	for _, notifier := range all {
 		fmt.Println(notifier.Notify("hi"))
 	}

@@ -144,7 +144,7 @@ doger.Provide(injector, func(i doger.Injector) (*Bus, error) {
 })
 
 // later, after more handlers were registered:
-handlers, err := bus.handlers.All() // includes them
+handlers, err := bus.handlers.All(nil) // includes them
 ```
 
 When the collection was created from a provider's injector, every read excludes that provider's service. A read made while the provider runs follows `InvokeAll` exactly: it detects cycles and records the provider's dependency on each member. Once the provider has returned, reads resolve from the provider's scope without its build-time invocation chain and record no dependency, because a member may itself depend on the holder: recording the reverse edge would create a cycle, and the stale chain would report a false circular dependency. Resolve with `InvokeAll` inside the provider if shutdown order must follow the members. Providers of the build chain that are still running keep their cycle detection: a read made from an outer provider, while it runs, reports a circular dependency on that provider's service instead of waiting for it. A `Collection` is safe to copy and to read concurrently.
