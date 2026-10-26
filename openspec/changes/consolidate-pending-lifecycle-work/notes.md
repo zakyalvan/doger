@@ -95,3 +95,23 @@ Task 48.1 says to stop and investigate when invoke is not `~`; it is left unchec
 - `make test`, `make lint`, per-module `go vet ./... && go test -race ./...` on all 25 `go.work` modules, and `npm --prefix docs run lint` / `build`: all pass.
 - Traceability: all 134 tests named in design.md pass (`-race -v`), and the subtest counts of the 51 tests with row counts match their scenarios.
 - `openspec validate consolidate-pending-lifecycle-work --strict`: valid.
+
+### 48.1 after optimization (decision: optimize, then re-measure)
+
+Profile of `BenchmarkInvokeAs`: about 58% in `serviceForEachRec` (per-scope snapshot and map iteration, paid before this change too) and 26% in the selection callback, mostly the reflect assignability check. Two behavior-preserving optimizations:
+
+- `selectByType` stops at the first scope that has a match (scopes are visited nearest first, each one whole) and asserts each wrapper's interface once.
+- `DAG.addDependency` looks up each inner map once.
+
+Re-measured interleaved against `ed65bdc` (20 alternating runs):
+
+| Benchmark | before optimization | after |
+|---|---|---|
+| InvokeAlias | +3.0% | -5.7% (p=0.002) |
+| InvokeAs | +13.9% | +12.3% (p=0.000) |
+| other invoke benchmarks | ~ | ~ |
+| Provide | ~ (p=0.912) | +6.1% (p=0.009), not reproduced across runs |
+| New | ~ (p=0.190), 11 allocs/op | +7.0% (p=0.000), 11 allocs/op |
+
+The remaining `InvokeAs` cost is the full scan of the nearest scope that deterministic selection needs; the benchmark registers 20 services in one scope, so the scope early-exit does not apply to it. Closing the gap further would need new cached state (for example an assignability index per scope, invalidated on registration, override and shutdown). 48.1 stays unchecked pending a decision.
+
