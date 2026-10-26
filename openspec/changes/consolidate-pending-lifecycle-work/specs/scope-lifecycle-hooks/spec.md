@@ -155,7 +155,7 @@ Examples:
 <!-- cases: N/A 10 compatibility: new API -->
 
 ### Requirement: Scope Closing and Closed hooks bracket a child scope shutdown
-When a child scope shuts down, directly or as part of its parent's shutdown, `HookScopeClosing` SHALL run with that scope before its services are shut down and `HookScopeClosed` after. They SHALL run once per shutdown of each child scope, children before their parent.
+When a child scope shuts down, directly or as part of its parent's shutdown, `HookScopeClosing` SHALL run with that scope before its services are shut down and `HookScopeClosed` after. They SHALL run once per shutdown of each child scope, children before their parent. A shutdown of a child scope that finds one of it running SHALL wait for it, bounded by its context, and return a copy of its report instead of walking the scope again.
 
 #### Scenario: Closing and Closed around child scope shutdown
 ```gherkin
@@ -172,6 +172,22 @@ Examples:
   | tenant.Shutdown() then root.Shutdown() | closing jobs, shutdown jobs, closed jobs, closing tenant, shutdown tenant, closed tenant, closing tenant, closed tenant |
 ```
 
+#### Scenario: Overlapping shutdowns of a child scope join
+```gherkin
+Given a root scope, inside synctest.Test, with child "tenant" holding value services "a", "b", "c" and "d" that count their Shutdown calls
+And a HookScopeClosing hook that blocks its first call until released, and a counting HookScopeClosed hook
+And tenant.Shutdown() is running in another goroutine, blocked in that hook
+When the consumer calls <second> in another goroutine, waits until every goroutine is blocked, then releases the hook
+Then <outcome>
+
+Examples:
+  | second                                                                    | outcome                                                                                                 |
+  | tenant.Shutdown()                                                         | both reports succeed; each hook ran once; each service shut down once                                    |
+  | root.Shutdown()                                                           | both reports succeed; each hook ran once; each service shut down once                                    |
+  | tenant.ShutdownWithContext(ctx), ctx with a 1s timeout, before the release | it returns a failed report keyed by "tenant" with an empty service name, matching context.DeadlineExceeded; the first report then succeeds |
+  | tenant.Shutdown(), where a custom Logf panics in the first call after its services shut down | the first call panics with that value; the second gets a failed report containing "DI: scope shutdown did not complete" |
+```
+
 #### Scenario: Root scope fires no scope hook
 ```gherkin
 Given a root scope with counting HookScopeStarting, HookScopeStarted, HookScopeClosing and HookScopeClosed hooks and no child scope
@@ -186,7 +202,7 @@ Then every counting hook ran 0 times
 <!-- cases: N/A 5 errors: shutdown errors stay in the report -->
 <!-- cases: 6 duplicates: a child shut down directly stays attached to its parent, so a later parent shutdown fires its hooks again (last row) -->
 <!-- cases: 7 lifecycle: direct child shutdown and as part of root shutdown -->
-<!-- cases: N/A 8 concurrency: sibling scopes shut down in parallel today, so hooks for siblings may run concurrently; documented, not ordered -->
+<!-- cases: 8 concurrency: overlapping shutdowns of one scope join (direct, through root Shutdown, bounded by a context, after a winner panic); sibling scopes shut down in parallel, so hooks for siblings may run concurrently; documented, not ordered -->
 <!-- cases: N/A 9 panics: covered by the next requirement -->
 <!-- cases: N/A 10 compatibility: new API -->
 

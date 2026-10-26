@@ -111,7 +111,7 @@ And ExplainNamedService(root, "decor") lists exactly the dependency base
 <!-- cases: 10 compatibility: BEHAVIOR CHANGE (flagged) - a decorator calling InvokeAs for its own interface no longer fails with ErrCircularDependency; a lone self-match fails with ErrServiceNotMatch. BEHAVIOR CHANGE (flagged) - an alias of the invoking service is skipped too -->
 
 ### Requirement: Implicit-aliasing struct injection uses the same selection
-When `InvokeStruct` falls back to type-based resolution for an empty tag (`do:""`) because no service has the field type's name, it SHALL select the candidate by the same rule as `InvokeAs`, including skipping the service whose provider calls it.
+When `InvokeStruct` falls back to type-based resolution for an empty tag (`do:""`), it SHALL select the candidate by the same rule as `InvokeAs`, including skipping the service whose provider calls it. It SHALL fall back only when no visible service has the field type's name, or when the only one is the service whose provider calls it. A service with that name that fails to build SHALL return its error, even one matching `ErrServiceNotFound`.
 
 #### Scenario: Struct fallback selects deterministically
 ```gherkin
@@ -134,7 +134,48 @@ When the consumer calls InvokeNamed for "decor"
 Then the provider's field G is service "base"
 ```
 
+#### Scenario: The fallback decides by name
+```gherkin
+Given a root scope with <services>
+And a struct type with field `G Greeter \`do:""\``
+When the consumer <call>
+Then the result is <result>
+
+Examples:
+  | services                                                                                                                      | call                                   | result                                            |
+  | lazy "other" implementing "Greeter", and a lazy service named after "Greeter" whose provider invokes the missing "missing-config" | calls InvokeStruct for that struct     | an error matching ErrServiceNotFound naming "missing-config" |
+  | lazy "base" implementing "Greeter", and a "decor" registered with Provide[Greeter] whose provider calls InvokeStruct for that struct | invokes Greeter                        | "decor(base)"                                     |
+  | only a "decor" registered with Provide[Greeter] whose provider calls InvokeStruct for that struct                              | invokes Greeter                        | an error matching ErrCircularDependency           |
+```
+
 <!-- cases: N/A 6 duplicates, 7 lifecycle: covered by the InvokeAs requirement -->
 <!-- cases: 8 concurrency: 100 repetitions -->
 <!-- cases: N/A 9 panics: unchanged -->
-<!-- cases: 10 compatibility: BEHAVIOR CHANGE (flagged), same as InvokeAs -->
+<!-- cases: 10 compatibility: BEHAVIOR CHANGE (flagged), same as InvokeAs; the fallback deciding by name is BREAKING for a type-named service failing with ErrServiceNotFound (flagged) -->
+
+### Requirement: An alias registered with a nil injector uses DefaultRootScope
+`As` and `AsNamed` with a nil injector SHALL register the alias in `DefaultRootScope` and resolve its target from it, so selection by type and the alias's health check work as for an alias registered with `DefaultRootScope` itself.
+
+#### Scenario: Using an alias registered with nil
+```gherkin
+Given DefaultRootScope is a new container, restored after the test
+And lazy "nil-alias-base" implementing "Greeter" registered with a nil injector, and AsNamed[*greeterImpl, Greeter](nil, "nil-alias-base", "nil-alias")
+When the consumer <action>
+Then <result>
+
+Examples:
+  | action                                                                                       | result                                     |
+  | invokes "nil-alias-decor", whose provider calls InvokeAs[Greeter] and decorates the result    | the decorator wraps "nil-alias-base"       |
+  | invokes "nil-alias", then calls HealthCheckNamed(nil, "nil-alias")                             | the check returns nil and does not panic   |
+```
+
+<!-- cases: 1 default: the nil injector convention of every registration helper -->
+<!-- cases: N/A 2 overrides: pass an injector -->
+<!-- cases: 3 zero values: the nil injector is the subject -->
+<!-- cases: N/A 4 boundaries: one alias -->
+<!-- cases: 5 errors: no nil-pointer error -->
+<!-- cases: N/A 6 duplicates: none -->
+<!-- cases: N/A 7 lifecycle: none -->
+<!-- cases: N/A 8 concurrency: the test is not parallel, as every DefaultRootScope test (design V50) -->
+<!-- cases: 9 panics: the health-check row -->
+<!-- cases: 10 compatibility: fixes a nil-pointer error; InvokeAs following alias targets made it reachable from a provider -->

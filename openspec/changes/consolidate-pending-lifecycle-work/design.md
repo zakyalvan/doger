@@ -365,6 +365,40 @@ A fifth `/opsx:verify` on `c40c60b` found no CRITICAL issue, 6 WARNINGs and 15 S
 - design.md: the row count and the Q3 source lookup.
 - proposal.md: one row for single-service health checks.
 
+**Audit extension (user request).** After V55–V61, the user asked for an audit of the whole change beyond the verifier's findings. Three reviewers, one per area (lifecycle; invocation and collections; API surface and docs), probed the code at `76975ed`. Each defect was reproduced by a failing probe test and re-run before being reported. The user chose to fix every reproduced defect and close the three untested checks (V62–V67); V68 lists what was left out.
+
+**V62. An alias registered with a nil injector stores `DefaultRootScope`.** `AsNamed` resolved a nil injector for its checks but stored the raw nil in the alias. `aliasResolvesTo` (V40), reached by `InvokeAs` and the struct fallback from a provider, and the alias's health check then dereferenced it. The alias now stores the resolved injector. Only the `InvokeAs` path is new in this change; the health-check path is older.
+
+**V63. Cycle detection compares services, not names.** `detectCircularDependency` matched names only, so a child service invoking a root aggregator that resolves the root's same-name service (by name, or as an `InvokeAll` member) failed with `ErrCircularDependency`. Each chain node already wraps the scope of the service it builds. The check now compares that scope and the name, after the lookup that finds the service's scope. A virtual scope holding a whole base chain has names only and still matches by name; only white-box tests build one. Error messages still list names. The name-based exclusions of V40 (aliases resolving to the invoker's name) and V56 (the reader) are unchanged. They no longer protect against a false cycle, so they are now choices, not necessities.
+
+**V64. Explain follows the service's own scope and stops at cycles.** `ExplainNamedService` looked edges up under the explaining scope instead of the registering scope, so a root service explained from a child scope had no edges. Its recursion had no path guard, so a graph closed into a cycle by a build after a `DeclareDependency` edge (allowed by dependency-declaration) overflowed the stack and killed the process. Edges are now read for the registering scope. The recursion carries the path, and a service already on it is listed without its dependencies. Acyclic output is unchanged.
+
+**V65. The struct fallback decides by name (flagged).** The empty-tag fallback ran on any error matching `ErrServiceNotFound`, including one raised inside the named service's own provider, so the field silently received another match. It now falls back only when no visible service has the field type's name, or when the only one is the invoking provider's own service (`namedCandidate`). As a result, a decorator registered under its interface (`Provide[Greeter]`) resolves the service it wraps, as `InvokeAs` does (V27). With no other match it still fails with `ErrCircularDependency`, through the named lookup. A type-named service that fails with `ErrServiceNotFound` now returns that error (**BREAKING, edge case**).
+
+**V66. Overlapping shutdowns of one child scope join.** Two shutdowns of a child scope, direct or through root Shutdown, both walked it: its hooks ran twice and each reported the services the other had removed as `ErrServiceNotFound`. This predates the change, but the V30 wait made it likely, because root Shutdown cancels the run that a child shutdown waits for, releasing both at once. A child scope now records its running shutdown (`closeRun`) under `lifecycleMu`. A later caller increments `closing` as before, waits for that shutdown bounded by its context, and returns a copy of its report, as concurrent root Shutdowns do. If the running shutdown panics before producing a report (a custom `Logf`), joined callers get "DI: scope shutdown did not complete". Calling a scope's Shutdown synchronously from its own Closing or Closed hooks or from its services' Shutdown now waits for itself (flagged on the upgrading page). The split of `beginClosing` into `joinClose` and `waitForStartingRun` keeps V37's argument: `closing` is still incremented under `lifecycleMu` before any service is removed.
+
+**V67. Untested checks and documentation drift.** Each test was checked with the mutation the auditor used:
+- the phase re-check of a Refresh queued on `pipelineMu` behind Shutdown;
+- the context check before each kind-handler call;
+- the parallel scheduler's abort check.
+
+The API and docs audit found these mismatches with the code, now corrected:
+- collection-invocation.md said a read "behaves exactly like `InvokeAll`" (members come from the holder's scope).
+- starter.md and the `StartError` godoc said a dependency cycle is never a `StartError` (a cycle met during a build is).
+- `RootScope.StartWithContext` and starter.md placed `Scope.Start` on "the injector a provider receives".
+- starter.md said an escaped panic marks the container "started" (`Phase()` reports `failed`).
+- proposal assumption 6 still described V5.
+- The clock lists omitted `HealthCheckSingleTimeout`.
+
+Also documented: Started hooks may overlap Closing when a shutdown begins after the run collected the scope.
+
+**V68. Not taken.** These are SUGGESTIONs, not defects, and are left for a later change:
+- `DependencySource.MarshalText` of an out-of-range value does not round-trip.
+- `ContainerPhase` has no `MarshalText`.
+- The per-service hook lists inherited from upstream do not skip nil entries.
+
+Suspected but not reproduced: a `DeclareDependency` racing an invocation edge; `InvokeAs` racing `ShutdownNamed`; a stale started or handled entry between `stillRegistered` and the record; a collection read with a reader from another container.
+
 ### Part H — Container lifecycle hooks (folded from `add-container-lifecycle-hooks`)
 
 #### H: Context

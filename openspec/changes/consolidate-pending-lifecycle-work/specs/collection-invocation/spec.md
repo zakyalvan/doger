@@ -206,7 +206,7 @@ Examples:
 <!-- cases: N/A 8 concurrency: covered by "Concurrent collection callers" -->
 
 ### Requirement: A collection excludes the service that invokes it
-When a collection is invoked from inside a provider, the service that provider builds SHALL NOT be a member, even if its registered type is assignable to `T`. Any other member that is already in the invocation chain SHALL still fail the call with `ErrCircularDependency`.
+When a collection is invoked from inside a provider, the service that provider builds SHALL NOT be a member, even if its registered type is assignable to `T`. Any other member that is already in the invocation chain SHALL still fail the call with `ErrCircularDependency`. A member is in the chain when the same service, its name registered in the same scope, is being built; a service with the same name in another scope is not.
 
 #### Scenario: Composite collects every other implementation
 ```gherkin
@@ -227,9 +227,24 @@ Then the error matches ErrCircularDependency
 And the error message contains "`x` -> `bus` -> `x`"
 ```
 
+#### Scenario: A same-name service in another scope is not a cycle
+```gherkin
+Given a root scope with lazy "x" implementing "Greeter", whose provider <root-x>, and lazy "agg", whose provider <agg>
+And child scope "child" with lazy "x" implementing "Greeter", whose provider invokes "agg"
+When the consumer invokes "x" from <from>
+Then the result is <result>
+
+Examples:
+  | root-x          | agg                             | from    | result                         |
+  | returns at once | invokes "x" by name             | child   | nil error                      |
+  | returns at once | calls InvokeAll for "Greeter"   | child   | nil error                      |
+  | invokes "agg"   | invokes "x" by name             | the root | an error matching ErrCircularDependency |
+```
+
 <!-- cases: N/A 2 overrides: none needed; including itself can only fail with ErrCircularDependency -->
 <!-- cases: N/A 3 zero values: a composite with no other member gets an empty collection, covered by the empty-result requirement -->
-<!-- cases: N/A 4 boundaries, 6 duplicates: one composite and one indirect cycle are sufficient -->
+<!-- cases: 4 boundaries: one composite, one indirect cycle, and a same-name service in another scope (by name and as a member) against a real cycle -->
+<!-- cases: N/A 6 duplicates: covered by the boundaries -->
 <!-- cases: N/A 8 concurrency: covered by "Concurrent collection callers" -->
 <!-- cases: N/A 9 panics: no panicking path -->
 <!-- cases: N/A 10 compatibility: new API -->

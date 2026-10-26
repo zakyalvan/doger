@@ -82,3 +82,39 @@ Examples:
 <!-- cases: 5 errors: an unknown text -->
 <!-- cases: N/A 6 duplicates, 7 lifecycle, 8 concurrency, 9 panics: a pure value conversion -->
 <!-- cases: 10 compatibility: additive; JSON encoding is unchanged -->
+
+### Requirement: Explain follows the service's own scope and stops at cycles
+`ExplainNamedService` SHALL report the dependencies and dependents recorded for the service in the scope that registers it, whichever scope explains it. A dependency graph closed into a cycle by a build after a `DeclareDependency` edge SHALL be explained in finite output: a service repeated along one branch SHALL be listed once more, without its own dependencies.
+
+#### Scenario: Explaining a graph with a cycle
+```gherkin
+Given a root scope with lazy "a", whose provider invokes "b", lazy "b", whose provider <b-provider>, and lazy "c"
+And DeclareDependency(root, <dependent>, "a") was called before the consumer invoked "a"
+When the consumer calls ExplainNamedService(root, "a")
+Then the dependencies read <dependencies> and the dependents <dependents>, each written as name(children)
+
+Examples:
+  | b-provider      | dependent | dependencies | dependents |
+  | returns at once | "b"       | b(a())       | b(a())     |
+  | invokes "c"     | "c"       | b(c(a()))    | c(b(a()))  |
+```
+
+#### Scenario: Explaining from another scope
+```gherkin
+Given a root scope with lazy "a", whose provider invokes lazy "b", and a child scope "request"
+And the consumer invoked "a"
+When the consumer calls ExplainNamedService(request, "a") and ExplainNamedService(request, "b")
+Then the dependencies of "a" equal those explained from the root, exactly b()
+And the dependents of "b" are exactly a()
+```
+
+<!-- cases: 1 default: explaining from the registering scope is unchanged -->
+<!-- cases: N/A 2 overrides: none -->
+<!-- cases: N/A 3 zero values: a service without edges explains as before -->
+<!-- cases: 4 boundaries: a two- and a three-service cycle -->
+<!-- cases: N/A 5 errors: explaining never fails for a registered service -->
+<!-- cases: 6 duplicates: a repeated service is listed once more, without its dependencies -->
+<!-- cases: 7 lifecycle: a cycle closed by a build after the declaration -->
+<!-- cases: N/A 8 concurrency: none -->
+<!-- cases: 9 panics: no stack overflow -->
+<!-- cases: 10 compatibility: fixes a crash and empty output; acyclic output from the registering scope is unchanged -->

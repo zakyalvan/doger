@@ -198,13 +198,24 @@ Examples:
   | root.Refresh() | in another goroutine, awaited by a's Start |
 ```
 
+#### Scenario: A Refresh queued behind a Shutdown
+```gherkin
+Given a started root container with a HookContainerClosing hook that sleeps 100ms
+And lazy Starter "late", registered after Start, whose Start(ctx) blocks until ctx is done and returns ctx.Err()
+And a first root.Refresh() is running in another goroutine and "late" has entered Start
+And a second root.Refresh() was called in another goroutine 50ms later, waiting for the first
+When the consumer calls root.Shutdown()
+Then both Refresh calls return an error matching ErrStartAfterShutdown
+And "late"'s Start was called 1 time
+```
+
 <!-- cases: N/A 2 overrides: the phase rule has no option -->
 <!-- cases: 3 zero values: an idle container -->
 <!-- cases: N/A 4 boundaries: phases are discrete -->
 <!-- cases: 5 errors: both sentinels and their precedence -->
 <!-- cases: N/A 6 duplicates: covered by Refresh -->
-<!-- cases: 7 lifecycle: idle, starting, failed, closed -->
-<!-- cases: 8 concurrency: a call during a running Start fails fast instead of waiting for it (no deadlock from Start-time code) -->
+<!-- cases: 7 lifecycle: idle, starting, failed, closed; a Refresh that was waiting for the pipeline when Shutdown began -->
+<!-- cases: 8 concurrency: a call during a running Start fails fast instead of waiting for it (no deadlock from Start-time code); a queued Refresh re-checks the phase once it holds the pipeline -->
 <!-- cases: N/A 9 panics: no method is called -->
 <!-- cases: N/A 10 compatibility: new API -->
 
@@ -652,3 +663,33 @@ And once "w" is released and Refresh returned, the start bookkeeping holds no en
 <!-- cases: 7 lifecycle: the shutdown proceeds while the run is still running -->
 <!-- cases: 8 concurrency: synctest bubble time; runs under -race with goleak -->
 <!-- cases: N/A 10 compatibility: new behavior of the wait -->
+
+### Requirement: A run checks its context between scheduling steps
+`Start`, `Refresh` and `Scope.Start` SHALL check the run's context before each kind-handler call and, under parallel start, before scheduling each Starter, as `StartWithContext` does before each candidate build. Once the caller's context is cancelled, no further handler call or Starter SHALL begin, even when every call so far succeeded, and the run SHALL fail with an error matching the context's error.
+
+#### Scenario: A cancel between two steps
+```gherkin
+Given a root scope, with <setup>, registered <when>
+And the consumer passes ctx to <operation>
+When <canceller> cancels ctx and returns nil
+Then the operation returns an error matching context.Canceled
+And <skipped> did not begin
+
+Examples:
+  | setup                                                                      | when         | operation                   | canceller                     | skipped                        |
+  | kind "k" with a StageBeforeStart handler and components "j1" then "j2"     | before Start | StartWithContext(ctx)       | the handler, for "j1"         | the handler call for "j2"      |
+  | kind "k" with a StageBeforeStart handler and components "j1" then "j2"     | after Start  | RefreshWithContext(ctx)     | the handler, for "j1"         | the handler call for "j2"      |
+  | StartParallelism 2 and Starters "a", "b" (returns once "a" returned), "c"  | before Start | StartWithContext(ctx)       | "a"'s Start                   | "c"'s Start                    |
+  | StartParallelism 2 and Starters "a", "b" (returns once "a" returned), "c"  | after Start  | RefreshWithContext(ctx)     | "a"'s Start                   | "c"'s Start                    |
+```
+
+<!-- cases: 1 default: the checks always run -->
+<!-- cases: N/A 2 overrides: the caller's context is the control -->
+<!-- cases: N/A 3 zero values: a nil context is context.Background() and never cancels -->
+<!-- cases: 4 boundaries: the cancel lands between two components of one kind, and between two scheduling steps -->
+<!-- cases: 5 errors: context.Canceled -->
+<!-- cases: N/A 6 duplicates: none -->
+<!-- cases: 7 lifecycle: Start and Refresh rows -->
+<!-- cases: 8 concurrency: the parallel scheduler rows; runs under -race -->
+<!-- cases: N/A 9 panics: none -->
+<!-- cases: N/A 10 compatibility: the checks existed; this pins them -->

@@ -739,3 +739,45 @@ Each test that passes on arrival is checked with the named mutation (reverted), 
 - [x] 111.1 Godoc: `ErrStartAfterShutdown` and `StartError` (Refresh, Scope.Start, the unprefixed AsStarter error, cycles); the InvokeAs page (V40)
 - [x] 111.2 design.md (row count, Q3) and proposal.md (health-check defaults row); verify `openspec validate --strict` passes
 
+## 112. An alias registered with a nil injector (type-resolution; design V62)
+
+- [x] 112.1 RED: add `TestAsNamed_NilInjector` (2 rows: InvokeAs from a provider, the alias's health check) to `di_test.go`; verify `go test -race -run TestAsNamed_NilInjector .` fails with a nil pointer dereference in both rows
+- [x] 112.2 GREEN: `AsNamed` registers and stores the resolved injector; verify the 112.1 command passes and `make test` is green
+- [x] 112.3 REFACTOR: none needed (one-line change); verify `make test` and `make lint` pass
+
+## 113. Cycle detection compares services (collection-invocation; design V63)
+
+- [x] 113.1 RED: add `TestCircularDependency_SameNameInAnotherScope` (3 rows) to `invoke_test.go`; verify the two cross-scope rows fail with ``circular dependency detected: `x` -> `agg` -> `x` `` and the real-cycle row passes
+- [x] 113.2 GREEN: `detectCircularDependency` takes the service's scope, looked up first, and `chainContains` compares scope and name; verify the 113.1 command passes and `make test` is green
+- [x] 113.3 REFACTOR: none needed; update the V56 rationale (spec and design) and the upgrading page; verify `make test`, `make lint` and the docs lint pass
+
+## 114. Explain follows the service's scope and stops at cycles (dependency-declaration; design V64)
+
+- [x] 114.1 RED: add `TestExplainNamedService_GraphCycle` (2 rows) and `TestExplainNamedService_FromOtherScope` to `di_explain_test.go`; verify the cycle rows never finish (1s timeout; unbounded recursion) and the other-scope test gets no edges
+- [x] 114.2 GREEN: read edges for the registering scope and carry the path through the recursion; verify the 114.1 command and `TestExplain*` pass unchanged, and `make test` is green
+- [x] 114.3 REFACTOR: none needed; godoc of `ExplainNamedService`; verify `make test` and `make lint` pass
+
+## 115. The struct fallback decides by name (type-resolution; design V65; flagged)
+
+- [x] 115.1 RED: add `TestInvokeStruct_FallbackKeepsNestedNotFound` and `TestInvokeStruct_DecoratorNamedAfterFieldType` (2 rows) to `invoke_test.go`; verify the first gets no error and the "another match" row fails with ``circular dependency detected: `…Greeter` -> `…Greeter` ``
+- [x] 115.2 GREEN: fall back only when `namedCandidate` is false (no visible service with the name, or only the invoker); verify the 115.1 command, `TestInvokeStruct_*` and `TestInvokeByTags_*` pass unchanged, and `make test` is green
+- [x] 115.3 REFACTOR: none needed (`namedCandidate` written as its own function in GREEN); godoc, service-invocation.md and the upgrading page (flagged); verify `make test`, `make lint` and the docs lint pass
+
+## 116. Overlapping shutdowns of a child scope join (scope-lifecycle-hooks; design V66)
+
+- [x] 116.1 RED: add `TestScopeShutdown_ConcurrentShutdownsJoin` (2 rows, synctest) to `root_refresh_test.go`; verify both rows fail with the Closing and Closed hooks run twice
+- [x] 116.2 GREEN: `joinClose`, `finishScopeClose` and `waitForScopeClose` make a later shutdown wait for the running one and return a copy of its report; verify the 116.1 command and `TestScopeShutdown_*` pass, the auditor's probe passes 30 of 30 runs (27 of 30 failed before), and `make test` is green
+- [x] 116.3 Add `TestScopeShutdown_JoinBoundedByContext`, which deadlocks when the wait ignores its context (mutation, reverted), and, RED first, `TestScopeShutdown_JoinedWinnerPanics`, whose joined call got a nil report before `finishScopeClose` substituted a failed one
+- [x] 116.4 REFACTOR: *Extract Function* `failureReport`; godoc of `Scope.ShutdownWithContext`, container-hooks.md, shutdowner.md and the upgrading page (flagged); verify `make test`, `make lint` and the docs lint pass
+
+## 117. Untested checks (container-start; design V67; test-only)
+
+Each test passed on arrival and fails under the named mutation (reverted), recorded in notes.md.
+
+- [x] 117.1 `TestRefresh_QueuedBehindShutdown`; mutation: no phase re-check in `beginIncremental`
+- [x] 117.2 `TestKind_CancelBetweenComponents` (Start and Refresh); mutation: no context check before each kind-handler call
+- [x] 117.3 `TestStart_ParallelCancelStopsScheduling` (Start and Refresh); mutation: no abort check in the parallel scheduler
+
+## 118. Documentation corrections from the audit (design V67)
+
+- [x] 118.1 collection-invocation.md, starter.md (cycles, `Scope.Start` on the root's scope, escaped panics), the `StartWithContext` godoc, proposal assumption 6, the clock lists, and the overlap of Started and Closing hooks; verify the docs lint and build pass

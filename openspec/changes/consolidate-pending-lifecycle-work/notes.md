@@ -375,3 +375,17 @@ Removing `virtualScope.returned` (V51) took the per-invocation bytes back to the
 | 110.7 | `Phase()` reporting `PhaseFailed` once closed: the new test fails 3 of 3 runs (all 20 goroutines saw it); the previous buffered version passed 1 of 2 uncached runs |
 | 110.8 | confirmed first: `ErrServiceNotMatch`, as the brief expected. With the alias skip disabled, the error is ``DI: circular dependency detected: `svc` -> `g` -> `svc` ``: the cycle check is also by name, although `g` resolves to the parent's "svc" |
 | 111 | docs |
+
+### Audit extension (groups 112-118, design V62-V68)
+
+Three reviewers in isolated worktrees, one per area, probed `76975ed`. Every probe they reported was re-run in its worktree before this work: all reproduced. The lifecycle probe failed 10 of 10 runs; the explain-cycle probe died with `fatal error: stack overflow`.
+
+| Group | RED, or the check that passed on arrival | Notes |
+|---|---|---|
+| 112 | `TestAsNamed_NilInjector`: `runtime error: invalid memory address or nil pointer dereference` in both rows (the InvokeAs row as a provider error, the health-check row as a panic) | |
+| 113 | the two cross-scope rows: ``DI: circular dependency detected: `x` -> `agg` -> `x` `` (InvokeAll: ``DI: could not invoke collection member `x`: …``) | With service-based detection, dropping the reader seed (group 106's mutation) would now give `{app, console}` instead of a cycle error: the test still fails, for a different reason. Without the alias skip (group 110.8's mutation), the decorator would now get the parent's "svc" instead of a false cycle. |
+| 114 | `GraphCycle`: both rows time out after 1s (unbounded recursion); `FromOtherScope`: expected `[{… b …}]`, actual `[]` | A first RED declared the edge after the build and got `ErrCircularDependency` from `DeclareDependency`; the edge is now declared first, and the build closes the cycle, as the spec allows. The two test imports first added to `di_explain_test.go` shifted `fakeProvider5`'s line, which `TestExplainNamedService` asserts; they were removed again (no expectation changed). |
+| 115 | `FallbackKeepsNestedNotFound`: "An error is expected but got nil"; `DecoratorNamedAfterFieldType/another_match`: ``circular dependency detected: `github.com/kartaladev/doger.Greeter` -> `github.com/kartaladev/doger.Greeter` `` | The "no other match" row passed before and after, as specified. |
+| 116 | `ConcurrentShutdownsJoin` (both rows): HookScopeClosing and HookScopeClosed ran 2 times, expected 1. `JoinedWinnerPanics`: "Expected value not to be nil" (the joined call got a nil report) | `JoinBoundedByContext` passed on arrival; a wait that ignores the context makes it deadlock ("all goroutines in bubble are blocked"). A nil-report guard was first written without a test, removed as unreachable, then restored RED-first once the shutdowner page showed a custom `Logf` can panic inside the walk. |
+| 117 | test-only, passed on arrival | Mutations (reverted): `error(nil)` instead of the phase re-check: `TestRefresh_QueuedBehindShutdown` times out (5s); no check before each handler call: both rows of `TestKind_CancelBetweenComponents` fail, "no handler call after the cancel"; no abort check in the parallel scheduler: both rows of `TestStart_ParallelCancelStopsScheduling` fail, "c was scheduled after the cancel" (3 of 3 runs). |
+| 118 | docs | |
