@@ -161,7 +161,8 @@ func TestCollection_ReadDuringOuterProvider(t *testing.T) {
 	_, err := InvokeNamed[*ConsoleHandler](root, "app")
 
 	assert.ErrorIs(t, err, ErrCircularDependency)
-	assert.ErrorContains(t, err, "app")
+	// the holder "bus" sits between the running "app" and the member "app"
+	assert.ErrorContains(t, err, "`app` -> `bus` -> `app`")
 }
 
 func TestCollection_DetachedReadRecordsNoEdge(t *testing.T) {

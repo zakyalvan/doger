@@ -45,7 +45,7 @@ func newVirtualScope(predecessor Injector, invokerChain []string) *virtualScope 
 // one virtual scope, and a stored injector keeps O(depth) memory alive.
 type virtualScope struct {
 	self     Injector
-	name     string        // the service this invocation builds; unused when base is set
+	name     string        // the service this invocation builds; with base, a detached read's holder
 	parent   *virtualScope // the virtual scope of the invoking provider, if any
 	base     []string      // the whole invoker chain, for a scope not built by an invocation
 	returned atomic.Bool   // its provider returned, or its invocation is over
@@ -68,7 +68,12 @@ func (s *virtualScope) invokerChain() []string {
 	}
 	slices.Reverse(names)
 	if v != nil {
-		names = append(slices.Clone(v.base), names...)
+		var holder []string
+		if v.detached {
+			// in messages, the holder links the running chain to the members
+			holder = []string{v.name}
+		}
+		names = slices.Concat(v.base, holder, names)
 	}
 
 	return names
