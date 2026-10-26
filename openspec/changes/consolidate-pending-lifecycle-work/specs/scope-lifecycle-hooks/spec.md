@@ -67,21 +67,22 @@ Examples:
 ```gherkin
 Given a started root container and child scope "tenant" with lazy Starter "w", registered after Start
 And a counting HookScopeStarted hook
-And <shutting-down>.Shutdown() is running in another goroutine, blocked in a HookScopeClosing hook
+And <shutting-down>.Shutdown() is running in another goroutine, blocked in a HookScopeClosing hook, having begun <began>
 When the consumer calls tenant.Start()
 Then it returns nil
 And "w" was started 0 times
 And the Started hook ran 0 times
 
 Examples:
-  | shutting-down                                         |
-  | tenant                                                |
-  | "parent", the scope "tenant" was created under        |
+  | shutting-down                                  | began                                                                                      |
+  | tenant                                         | before tenant.Start() was called                                                           |
+  | "parent", the scope "tenant" was created under | before tenant.Start() was called                                                           |
+  | tenant                                         | from a HookScopeStarting hook, which waits until the shutdown is blocked, then returns nil |
 ```
 
 <!-- cases: N/A 1 default, 2 overrides: there is no option -->
 <!-- cases: N/A 3 zero values: covered by the veto requirement -->
-<!-- cases: 4 boundaries: the scope itself and an ancestor -->
+<!-- cases: 4 boundaries: the scope itself and an ancestor; a shutdown before Scope.Start and one beginning after its Starting hooks ran (only the run's claim sees it) -->
 <!-- cases: N/A 5 errors: Scope.Start returns nil -->
 <!-- cases: N/A 6 duplicates: a later Scope.Start after the shutdown finds nothing to start -->
 <!-- cases: 7 lifecycle: the subject -->
