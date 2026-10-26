@@ -245,9 +245,7 @@ func (s *RootScope) ShutdownWithContext(ctx context.Context) *ShutdownReport {
 		}
 	}
 
-	if first.panicked {
-		s.dispatchHookPanic(first.point, first.value)
-	}
+	s.dispatchFirstPanic(first)
 
 	return report
 }
@@ -281,7 +279,7 @@ func (s *RootScope) shutdownAsWinner(ctx context.Context, ticket closeTicket, fi
 	// pointClosing
 	s.runObserverHooks(ctx, "closing", s.opts.HookContainerClosing, first)
 
-	report = s.self.ShutdownWithContext(ctx)
+	report = s.self.shutdownWithContext(ctx, first)
 	if startErr != nil {
 		report.Errors[newServiceDescription(s.ID(), s.Name(), "")] = startErr
 		report.Succeed = false

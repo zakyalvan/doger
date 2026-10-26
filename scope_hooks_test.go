@@ -171,3 +171,108 @@ func TestScopeHooks_RootFiresNone(t *testing.T) {
 
 	assert.Equal(t, int32(0), calls.Load())
 }
+
+// countingShutdowner counts its Shutdown calls.
+type countingShutdowner struct{ shutdowns atomic.Int32 }
+
+func (s *countingShutdowner) Shutdown() error {
+	s.shutdowns.Add(1)
+	return nil
+}
+
+func TestScopeHooks_ObserverPanic(t *testing.T) {
+	t.Parallel()
+
+	type dispatched struct {
+		point string
+		value any
+	}
+
+	tests := []struct {
+		name       string
+		register   func(root *RootScope)
+		recordPol  bool
+		operation  func(tenant *Scope) error
+		panics     bool
+		dispatched []dispatched
+		shutdowns  int32
+	}{
+		{
+			name:      "HookScopeClosing, default policy, tenant.Shutdown()",
+			register:  func(root *RootScope) { root.AddScopeClosingHook(func(context.Context, *Scope) { panic("scope-boom") }) },
+			operation: func(tenant *Scope) error { tenant.Shutdown(); return nil },
+			panics:    true,
+			shutdowns: 1,
+		},
+		{
+			name:       "HookScopeClosed, recording policy, tenant.Shutdown()",
+			register:   func(root *RootScope) { root.AddScopeClosedHook(func(context.Context, *Scope) { panic("scope-boom") }) },
+			recordPol:  true,
+			operation:  func(tenant *Scope) error { tenant.Shutdown(); return nil },
+			dispatched: []dispatched{{point: "scope-closed", value: "scope-boom"}},
+			shutdowns:  1,
+		},
+		{
+			name:       "HookScopeStarted, recording policy, tenant.Start()",
+			register:   func(root *RootScope) { root.AddScopeStartedHook(func(context.Context, *Scope) { panic("scope-boom") }) },
+			recordPol:  true,
+			operation:  func(tenant *Scope) error { return tenant.Start() },
+			dispatched: []dispatched{{point: "scope-started", value: "scope-boom"}},
+			shutdowns:  0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+			is := assert.New(t)
+
+			var calls []dispatched
+			opts := &InjectorOpts{}
+			if tt.recordPol {
+				opts.HookContainerPanic = func(_ *RootScope, hook string, recovered any) {
+					calls = append(calls, dispatched{point: hook, value: recovered})
+				}
+			}
+			root := NewWithOpts(opts)
+			require.NoError(t, root.Start())
+			tenant := root.Scope("tenant")
+			svc := &countingShutdowner{}
+			ProvideNamedValue(tenant, "svc", svc)
+			_, err := InvokeNamed[*countingShutdowner](tenant, "svc")
+			require.NoError(t, err)
+			tt.register(root)
+
+			if tt.panics {
+				is.PanicsWithValue("scope-boom", func() { _ = tt.operation(tenant) })
+			} else {
+				is.NotPanics(func() { is.NoError(tt.operation(tenant)) })
+			}
+
+			is.Equal(tt.dispatched, calls)
+			is.Equal(tt.shutdowns, svc.shutdowns.Load())
+		})
+	}
+}
+
+// TestScopeHooks_ObserverPanicThroughParent pins that a child scope hook
+// panic during a parent's shutdown, where the child shuts down on its own
+// goroutine, reaches the caller after the whole shutdown completed.
+func TestScopeHooks_ObserverPanicThroughParent(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+	is := assert.New(t)
+
+	root := New()
+	tenant := root.Scope("tenant")
+	svc := &countingShutdowner{}
+	ProvideNamedValue(tenant, "svc", svc)
+	_, err := InvokeNamed[*countingShutdowner](tenant, "svc")
+	require.NoError(t, err)
+	root.AddScopeClosingHook(func(context.Context, *Scope) { panic("scope-boom") })
+
+	is.PanicsWithValue("scope-boom", func() { root.Shutdown() })
+	is.Equal(int32(1), svc.shutdowns.Load())
+	is.ErrorIs(root.Start(), ErrStartAfterShutdown)
+}

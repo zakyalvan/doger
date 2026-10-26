@@ -129,3 +129,22 @@ func ExampleInjectorOpts_hookContainerPanic() {
 	// ready hook panicked: readiness endpoint unavailable
 	// start error: <nil>
 }
+
+func ExampleRootScope_AddScopeClosingHook() {
+	root := New()
+	_ = root.Start()
+
+	// Per-tenant teardown, without a per-service hook.
+	root.AddScopeClosingHook(func(_ context.Context, scope *Scope) {
+		fmt.Println("closing", scope.Name())
+	})
+	root.AddScopeClosedHook(func(_ context.Context, scope *Scope) {
+		fmt.Println("closed", scope.Name())
+	})
+
+	tenant := root.Scope("tenant-a")
+	tenant.Shutdown()
+	// Output:
+	// closing tenant-a
+	// closed tenant-a
+}

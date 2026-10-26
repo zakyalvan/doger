@@ -177,3 +177,26 @@ With no container hooks registered, `Start` and `Shutdown` behave as they did be
 ## Refresh and Scope.Start {#refresh-and-scope-start}
 
 Container hooks fire at most once per container, for its first `Start` and its first root `Shutdown`. [`Refresh` and `Scope.Start`](./starter.md#refresh) fire **no** container hook: no Starting, Started, Ready or Failed hook runs for an incremental start, even when it fails. Per-service start hooks (`HookBeforeStart`, `HookAfterStart`) and kind handlers still run for the services they start.
+
+## Scope hooks {#scope-hooks}
+
+Scope hooks run logic when a **child** scope starts or shuts down, for example per-tenant setup and teardown. They are registered like container hooks, in `InjectorOpts` or with `RootScope.AddScope<State>Hook`, run in registration order, and ignore nil hooks.
+
+| Hook                | Signature                             | Fires                                                                  |
+| ------------------- | ------------------------------------- | ---------------------------------------------------------------------- |
+| `HookScopeStarting` | `func(context.Context, *Scope) error` | `scope.Start()`, before anything starts; an error or a panic vetoes it |
+| `HookScopeStarted`  | `func(context.Context, *Scope)`       | `scope.Start()`, once the scope's services started                     |
+| `HookScopeClosing`  | `func(context.Context, *Scope)`       | the scope shuts down, after its children and before its services       |
+| `HookScopeClosed`   | `func(context.Context, *Scope)`       | the scope shut down                                                    |
+
+- Closing and Closed fire whether the child scope shuts down directly or as part of its parent's shutdown, children before their parent. A child scope shut down directly stays attached to its parent, so a later parent shutdown fires its hooks again.
+- Sibling scopes shut down in parallel, so their hooks may run concurrently.
+- The root's own scope never fires scope hooks: use container hooks for the root container. `Refresh` fires no scope hook for new child scopes; only an explicit `scope.Start()` does.
+- A veto returns an error wrapping the hook's error and naming the scope: ``DI: scope `tenant` start aborted: ...``.
+- A panic in a Started, Closing or Closed scope hook follows the [container panic policy](#panics): the operation completes, then the first panic goes to `HookContainerPanic` with the point `scope-started`, `scope-closing` or `scope-closed`, or is re-raised on the calling goroutine when `HookContainerPanic` is nil.
+
+```go
+root.AddScopeClosingHook(func(ctx context.Context, scope *doger.Scope) {
+    log.Printf("tenant %s shutting down", scope.Name())
+})
+```

@@ -159,11 +159,9 @@ func (s *Scope) StartWithContext(ctx context.Context) error {
 	}
 
 	if s != s.rootScope.self {
-		for _, hook := range slices.Clone(s.rootScope.opts.HookScopeStarted) {
-			if hook != nil {
-				hook(ctx, s)
-			}
-		}
+		var first hookPanic
+		s.runScopeObserverHooks(ctx, "scope-started", s.rootScope.opts.HookScopeStarted, &first)
+		s.rootScope.dispatchFirstPanic(first)
 	}
 
 	return nil

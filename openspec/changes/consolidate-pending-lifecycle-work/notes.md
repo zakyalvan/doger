@@ -62,3 +62,8 @@ Each was shown to fail with a temporary, uncommitted mutation:
 - 35.1 `TestRefresh_Concurrent` passes on arrival through `pipelineMu`; without the lock, concurrent runs overwrite the shared run state and panic. `TestRefresh_ShutdownCancels` failed on arrival with a synctest deadlock (the Refresh was not cancelled).
 - 35.3 gopls review: `pipelineMu` is locked only in `runStart` and `startIncremental`. `runStart` unlocks it before its deferred `finishStart` takes `lifecycleMu`; `startIncremental` takes `lifecycleMu` inside it (`beginIncremental`, `finishIncremental`), never the reverse. No Shutdown path takes it.
 - 39.3 benchstat of the invoke benchmarks against the 0.2 baseline (10 runs each, not interleaved) flagged `InvokeLazyParallel` +8.2% and `InvokeAlias` +9.6% in time, with identical B/op and allocs/op. Re-measured interleaved against the baseline commit `ed65bdc` (separate worktree, 10 alternating runs): every invoke benchmark shows `~` (p ≥ 0.44). The first deltas were run-to-run noise on the shared VM.
+
+## Part S
+
+- 41.1 `TestScopeHooks_RootFiresNone` passes on arrival; firing scope hooks for the root's own scope fails it.
+- 42.2: when a parent shuts down, child scopes shut down on their own goroutines (`wg.Go`), so a re-panic there would terminate the process. Child scope shutdown therefore keeps its first hook panic and the parent merges it after `wg.Wait`; it is dispatched once, on the calling goroutine (for root `Shutdown`, through the container's own dispatch). Pinned by an extra test, `TestScopeHooks_ObserverPanicThroughParent`.

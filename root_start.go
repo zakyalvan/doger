@@ -89,9 +89,7 @@ func (s *RootScope) StartWithContext(ctx context.Context) error {
 	// pointAfterStart: startDone is closed, so code here may call Shutdown().
 	var first hookPanic
 	s.dispatchAfterStart(ctx, err, &first)
-	if first.panicked {
-		s.dispatchHookPanic(first.point, first.value)
-	}
+	s.dispatchFirstPanic(first)
 
 	return err
 }
@@ -123,16 +121,31 @@ type hookPanic struct {
 // callObserver calls an observer hook, recovering its panic: the first one
 // of the operation is kept in first, later ones are logged.
 func (s *RootScope) callObserver(first *hookPanic, point string, call func()) {
-	recovered, panicked := callHookSafely(call)
-	if !panicked {
+	if recovered, panicked := callHookSafely(call); panicked {
+		s.keepFirstPanic(first, hookPanic{point: point, value: recovered, panicked: true})
+	}
+}
+
+// keepFirstPanic keeps p in first when first holds no panic yet, and logs
+// it otherwise.
+func (s *RootScope) keepFirstPanic(first *hookPanic, p hookPanic) {
+	if !p.panicked {
 		return
 	}
 
 	if first.panicked {
-		s.opts.Logf("DI: container %s hook panicked: %v", point, recovered)
+		s.opts.Logf("DI: container %s hook panicked: %v", p.point, p.value)
 		return
 	}
-	*first = hookPanic{point: point, value: recovered, panicked: true}
+	*first = p
+}
+
+// dispatchFirstPanic dispatches the first observer hook panic of an
+// operation, if any. Call it once the operation is complete.
+func (s *RootScope) dispatchFirstPanic(first hookPanic) {
+	if first.panicked {
+		s.dispatchHookPanic(first.point, first.value)
+	}
 }
 
 // callHookSafely calls fn and recovers its panic.

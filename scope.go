@@ -378,36 +378,48 @@ func (s *Scope) Shutdown() *ShutdownReport {
 //
 // Play: https://go.dev/play/p/nkiBBYow2d5
 func (s *Scope) ShutdownWithContext(ctx context.Context) *ShutdownReport {
+	var first hookPanic
+	report := s.shutdownWithContext(ctx, &first)
+	s.rootScope.dispatchFirstPanic(first)
+
+	return report
+}
+
+// shutdownWithContext shuts the scope and its children down, keeping the
+// first scope hook panic in first instead of raising it.
+func (s *Scope) shutdownWithContext(ctx context.Context, first *hookPanic) *ShutdownReport {
 	s.logf("requested shutdown")
 	start := s.clock().Now()
 
-	rep1 := s.shutdownChildrenInParallel(ctx)
+	rep1 := s.shutdownChildrenInParallel(ctx, first)
 
 	// child scopes only: the root's own scope fires no scope hook
 	isChild := s.parentScope != nil
 	if isChild {
-		for _, hook := range slices.Clone(s.rootScope.opts.HookScopeClosing) {
-			if hook != nil {
-				hook(ctx, s)
-			}
-		}
+		s.runScopeObserverHooks(ctx, "scope-closing", s.rootScope.opts.HookScopeClosing, first)
 	}
 
 	rep2 := s.shutdownServicesInParallel(ctx)
 	s.logf("shut down services")
 
 	if isChild {
-		for _, hook := range slices.Clone(s.rootScope.opts.HookScopeClosed) {
-			if hook != nil {
-				hook(ctx, s)
-			}
-		}
+		s.runScopeObserverHooks(ctx, "scope-closed", s.rootScope.opts.HookScopeClosed, first)
 	}
 
 	report := mergeShutdownReports(rep1, rep2)
 	report.ShutdownTime = s.clock().Since(start)
 	report.Succeed = len(report.Errors) == 0
 	return report
+}
+
+// runScopeObserverHooks runs scope observer hooks for s in order, recovering
+// their panics into first.
+func (s *Scope) runScopeObserverHooks(ctx context.Context, point string, hooks []func(context.Context, *Scope), first *hookPanic) {
+	for _, hook := range slices.Clone(hooks) {
+		if hook != nil {
+			s.rootScope.callObserver(first, point, func() { hook(ctx, s) })
+		}
+	}
 }
 
 // shutdownChildrenInParallel runs a parallel shutdown of children scopes.
@@ -418,7 +430,7 @@ func (s *Scope) ShutdownWithContext(ctx context.Context) *ShutdownReport {
 //   - ctx: Context for cancellation and timeout control
 //
 // Returns a ShutdownReport containing any errors from child scope shutdowns.
-func (s *Scope) shutdownChildrenInParallel(ctx context.Context) *ShutdownReport {
+func (s *Scope) shutdownChildrenInParallel(ctx context.Context, first *hookPanic) *ShutdownReport {
 	// Snapshot children under lock
 	s.mu.Lock()
 	children := make([]*Scope, 0, len(s.childScopes))
@@ -429,14 +441,20 @@ func (s *Scope) shutdownChildrenInParallel(ctx context.Context) *ShutdownReport 
 	s.mu.Unlock()
 
 	reports := make([]*ShutdownReport, len(children))
+	panics := make([]hookPanic, len(children))
 
 	var wg sync.WaitGroup
 	for index, child := range children {
 		wg.Go(func() {
-			reports[index] = child.ShutdownWithContext(ctx)
+			reports[index] = child.shutdownWithContext(ctx, &panics[index])
 		})
 	}
 	wg.Wait()
+
+	// raised on the caller's goroutine, never on a child's
+	for _, p := range panics {
+		s.rootScope.keepFirstPanic(first, p)
+	}
 
 	return mergeShutdownReports(reports...)
 }

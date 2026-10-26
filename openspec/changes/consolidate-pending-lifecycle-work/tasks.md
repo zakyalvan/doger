@@ -287,10 +287,10 @@ Rules:
 
 ## 42. Scope hook panics (scope-lifecycle-hooks; design S1)
 
-- [ ] 42.1 RED: add `TestScopeHooks_ObserverPanic` (3 rows); verify `go test -race -run TestScopeHooks_ObserverPanic .` fails because the panic escapes before the scope's services shut down
-- [ ] 42.2 GREEN: recover each observer scope hook with `callHookSafely` and dispatch the first panic last, through `HookContainerPanic` (points `scope-started`, `scope-closing`, `scope-closed`) (design S1, Part H D6); verify the 42.1 command passes and `make test` is green
-- [ ] 42.3 REFACTOR: *Extract Function* `runObserverHooksWithPanicPolicy` shared by container and scope observer hooks if they still duplicate the dispatch; verify `make test` and `make lint` pass
-- [ ] 42.4 Add `ExampleRootScope_AddScopeClosingHook` and a scope-hooks section on the container-hooks page; verify the example and the docs lint and build pass
+- [x] 42.1 RED: add `TestScopeHooks_ObserverPanic` (3 rows); verify `go test -race -run TestScopeHooks_ObserverPanic .` fails because the panic escapes before the scope's services shut down
+- [x] 42.2 GREEN: recover each observer scope hook with `callHookSafely` and dispatch the first panic last, through `HookContainerPanic` (points `scope-started`, `scope-closing`, `scope-closed`) (design S1, Part H D6); verify the 42.1 command passes and `make test` is green
+- [x] 42.3 REFACTOR: *Extract Function* `runObserverHooksWithPanicPolicy` shared by container and scope observer hooks if they still duplicate the dispatch; verify `make test` and `make lint` pass
+- [x] 42.4 Add `ExampleRootScope_AddScopeClosingHook` and a scope-hooks section on the container-hooks page; verify the example and the docs lint and build pass
 
 ## 43. RootScope.Phase (container-phase; design S2)
 
