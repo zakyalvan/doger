@@ -164,6 +164,83 @@ func TestCollection_ReadDuringOuterProvider(t *testing.T) {
 	assert.ErrorContains(t, err, "app")
 }
 
+func TestCollection_DetachedReadRecordsNoEdge(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	// app is not an EventHandler, so the read succeeds while it runs
+	ProvideNamed(root, "app", func(i Injector) (*Bus, error) {
+		bus, err := InvokeNamed[*busHandler](i, "bus")
+		if err != nil {
+			return nil, err
+		}
+		handlers, err := bus.peers.All()
+		if err != nil {
+			return nil, err
+		}
+		return &Bus{names: handlerNames(handlers)}, nil
+	})
+	ProvideNamed(root, "bus", func(i Injector) (*busHandler, error) {
+		return &busHandler{handlerBase: handlerBase{"bus"}, peers: InvokeCollection[EventHandler](i)}, nil
+	})
+	provideHandler(root, "console", newConsole)
+
+	app, err := InvokeNamed[*Bus](root, "app")
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"console"}, app.names)
+	assert.Equal(t, []string{"bus"}, explainedNames(t, root, "app", false))
+}
+
+// appMarker is implemented by appService only.
+type (
+	appMarker   interface{ appMarker() }
+	appService  struct{}
+	appsHandler struct {
+		handlerBase
+		apps Collection[appMarker]
+	}
+)
+
+func (*appService) appMarker() {}
+
+func TestCollection_DetachedReadKeepsRunningChain(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	ProvideNamed(root, "app", func(i Injector) (*appService, error) {
+		bus, err := InvokeNamed[*busHandler](i, "bus")
+		if err != nil {
+			return nil, err
+		}
+		// builds "member" through a detached read, since bus returned
+		if _, err := bus.peers.All(); err != nil {
+			return nil, err
+		}
+		member, err := InvokeNamed[*appsHandler](i, "member")
+		if err != nil {
+			return nil, err
+		}
+		// app is still running: reading it must fail, not wait for itself
+		if _, err := member.apps.All(); err != nil {
+			return nil, err
+		}
+		return &appService{}, nil
+	})
+	ProvideNamed(root, "bus", func(i Injector) (*busHandler, error) {
+		return &busHandler{handlerBase: handlerBase{"bus"}, peers: InvokeCollection[EventHandler](i)}, nil
+	})
+	ProvideNamed(root, "member", func(i Injector) (*appsHandler, error) {
+		return &appsHandler{handlerBase: handlerBase{"member"}, apps: InvokeCollection[appMarker](i)}, nil
+	})
+
+	_, err := InvokeNamed[*appService](root, "app")
+
+	assert.ErrorIs(t, err, ErrCircularDependency)
+}
+
 func TestCollection_HolderAfterSiblings(t *testing.T) {
 	t.Parallel()
 
