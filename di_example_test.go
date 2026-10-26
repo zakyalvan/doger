@@ -480,6 +480,42 @@ func ExampleMustInvokeAs() {
 	// Output: alias-test-service
 }
 
+type exampleGreeter interface{ Greet() string }
+
+type exampleEnglishGreeter struct{}
+
+func (*exampleEnglishGreeter) Greet() string { return "hello" }
+
+// exampleLoudGreeter decorates the exampleGreeter its provider resolves.
+type exampleLoudGreeter struct{ inner exampleGreeter }
+
+func (g *exampleLoudGreeter) Greet() string { return "loud(" + g.inner.Greet() + ")" }
+
+func ExampleInvokeAs_decorator() {
+	injector := New()
+
+	// The decorator is registered first, so it is the first match for
+	// exampleGreeter. Called from its own provider, InvokeAs skips the
+	// service that provider builds, and its aliases, so the decorator
+	// resolves the service it wraps.
+	ProvideNamed(injector, "loud", func(i Injector) (*exampleLoudGreeter, error) {
+		inner, err := InvokeAs[exampleGreeter](i)
+		if err != nil {
+			return nil, err
+		}
+		return &exampleLoudGreeter{inner: inner}, nil
+	})
+	ProvideNamed(injector, "english", func(Injector) (*exampleEnglishGreeter, error) {
+		return &exampleEnglishGreeter{}, nil
+	})
+
+	// From outside a provider, the decorator is the first match.
+	greeter, err := InvokeAs[exampleGreeter](injector)
+
+	fmt.Println(greeter.Greet(), err)
+	// Output: loud(hello) <nil>
+}
+
 type exampleNotifier interface{ Notify(msg string) string }
 
 type exampleEmailNotifier struct{}
@@ -505,6 +541,20 @@ func ExampleInvokeAll() {
 	}
 
 	for _, notifier := range notifiers {
+		fmt.Println(notifier.Notify("deploy done"))
+	}
+	// Output:
+	// email: deploy done
+	// sms: deploy done
+}
+
+func ExampleMustInvokeAll() {
+	injector := New()
+	Provide(injector, func(Injector) (*exampleEmailNotifier, error) { return &exampleEmailNotifier{}, nil })
+	Provide(injector, func(Injector) (*exampleSMSNotifier, error) { return &exampleSMSNotifier{}, nil })
+
+	// Like InvokeAll, but panics on error.
+	for _, notifier := range MustInvokeAll[exampleNotifier](injector) {
 		fmt.Println(notifier.Notify("deploy done"))
 	}
 	// Output:

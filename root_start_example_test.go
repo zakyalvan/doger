@@ -136,6 +136,49 @@ func ExampleRootScope_Refresh_notStarted() {
 	// <nil>
 }
 
+func ExampleRootScope_RefreshWithContext() {
+	root := New()
+	_ = root.Start()
+	ProvideNamedValue(root, "reports", &exampleWorker{name: "reports"})
+
+	// The run's context derives from ctx: its deadline and values reach
+	// context-aware Starters, kind handlers and hooks.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	fmt.Println(root.RefreshWithContext(ctx))
+
+	// A cancelled context starts nothing.
+	ProvideNamedValue(root, "late", &exampleWorker{name: "late"})
+	cancelled, cancelNow := context.WithCancel(context.Background())
+	cancelNow()
+	fmt.Println(errors.Is(root.RefreshWithContext(cancelled), context.Canceled))
+	// Output:
+	// reports started
+	// <nil>
+	// true
+}
+
+func ExampleScope_StartWithContext() {
+	root := New()
+	_ = root.Start()
+
+	type tenantKey struct{}
+	root.AddScopeStartingHook(func(ctx context.Context, scope *Scope) error {
+		fmt.Println("starting", scope.Name(), "for", ctx.Value(tenantKey{}))
+		return nil
+	})
+	tenant := root.Scope("tenant-a")
+	ProvideNamedValue(tenant, "sync", &exampleWorker{name: "tenant-a sync"})
+
+	// Like Scope.Start, with a context for the run.
+	ctx := context.WithValue(context.Background(), tenantKey{}, "acme")
+	fmt.Println(tenant.StartWithContext(ctx))
+	// Output:
+	// starting tenant-a for acme
+	// tenant-a sync started
+	// <nil>
+}
+
 func ExampleScope_Start() {
 	root := New()
 	_ = root.Start()

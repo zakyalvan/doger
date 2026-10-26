@@ -130,6 +130,73 @@ func ExampleInjectorOpts_hookContainerPanic() {
 	// start error: <nil>
 }
 
+func ExampleRootScope_AddContainerStartedHook() {
+	root := New()
+
+	// Runs once every service started; the Ready hooks run after it.
+	root.AddContainerStartedHook(func(_ context.Context, r *RootScope) {
+		fmt.Println("started hook, phase:", r.Phase())
+	})
+
+	err := root.Start()
+	fmt.Println("start error:", err, "phase:", root.Phase())
+	// Output:
+	// started hook, phase: started
+	// start error: <nil> phase: ready
+}
+
+func ExampleRootScope_AddContainerClosingHook() {
+	root := New()
+	ProvideValue(root, &exampleDB{})
+	_ = root.Start()
+
+	// Runs before any service is shut down, for example to stop accepting
+	// traffic.
+	root.AddContainerClosingHook(func(_ context.Context, r *RootScope) {
+		fmt.Println("closing hook, phase:", r.Phase())
+	})
+
+	root.Shutdown()
+	// Output:
+	// db started
+	// closing hook, phase: closing
+	// db stopped
+}
+
+func ExampleRootScope_AddContainerClosedHook() {
+	root := New()
+	ProvideValue(root, &exampleDB{})
+	_ = root.Start()
+
+	// Runs once every service is shut down, with the report Shutdown returns.
+	root.AddContainerClosedHook(func(_ context.Context, r *RootScope, report *ShutdownReport) {
+		fmt.Println("closed hook, succeeded:", report.Succeed, "phase:", r.Phase())
+	})
+
+	root.Shutdown()
+	// Output:
+	// db started
+	// db stopped
+	// closed hook, succeeded: true phase: closed
+}
+
+func ExampleRootScope_AddScopeClosedHook() {
+	root := New()
+
+	// Runs once a child scope's services are shut down, for example to
+	// release per-tenant resources.
+	root.AddScopeClosedHook(func(_ context.Context, scope *Scope) {
+		fmt.Println("released", scope.Name())
+	})
+
+	tenant := root.Scope("tenant-a")
+	ProvideNamedValue(tenant, "db", &exampleDB{})
+	tenant.Shutdown()
+	// Output:
+	// db stopped
+	// released tenant-a
+}
+
 func ExampleRootScope_AddScopeClosingHook() {
 	root := New()
 	_ = root.Start()
