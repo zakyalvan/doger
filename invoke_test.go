@@ -1127,6 +1127,34 @@ func TestInvokeAs_SeesRegistryChanges(t *testing.T) {
 	}
 }
 
+func TestInvokeAs_ConcurrentRegistration(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, 5*time.Second)
+
+	root := New()
+	provideGreeter(root, "first")
+
+	var wg sync.WaitGroup
+	for range 20 {
+		wg.Go(func() {
+			for range 50 {
+				greeter, err := InvokeAs[Greeter](root)
+				if assert.NoError(t, err) {
+					assert.Equal(t, "first", greeter.Greet())
+				}
+			}
+		})
+	}
+	for n := range 10 {
+		wg.Go(func() {
+			for k := range 20 {
+				provideGreeter(root, fmt.Sprintf("late-%d-%d", n, k))
+			}
+		})
+	}
+	wg.Wait()
+}
+
 func TestInvokeAs_SingleAndMissing(t *testing.T) {
 	t.Parallel()
 
