@@ -1534,6 +1534,7 @@ func TestRefresh_ShutdownCancels(t *testing.T) {
 			return &ctxStarter{fn: func(ctx context.Context) error {
 				close(entered)
 				<-ctx.Done()
+				time.Sleep(time.Second) // returns 1s after the cancellation
 				return ctx.Err()
 			}}, nil
 		})
@@ -1542,7 +1543,9 @@ func TestRefresh_ShutdownCancels(t *testing.T) {
 		go func() { refreshErr <- root.Refresh() }()
 		<-entered
 
+		begin := time.Now()
 		report := root.Shutdown()
+		is.Equal(time.Second, time.Since(begin), "Shutdown waits for the cancelled Refresh")
 		// Shutdown is released when Refresh's run ends; let the goroutine
 		// deliver its result before the non-blocking check
 		synctest.Wait()
