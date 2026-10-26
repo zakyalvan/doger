@@ -1,21 +1,18 @@
 # Handover: fifth verification round (`consolidate-pending-lifecycle-work`)
 
-This brief is for the next session. Nothing from the fifth verification round has been implemented yet: the branch HEAD is still `c40c60b`. Delete this file in the commit that finishes the round.
+This brief is for the next session. Nothing from the fifth verification round has been implemented yet: the last code commit is still `c40c60b`. Delete this file in the commit that finishes the round.
 
-## 1. Blocker: the Go skills plugin is not installed
+## 1. Go skills plugin: cause found and fixed
 
-CLAUDE.md rule 1 requires the `cc-skills-golang` skills. The previous session stopped at Step 0 because `golang-how-to` did not load (it was tried both as `cc-skills-golang:golang-how-to` and as `golang-how-to`).
+The earlier blocker (no plugin installed, so `golang-how-to` could not load) is fixed in `dfa9e31`.
 
-**Findings**
-- The marketplace configuration is **correct**. `.claude/settings.json` uses the `samber` marketplace at `samber/cc`. Its manifest, `.claude-plugin/marketplace.json`, lists `cc-skills-golang` with the source `samber/cc-skills-golang`. That repository is reachable from the container (`git ls-remote` returned HEAD `246b6c4`).
-- **No plugin was installed.** `claude plugin list` printed "No plugins installed", and `~/.claude/plugins/installed_plugins.json` was empty. This affects `gopls-lsp@claude-plugins-official` as well as `cc-skills-golang@samber`.
-- Both marketplaces were added, so `.claude/hooks/session-start.sh` ran its `marketplace add` step. Its `claude plugin install <id> --scope user` step still left nothing installed. **The cause has not been reproduced.** The hook's output was not available.
+**Cause (reproduced).** A fresh container does not have the `claude-plugins-official` marketplace registered while the SessionStart hook runs. The hook only adds marketplaces declared in `extraKnownMarketplaces`, and that one was not declared. Installing `gopls-lsp@claude-plugins-official` failed with "Plugin not found in marketplace", `set -euo pipefail` aborted the hook with exit 1, and `cc-skills-golang@samber` was never attempted.
+
+**Fix.** `.claude/settings.json` declares `claude-plugins-official` (`anthropics/claude-plugins-official`) in `extraKnownMarketplaces`. A simulated fresh state (no marketplaces registered, no plugins installed) now ends with exit 0 and both plugins installed.
 
 **Next steps**
-1. Run `claude plugin list`. If the Go skills are listed and load, the blocker is gone; go to section 2.
-2. Otherwise run `claude plugin install cc-skills-golang@samber --scope user` (and `gopls-lsp@claude-plugins-official`) by hand and read the error.
-3. Fix the cause in `.claude/hooks/session-start.sh` if it lies there, commit it, and start a new session. Skills load at session start only.
-4. Do not do Go work until `golang-how-to` loads. If it can't be fixed, ask the user.
+1. Run `claude plugin list` and load `golang-how-to`. If the plugins are missing, read the SessionStart hook output and report it rather than working around it.
+2. Do not do Go work until `golang-how-to` loads. If it can't be fixed, ask the user.
 
 ## 2. Pending work: close the fifth `/opsx:verify` round
 
