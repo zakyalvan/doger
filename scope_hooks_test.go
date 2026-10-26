@@ -14,22 +14,91 @@ import (
 
 func TestScopeHooks_RegistrationOrder(t *testing.T) {
 	t.Parallel()
-	testWithTimeout(t, time.Second)
 
-	calls := &callRecorder{}
-	recordAs := func(label string) func(context.Context, *Scope) {
+	// observer returns a scope observer hook recording label and the scope
+	observer := func(calls *callRecorder, label string) func(context.Context, *Scope) {
 		return func(_ context.Context, scope *Scope) { calls.record(label + " " + scope.Name()) }
 	}
-	root := NewWithOpts(&InjectorOpts{
-		HookScopeStarted: []func(context.Context, *Scope){recordAs("h1"), nil, recordAs("h2")},
-	})
-	root.AddScopeStartedHook(recordAs("h3"))
-	root.AddScopeStartedHook(nil)
-	require.NoError(t, root.Start())
-	tenant := root.Scope("tenant")
+	// veto returns a Starting hook recording label and the scope
+	veto := func(calls *callRecorder, label string) func(context.Context, *Scope) error {
+		return func(ctx context.Context, scope *Scope) error {
+			observer(calls, label)(ctx, scope)
+			return nil
+		}
+	}
+	start := func(scope *Scope) { assert.NoError(t, scope.Start()) }
+	shutdown := func(scope *Scope) { assert.True(t, scope.Shutdown().Succeed) }
 
-	assert.NotPanics(t, func() { assert.NoError(t, tenant.Start()) })
-	assert.Equal(t, []string{"h1 tenant", "h2 tenant", "h3 tenant"}, calls.list())
+	tests := []struct {
+		name string
+		// register sets h1, nil, h2 in the options, then adds h3 and nil
+		register func(calls *callRecorder) *RootScope
+		trigger  func(scope *Scope)
+	}{
+		{
+			name: "HookScopeStarting",
+			register: func(calls *callRecorder) *RootScope {
+				root := NewWithOpts(&InjectorOpts{
+					HookScopeStarting: []func(context.Context, *Scope) error{veto(calls, "h1"), nil, veto(calls, "h2")},
+				})
+				root.AddScopeStartingHook(veto(calls, "h3"))
+				root.AddScopeStartingHook(nil)
+				return root
+			},
+			trigger: start,
+		},
+		{
+			name: "HookScopeStarted",
+			register: func(calls *callRecorder) *RootScope {
+				root := NewWithOpts(&InjectorOpts{
+					HookScopeStarted: []func(context.Context, *Scope){observer(calls, "h1"), nil, observer(calls, "h2")},
+				})
+				root.AddScopeStartedHook(observer(calls, "h3"))
+				root.AddScopeStartedHook(nil)
+				return root
+			},
+			trigger: start,
+		},
+		{
+			name: "HookScopeClosing",
+			register: func(calls *callRecorder) *RootScope {
+				root := NewWithOpts(&InjectorOpts{
+					HookScopeClosing: []func(context.Context, *Scope){observer(calls, "h1"), nil, observer(calls, "h2")},
+				})
+				root.AddScopeClosingHook(observer(calls, "h3"))
+				root.AddScopeClosingHook(nil)
+				return root
+			},
+			trigger: shutdown,
+		},
+		{
+			name: "HookScopeClosed",
+			register: func(calls *callRecorder) *RootScope {
+				root := NewWithOpts(&InjectorOpts{
+					HookScopeClosed: []func(context.Context, *Scope){observer(calls, "h1"), nil, observer(calls, "h2")},
+				})
+				root.AddScopeClosedHook(observer(calls, "h3"))
+				root.AddScopeClosedHook(nil)
+				return root
+			},
+			trigger: shutdown,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+
+			calls := &callRecorder{}
+			root := tt.register(calls)
+			require.NoError(t, root.Start())
+			tenant := root.Scope("tenant")
+
+			assert.NotPanics(t, func() { tt.trigger(tenant) })
+			assert.Equal(t, []string{"h1 tenant", "h2 tenant", "h3 tenant"}, calls.list())
+		})
+	}
 }
 
 func TestScopeStartingHook_Veto(t *testing.T) {

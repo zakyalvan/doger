@@ -104,6 +104,7 @@ func TestInvokeAll_Membership(t *testing.T) {
 		collect func(root *RootScope) ([]string, error)
 		members []string
 		dbCalls int32
+		check   func(t *testing.T, root *RootScope) // extra assertions after collect, or nil
 	}{
 		{
 			name: "EventHandler",
@@ -133,6 +134,15 @@ func TestInvokeAll_Membership(t *testing.T) {
 			},
 			members: []string{"db"},
 			dbCalls: 1,
+			check: func(t *testing.T, root *RootScope) {
+				t.Helper()
+				dbs, err := InvokeAll[*sql.DB](root)
+				require.NoError(t, err)
+				db, err := InvokeNamed[*sql.DB](root, "db")
+				require.NoError(t, err)
+				require.Len(t, dbs, 1)
+				assert.Same(t, db, dbs[0], "the member is the registered instance")
+			},
 		},
 		{
 			name: "fmt.Stringer",
@@ -157,6 +167,9 @@ func TestInvokeAll_Membership(t *testing.T) {
 			is.NoError(err)
 			is.ElementsMatch(tt.members, members)
 			is.Equal(tt.dbCalls, dbCalls.Load())
+			if tt.check != nil {
+				tt.check(t, root)
+			}
 		})
 	}
 }
