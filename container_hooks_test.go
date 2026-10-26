@@ -796,13 +796,20 @@ func TestContainerHooks_ShutdownDuringStart(t *testing.T) {
 				k := NewKind[*failingJob, struct{}]("last")
 				ProvideNamedValue(root, "job", &failingJob{}, k.With(struct{}{}))
 				var wg sync.WaitGroup
+				launched := make(chan struct{})
 				k.Handle(root, StageAfterStart, func(context.Context, Component[*failingJob, struct{}]) error {
 					wg.Go(func() { root.Shutdown() })
+					close(launched)
 					synctest.Wait() // Shutdown is blocked, waiting for this Start
 					rec.record("handler returned")
 					return nil
 				})
-				return wg.Wait
+				// Wait only after Go added to the group: a Wait racing the Add
+				// at a zero counter is a data race
+				return func() {
+					<-launched
+					wg.Wait()
+				}
 			},
 			wantErr: ErrStartAfterShutdown,
 			counts:  map[string]int{"started-hook": 0, "ready-hook": 0, "failed-hook": 1},
