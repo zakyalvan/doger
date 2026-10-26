@@ -500,6 +500,7 @@ func TestCollection_ReadWithNilRecordsNoEdge(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"console"}, app.names)
 	assert.Equal(t, []string{"bus"}, explainedNames(t, root, "app", false))
+	assert.Empty(t, explainedNames(t, root, "bus", false), "the holder records no edge either")
 }
 
 func TestCollection_GoroutineReadDuringOuterProvider(t *testing.T) {
