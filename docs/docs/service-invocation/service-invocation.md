@@ -86,7 +86,7 @@ doger.Provide[*MyService](i, doger.InvokeStruct[MyService])
 
 ### Implicit aliasing behavior with InvokeStruct {#implicit-aliasing-behavior-with-invokestruct}
 
-When a field uses an empty tag value (eg: `do:""`) and no service is registered under the field type, the injector falls back to finding the first service whose type is assignable to the field type (same resolution strategy as `doger.InvokeAs[T]`).
+When a field uses an empty tag value (eg: `do:""`) and no service is registered under the field type, the injector falls back to resolution by type: among the services assignable to the field type, it selects the one in the nearest scope, then the earliest registration, then the smallest name (same rule as `doger.InvokeAs[T]`).
 
 Implications:
 

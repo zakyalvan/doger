@@ -131,17 +131,16 @@ func invokeByName[T any](i Injector, name string) (T, error) {
 	return instance, nil
 }
 
-// invokeByGenericType looks for a service by its type and invokes the first matching service.
-// When multiple services match the provided type or interface, the first service found
-// will be invoked. This function is useful for interface-based dependency injection.
+// invokeByGenericType looks for a service by its type and invokes it.
+// When multiple services match the provided type or interface, it selects
+// the one in the nearest scope, then the earliest registration, then the
+// smallest name (see selectByType). This function is useful for
+// interface-based dependency injection.
 //
 // Parameters:
 //   - i: The injector to search for the service
 //
 // Returns the service instance with the correct type and any error that occurred during invocation.
-//
-// @TODO: Selection is nondeterministic when multiple services satisfy T; consider deterministic ordering
-// or explicit disambiguation to avoid surprising picks.
 func invokeByGenericType[T any](i Injector) (T, error) {
 	injector := getInjectorOrDefault(i)
 	serviceAliasName := inferServiceName[T]()
@@ -153,30 +152,12 @@ func invokeByGenericType[T any](i Injector) (T, error) {
 		invokerChain = vScope.invokerChain
 	}
 
-	var serviceInstance any
-	var serviceScope *Scope
-	var serviceRealName string
-	var ok bool
-
-	injector.serviceForEachRec(func(name string, scope *Scope, s any) bool {
-		if serviceCanCastToGeneric[T](s) {
-			serviceInstance = s
-			serviceScope = scope
-			serviceRealName = s.(serviceWrapperGetName).getName() //nolint:errcheck,forcetypeassert
-			ok = true
-
-			// Stop or not stop, that's the question -> https://github.com/samber/do/issues/114
-			return false
-		}
-
-		return true
-	})
-
+	selected, ok := selectByType(injector, reflect.TypeFor[T]())
 	if !ok {
 		return empty[T](), serviceNotFound(injector, ErrServiceNotMatch, append(invokerChain, serviceAliasName))
 	}
 
-	instance, err := invokeServiceInstance(injector, vScope, serviceAliasName, serviceRealName, serviceScope, serviceInstance)
+	instance, err := invokeServiceInstance(injector, vScope, serviceAliasName, selected.name, selected.scope, selected.service)
 	if err != nil {
 		return empty[T](), err
 	}
@@ -398,8 +379,44 @@ func invokingServiceName(injector Injector) (string, bool) {
 	return vScope.getLastInvokerName()
 }
 
-// scopeDepth returns the number of ancestors of scope.
+// selectByType returns the visible service assignable to target, aliases
+// included, in the nearest scope (the invoking scope before its ancestors),
+// then with the earliest registration, then with the smallest name. This
+// is nearest-first, the opposite of collection order, on purpose: it keeps
+// the "current scope first" behavior of InvokeAs.
+func selectByType(injector Injector, target reflect.Type) (collectionCandidate, bool) {
+	var selected collectionCandidate
+	var found bool
+
+	invokingDepth := scopeDepth(injectorScope(injector))
+	injector.serviceForEachRec(func(name string, scope *Scope, s any) bool {
+		service, ok := s.(serviceWrapperAny)
+		if !ok || !serviceCanCastToType(s, target) {
+			return true
+		}
+
+		candidate := collectionCandidate{
+			name:     name,
+			scope:    scope,
+			depth:    invokingDepth - scopeDepth(scope), // distance from the invoking scope
+			regIndex: service.getRegistrationIndex(),
+			service:  s,
+		}
+		if !found || cmp.Or(cmp.Compare(candidate.depth, selected.depth), cmp.Compare(candidate.regIndex, selected.regIndex), cmp.Compare(candidate.name, selected.name)) < 0 {
+			selected, found = candidate, true
+		}
+		return true
+	})
+
+	return selected, found
+}
+
+// scopeDepth returns the number of ancestors of scope, 0 for nil.
 func scopeDepth(scope *Scope) int {
+	if scope == nil {
+		return 0
+	}
+
 	depth := 0
 	for p := scope.parentScope; p != nil; p = p.parentScope {
 		depth++
@@ -423,8 +440,7 @@ func scopeDepth(scope *Scope) int {
 //
 // The function does not manipulate virtual scope because it is done by invokeAnyByName or invokeByGenericType.
 //
-// @TODO: When implicitAliasing is enabled and the tag name is empty, fallback by type may select an arbitrary
-// matching service depending on iteration order; consider stable ordering or explicit disambiguation.
+// The implicit-aliasing fallback selects among matching services like invokeByGenericType.
 func invokeByTags(i Injector, structName string, structValue reflect.Value, implicitAliasing bool) error { //nolint:gocyclo
 	injector := getInjectorOrDefault(i)
 
@@ -464,27 +480,12 @@ func invokeByTags(i Injector, structName string, structValue reflect.Value, impl
 		}
 
 		dependency, err := invokeAnyByName(injector, serviceName)
-		// @TODO: This fallback may pick an arbitrary matching service; selection order is not stable.
 		if err != nil && implicitAliasing && wasTagNameEmpty && errors.Is(err, ErrServiceNotFound) {
 			// Fallback: try to resolve by generic type of the field
 			toType := fieldValue.Type()
 
-			var resolvedName string
-			var found bool
-			injector.serviceForEachRec(func(name string, _ *Scope, s any) bool {
-				if serviceCanCastToType(s, toType) {
-					resolvedName = s.(serviceWrapperGetName).getName() //nolint:errcheck,forcetypeassert
-					found = true
-
-					// Stop or not stop, that's the question -> https://github.com/samber/do/issues/114
-					return false
-				}
-
-				return true
-			})
-
-			if found {
-				dependency, err = invokeAnyByName(injector, resolvedName)
+			if selected, found := selectByType(injector, toType); found {
+				dependency, err = invokeAnyByName(injector, selected.name)
 			}
 		}
 		if err != nil {

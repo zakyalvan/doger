@@ -414,6 +414,10 @@ func MustInvokeNamed[T any](i Injector, name string) T {
 // If the service is not found in the DI container, an error is returned.
 // If the service is found but not assignable to the struct field, an error is returned.
 //
+// An empty tag (`do:""`) names the service after the field type. When no
+// service has that name, InvokeStruct falls back to resolution by type,
+// selecting among assignable services with the rule of [InvokeAs].
+//
 // Play: https://go.dev/play/p/I3_Rznkprpj
 //
 // Example:
@@ -685,6 +689,12 @@ func MustInvokeAllMap[T any](i Injector) map[string]T {
 // This function searches through all registered services to find one that can be cast to the requested type T.
 // It's useful when you want to retrieve a service by interface without explicitly creating aliases.
 //
+// When several visible services are assignable to T, it selects the one in
+// the nearest scope (the invoking scope before its ancestors), then the
+// earliest registration (an override keeps its position), then the smallest
+// service name. Aliases are candidates too. Use InvokeNamed to pin a
+// specific service.
+//
 // Parameters:
 //   - i: The injector to search for the service
 //
@@ -708,6 +718,7 @@ func InvokeAs[T any](i Injector) (T, error) {
 // MustInvokeAs invokes a service in the DI container by finding the first service that matches the provided type or interface.
 // This function panics if an error occurs during invocation.
 // It's useful when you want to retrieve a service by interface without explicitly creating aliases.
+// The selection rule is the one of [InvokeAs].
 //
 // Parameters:
 //   - i: The injector to search for the service

@@ -921,3 +921,136 @@ func TestInvoke_ProviderPanicNil_GODEBUGOverride(t *testing.T) {
 	assert.NoError(t, err, "child output:\n%s", out)
 	assert.Contains(t, string(out), "--- PASS: TestInvoke_ProviderPanicNil_GODEBUGOverride")
 }
+
+// Greeter is implemented by greeterImpl, named after its service.
+type Greeter interface{ Greet() string }
+
+type greeterImpl struct{ name string }
+
+func (g *greeterImpl) Greet() string { return g.name }
+
+// provideGreeter registers lazy Greeter implementation name in scope.
+func provideGreeter(scope Injector, name string) {
+	ProvideNamed(scope, name, func(Injector) (*greeterImpl, error) { return &greeterImpl{name: name}, nil })
+}
+
+func TestInvokeAs_Deterministic(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		setup    func(root *RootScope) (from Injector)
+		selected string
+	}{
+		{name: "b then a, from root", setup: func(root *RootScope) Injector {
+			provideGreeter(root, "b")
+			provideGreeter(root, "a")
+			return root
+		}, selected: "b"},
+		{name: "a then b, from root", setup: func(root *RootScope) Injector {
+			provideGreeter(root, "a")
+			provideGreeter(root, "b")
+			return root
+		}, selected: "a"},
+		{name: "child match is nearer", setup: func(root *RootScope) Injector {
+			provideGreeter(root, "a")
+			request := root.Scope("request")
+			provideGreeter(request, "z")
+			return request
+		}, selected: "z"},
+		{name: "root does not see the child", setup: func(root *RootScope) Injector {
+			provideGreeter(root, "a")
+			provideGreeter(root.Scope("request"), "z")
+			return root
+		}, selected: "a"},
+		{name: "override keeps position", setup: func(root *RootScope) Injector {
+			provideGreeter(root, "b")
+			provideGreeter(root, "a")
+			OverrideNamed(root, "b", func(Injector) (*greeterImpl, error) { return &greeterImpl{name: "b"}, nil })
+			return root
+		}, selected: "b"},
+		{name: "clone keeps positions", setup: func(root *RootScope) Injector {
+			provideGreeter(root, "b")
+			clone := root.Clone()
+			provideGreeter(clone, "a")
+			return clone
+		}, selected: "b"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+
+			for range 10 {
+				from := tt.setup(New())
+
+				greeter, err := InvokeAs[Greeter](from)
+
+				assert.NoError(t, err)
+				assert.Equal(t, tt.selected, greeter.Greet())
+			}
+		})
+	}
+}
+
+func TestInvokeAs_DeterministicStable(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, 5*time.Second)
+
+	for range 100 {
+		root := New()
+		for i := range 20 {
+			provideGreeter(root, fmt.Sprintf("s%02d", i))
+		}
+
+		greeter, err := InvokeAs[Greeter](root)
+
+		assert.NoError(t, err)
+		assert.Equal(t, "s00", greeter.Greet())
+	}
+}
+
+func TestInvokeAs_SingleAndMissing(t *testing.T) {
+	t.Parallel()
+
+	t.Run("one match", func(t *testing.T) {
+		t.Parallel()
+		root := New()
+		provideGreeter(root, "a")
+
+		greeter, err := InvokeAs[Greeter](root)
+
+		assert.NoError(t, err)
+		assert.Equal(t, "a", greeter.Greet())
+	})
+
+	t.Run("no match", func(t *testing.T) {
+		t.Parallel()
+		root := New()
+
+		_, err := InvokeAs[Greeter](root)
+
+		assert.ErrorIs(t, err, ErrServiceNotMatch)
+	})
+}
+
+func TestInvokeStruct_ImplicitAliasingDeterministic(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, 5*time.Second)
+
+	type withGreeter struct {
+		G Greeter `do:""`
+	}
+
+	for range 100 {
+		root := New()
+		provideGreeter(root, "b")
+		provideGreeter(root, "a")
+
+		value, err := InvokeStruct[withGreeter](root)
+
+		assert.NoError(t, err)
+		assert.Equal(t, "b", value.G.Greet())
+	}
+}

@@ -62,3 +62,9 @@ Migration: shut the target down by its own name, or through its own scope.
 `Clone()` and `CloneWithOpts()` now copy the source's kind handlers, including a replaced `Runnable` handler, with their stages and order. A clone used to get only the default `Runnable` handler, so custom kinds had no handler on it.
 
 Migration: none if you re-registered the same handlers on the clone. To use a different handler on a clone, call `Kind.Handle` on the clone; it replaces the handler on the clone only.
+
+## InvokeAs selects deterministically {#invoke-as-deterministic}
+
+`InvokeAs[T]`, `MustInvokeAs[T]` and the implicit-aliasing fallback of `InvokeStruct` (an empty `do:""` tag with no service of that name) used to return an arbitrary match when several services were assignable to `T`, depending on map iteration. They now select deterministically: the service in the nearest scope, then the earliest registration, then the smallest service name.
+
+Since the previous pick was random, no code could rely on a specific one, but a call that used to succeed by luck may now consistently return another match. Migration: use `InvokeNamed` to pin a specific service.

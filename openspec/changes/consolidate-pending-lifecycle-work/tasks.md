@@ -301,10 +301,10 @@ Rules:
 
 ## 44. Deterministic InvokeAs (type-resolution; design S5)
 
-- [ ] 44.1 RED: add `TestInvokeAs_Deterministic` (6 rows), `TestInvokeAs_DeterministicStable`, `TestInvokeAs_SingleAndMissing` (2 rows) and `TestInvokeStruct_ImplicitAliasingDeterministic` to `invoke_test.go`; verify `go test -race -count=10 -run 'TestInvokeAs_Deterministic|TestInvokeStruct_ImplicitAliasingDeterministic' .` fails on the multi-match rows (random pick); record that SingleAndMissing passes on arrival
-- [ ] 44.2 GREEN: select the minimum `(distance, regIndex, name)` candidate in `invokeByGenericType` and in the `invokeByTags` fallback (design S5), removing the two nondeterminism TODOs; verify the 44.1 command passes with `-count=10`, the existing `TestInvokeAs`/`TestInvokeByGenericType*`/`TestInvokeAs_HookReceivesTypeName` pass unchanged, and `make test` is green
-- [ ] 44.3 REFACTOR: *Extract Function* `selectByType(injector, target reflect.Type) (candidate, bool)` shared by both call sites; verify `make test` and `make lint` pass
-- [ ] 44.4 Document the selection rule in the `InvokeAs`/`MustInvokeAs`/`InvokeStruct` godoc and the invocation docs, plus an upgrading-page entry (flagged); verify the docs lint and build pass
+- [x] 44.1 RED: add `TestInvokeAs_Deterministic` (6 rows), `TestInvokeAs_DeterministicStable`, `TestInvokeAs_SingleAndMissing` (2 rows) and `TestInvokeStruct_ImplicitAliasingDeterministic` to `invoke_test.go`; verify `go test -race -count=10 -run 'TestInvokeAs_Deterministic|TestInvokeStruct_ImplicitAliasingDeterministic' .` fails on the multi-match rows (random pick); record that SingleAndMissing passes on arrival
+- [x] 44.2 GREEN: select the minimum `(distance, regIndex, name)` candidate in `invokeByGenericType` and in the `invokeByTags` fallback (design S5), removing the two nondeterminism TODOs; verify the 44.1 command passes with `-count=10`, the existing `TestInvokeAs`/`TestInvokeByGenericType*`/`TestInvokeAs_HookReceivesTypeName` pass unchanged, and `make test` is green
+- [x] 44.3 REFACTOR: *Extract Function* `selectByType(injector, target reflect.Type) (candidate, bool)` shared by both call sites; verify `make test` and `make lint` pass
+- [x] 44.4 Document the selection rule in the `InvokeAs`/`MustInvokeAs`/`InvokeStruct` godoc and the invocation docs, plus an upgrading-page entry (flagged); verify the docs lint and build pass
 
 ## 45. Collection struct injection (collection-struct-injection; design S3)
 
