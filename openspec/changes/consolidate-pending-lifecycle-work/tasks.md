@@ -453,9 +453,9 @@ Rules:
 
 ## 68. Bookkeeping skips services that left their scope (container-start; design V21)
 
-- [ ] 68.1 RED: extend `TestScopeShutdown_WaitBounded` with the bookkeeping assertion; verify `go test -race -run TestScopeShutdown_WaitBounded .` fails because the shut-down wrapper is in `started`
-- [ ] 68.2 GREEN: mark started and handled only while the candidate's scope still holds its wrapper; verify the 68.1 command passes and `make test` is green
-- [ ] 68.3 REFACTOR: *Extract Function* `stillRegistered(candidate)`; verify `make test` and `make lint` pass
+- [x] 68.1 RED: extend `TestScopeShutdown_WaitBounded` with the bookkeeping assertion; verify `go test -race -run TestScopeShutdown_WaitBounded .` fails because the shut-down wrapper is in `started`
+- [x] 68.2 GREEN: mark started and handled only while the candidate's scope still holds its wrapper; verify the 68.1 command passes and `make test` is green
+- [x] 68.3 REFACTOR: *Extract Function* `stillRegistered(candidate)`; verify `make test` and `make lint` pass
 
 ## 69. A scope's shutdown covers its descendants (container-start; design V22)
 

@@ -613,9 +613,22 @@ func (s *RootScope) startCandidate(startCtx context.Context, candidate *startCan
 		err = newStartError(StartOpStart, candidate.scope, candidate.name, "", err)
 		return withAbortCause(startCtx, err)
 	}
-	s.markStarted(candidate.service)
+	// a service shut down meanwhile (a bounded scope shutdown gave up
+	// waiting) stays out of the bookkeeping
+	if stillRegistered(candidate) {
+		s.markStarted(candidate.service)
+	}
 
 	return nil
+}
+
+// stillRegistered reports whether the candidate's scope still holds its
+// wrapper.
+func stillRegistered(candidate *startCandidate) bool {
+	candidate.scope.mu.RLock()
+	defer candidate.scope.mu.RUnlock()
+
+	return candidate.scope.services[candidate.name] == candidate.service
 }
 
 // startInstance calls the Start method of the instance's Starter variant.
@@ -719,7 +732,9 @@ func (s *RootScope) runStage(startCtx context.Context, stage Stage, candidates [
 				err = newStartError(StartOpHandle, component.scope, component.name, entry.id.name, err)
 				return withAbortCause(startCtx, err)
 			}
-			s.markHandled(component.service, entry.id)
+			if stillRegistered(component) {
+				s.markHandled(component.service, entry.id)
+			}
 		}
 	}
 

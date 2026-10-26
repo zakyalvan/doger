@@ -311,6 +311,7 @@ func TestScopeShutdown_WaitBounded(t *testing.T) {
 		runErr := make(chan error, 1)
 		go func() { runErr <- root.Refresh() }()
 		<-w.entered
+		wrapper := wrapperOf(t, tenant, "w")
 		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 		defer cancel()
 		begin := time.Now()
@@ -322,6 +323,8 @@ func TestScopeShutdown_WaitBounded(t *testing.T) {
 		is.ErrorIs(report.Errors[newServiceDescription(tenant.ID(), tenant.Name(), "")], context.DeadlineExceeded)
 		close(w.release)
 		is.NoError(<-runErr)
+		started, _ := tracked(root, wrapper)
+		is.False(started, "shut-down w re-added to started")
 	})
 }
 
