@@ -424,7 +424,7 @@ Rules:
 
 ## 63. One veto loop and one observer loop for container and scope hooks (design V16)
 
-- [ ] 63.1 REFACTOR: *Extract Function* a generic veto loop taking the panic-wrapping function and use it from `runStartingHooks` and `runScopeStartingHooks`; verify `make test` (messages unchanged) and `make lint` pass
+- [x] 63.1 REFACTOR: *Extract Function* a generic veto loop taking the panic-wrapping function and use it from `runStartingHooks` and `runScopeStartingHooks`; verify `make test` (messages unchanged) and `make lint` pass
 - [ ] 63.2 REFACTOR: *Extract Function* a generic observer loop and use it from `runObserverHooks` and `runScopeObserverHooks`; verify `make test` and `make lint` pass
 
 ## 64. Integration checks after the verification fixes

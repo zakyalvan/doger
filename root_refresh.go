@@ -3,7 +3,6 @@ package doger
 import (
 	"context"
 	"fmt"
-	"slices"
 )
 
 // Refresh starts what is not started yet, with context.Background(); see
@@ -65,18 +64,8 @@ func (s *RootScope) startIncremental(ctx context.Context, root *Scope) (err erro
 // The first error or panic is a veto: the remaining hooks do not run and
 // Scope.Start fails with it.
 func (s *RootScope) runScopeStartingHooks(ctx context.Context, scope *Scope) error {
-	for _, hook := range slices.Clone(s.opts.HookScopeStarting) {
-		if hook == nil {
-			continue
-		}
-
-		var err error
-		if recovered, panicked := callHookSafely(func() { err = hook(ctx, scope) }); panicked {
-			err = recoverAsError(recovered)
-		}
-		if err != nil {
-			return fmt.Errorf("DI: scope `%s` start aborted: %w", scope.Name(), err)
-		}
+	if err := runVetoHooks(ctx, s.opts.HookScopeStarting, scope, recoverAsError); err != nil {
+		return fmt.Errorf("DI: scope `%s` start aborted: %w", scope.Name(), err)
 	}
 
 	return nil

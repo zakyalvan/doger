@@ -308,17 +308,28 @@ func (s *RootScope) runPipeline(ctx context.Context, roots []*Scope) error {
 // error or panic is a veto: the remaining hooks do not run and Start fails
 // with it.
 func (s *RootScope) runStartingHooks(startCtx context.Context) error {
-	for _, hook := range slices.Clone(s.opts.HookContainerStarting) {
+	if err := runVetoHooks(startCtx, s.opts.HookContainerStarting, s, startingHookPanicError); err != nil {
+		return fmt.Errorf("DI: container start aborted: %w", err)
+	}
+
+	return nil
+}
+
+// runVetoHooks calls each non-nil hook with arg, in order. The first error,
+// or a panic turned into an error by panicError, stops the loop and is
+// returned.
+func runVetoHooks[T any](ctx context.Context, hooks []func(context.Context, T) error, arg T, panicError func(recovered any) error) error {
+	for _, hook := range slices.Clone(hooks) {
 		if hook == nil {
 			continue
 		}
 
 		var err error
-		if recovered, panicked := callHookSafely(func() { err = hook(startCtx, s) }); panicked {
-			err = startingHookPanicError(recovered)
+		if recovered, panicked := callHookSafely(func() { err = hook(ctx, arg) }); panicked {
+			err = panicError(recovered)
 		}
 		if err != nil {
-			return fmt.Errorf("DI: container start aborted: %w", err)
+			return err
 		}
 	}
 
