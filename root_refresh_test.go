@@ -94,3 +94,53 @@ func TestRootScope_ForgetsShutDownServices(t *testing.T) {
 		})
 	}
 }
+
+func TestIncrementalStart_DuringStart(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		call func(root *RootScope, tenant *Scope) error
+	}{
+		{
+			name: "root.Refresh() synchronously",
+			call: func(root *RootScope, _ *Scope) error { return root.Refresh() },
+		},
+		{
+			name: "tenant.Start() synchronously",
+			call: func(_ *RootScope, tenant *Scope) error { return tenant.Start() },
+		},
+		{
+			name: "root.Refresh() in another goroutine, awaited",
+			call: func(root *RootScope, _ *Scope) error {
+				result := make(chan error, 1)
+				go func() { result <- root.Refresh() }()
+				return <-result
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+			is := assert.New(t)
+
+			root := New()
+			tenant := root.Scope("tenant")
+			starts := &countingStarters{}
+			provideCountedStarter(tenant, starts, "w")
+			var recorded error
+			ProvideNamedValue(root, "a", &ctxStarter{fn: func(context.Context) error {
+				recorded = tt.call(root, tenant)
+				return nil
+			}})
+
+			err := root.Start()
+
+			is.NoError(err)
+			is.ErrorIs(recorded, ErrNotStarted)
+			is.Equal(1, starts.count("w"))
+		})
+	}
+}

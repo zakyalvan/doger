@@ -360,9 +360,9 @@ Rules:
 
 ## 52. Incremental start fails fast while Start runs (container-start; design V3)
 
-- [ ] 52.1 RED: add `TestIncrementalStart_DuringStart` (3 rows) to `root_refresh_test.go`; verify `go test -race -run TestIncrementalStart_DuringStart .` fails: the synchronous rows time out and the goroutine row gets nil instead of `ErrNotStarted`
-- [ ] 52.2 GREEN: check the phase under `lifecycleMu` before `pipelineMu` in `startIncremental`, keeping the re-check in `beginIncremental`; verify the 52.1 command passes, `TestIncrementalStart_Phase` and the Refresh suites pass unchanged, and `make test` is green
-- [ ] 52.3 REFACTOR: *Extract Function* `checkIncrementalPhase()` shared by the pre-check and `beginIncremental`; update the `Refresh`/`Scope.Start` godoc and the starter page; verify `make test`, `make lint` and the docs lint and build pass
+- [x] 52.1 RED: add `TestIncrementalStart_DuringStart` (3 rows) to `root_refresh_test.go`; verify `go test -race -run TestIncrementalStart_DuringStart .` fails: the synchronous rows time out and the goroutine row gets nil instead of `ErrNotStarted`
+- [x] 52.2 GREEN: check the phase under `lifecycleMu` before `pipelineMu` in `startIncremental`, keeping the re-check in `beginIncremental`; verify the 52.1 command passes, `TestIncrementalStart_Phase` and the Refresh suites pass unchanged, and `make test` is green
+- [x] 52.3 REFACTOR: *Extract Function* `checkIncrementalPhase()` shared by the pre-check and `beginIncremental`; update the `Refresh`/`Scope.Start` godoc and the starter page; verify `make test`, `make lint` and the docs lint and build pass
 
 ## 53. Child scope shutdown waits for a start that is starting it (container-start; design V4)
 

@@ -21,8 +21,9 @@ func (s *RootScope) Refresh() error {
 // hook.
 //
 // It returns an error matching [ErrNotStarted] until the first Start
-// succeeded, and one matching [ErrStartAfterShutdown] once root Shutdown
-// began, which takes precedence; it starts nothing then. Concurrent Refresh
+// succeeded, at once and without waiting while that Start is still running,
+// and one matching [ErrStartAfterShutdown] once root Shutdown began, which
+// takes precedence; it starts nothing then. Concurrent Refresh
 // and [Scope.Start] calls run one at a time. Never call Refresh
 // synchronously from code that runs during a Refresh or Scope.Start: it
 // waits for itself.
@@ -37,6 +38,11 @@ func (s *RootScope) RefreshWithContext(ctx context.Context) error {
 // startIncremental runs the pipeline over the subtree of root. For a child
 // scope, the scope Starting hooks run first and can veto it.
 func (s *RootScope) startIncremental(ctx context.Context, root *Scope) (err error) {
+	// fail fast instead of waiting for a running Start on pipelineMu
+	if err := s.incrementalPhaseError(); err != nil {
+		return err
+	}
+
 	s.pipelineMu.Lock()
 	defer s.pipelineMu.Unlock()
 
@@ -76,17 +82,37 @@ func (s *RootScope) runScopeStartingHooks(ctx context.Context, scope *Scope) err
 	return nil
 }
 
+// incrementalPhaseError returns why the container may not start
+// incrementally now, or nil.
+func (s *RootScope) incrementalPhaseError() error {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+
+	return s.checkIncrementalPhase()
+}
+
+// checkIncrementalPhase returns why the container may not start
+// incrementally, or nil. lifecycleMu must be held.
+func (s *RootScope) checkIncrementalPhase() error {
+	if s.closePhase != closeOpen {
+		return fmt.Errorf("DI: cannot start: %w", ErrStartAfterShutdown)
+	}
+	if s.startPhase != startStarted && s.startPhase != startReady {
+		return ErrNotStarted
+	}
+
+	return nil
+}
+
 // beginIncremental checks that the container may start incrementally and
 // returns the context of the run, derived from ctx.
 func (s *RootScope) beginIncremental(ctx context.Context) (context.Context, error) {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
 
-	if s.closePhase != closeOpen {
-		return nil, fmt.Errorf("DI: cannot start: %w", ErrStartAfterShutdown)
-	}
-	if s.startPhase != startStarted && s.startPhase != startReady {
-		return nil, ErrNotStarted
+	// re-checked: Shutdown may have begun while waiting for pipelineMu
+	if err := s.checkIncrementalPhase(); err != nil {
+		return nil, err
 	}
 
 	incCtx, incCancel := context.WithCancelCause(ctx)
@@ -146,7 +172,8 @@ func (s *Scope) Start() error {
 // as needed but not started by it. On the root's own scope it is Refresh.
 //
 // It follows the rules of Refresh: [ErrNotStarted] before the container's
-// first successful Start, [ErrStartAfterShutdown] once root Shutdown began,
+// first successful Start, without waiting for a running Start,
+// [ErrStartAfterShutdown] once root Shutdown began,
 // calls serialized with Refresh, and never call it synchronously from code
 // running during a Refresh or Scope.Start.
 func (s *Scope) StartWithContext(ctx context.Context) error {

@@ -170,7 +170,7 @@ If Shutdown's own context ends first (for example a 10-second deadline), its rep
 
 :::danger Do not call Shutdown from Start-time code
 
-A starter, kind handler, runner, provider or hook that runs during `Start` must not call `root.Shutdown()` synchronously: Shutdown waits for `Start`, which waits for that code. Return an error instead; `Start` stops and the caller shuts down. Calling `Start` from such code returns `ErrAlreadyStarted` immediately.
+A starter, kind handler, runner, provider or hook that runs during `Start` must not call `root.Shutdown()` synchronously: Shutdown waits for `Start`, which waits for that code. Return an error instead; `Start` stops and the caller shuts down. Calling `Start` from such code returns `ErrAlreadyStarted` immediately, and calling `Refresh` or `scope.Start` returns `ErrNotStarted` immediately.
 
 :::
 
@@ -201,7 +201,7 @@ err := root.Refresh() // starts both workers
 
 - Each service starts **at most once** per container: a second `Refresh` starts nothing again, and services started by `Start` are never restarted. An `Override` registered after `Start` is a new service, so `Refresh` starts it.
 - `Refresh` fires no [container hook](./container-hooks.md).
-- Before the first successful `Start`, it returns an error matching `doger.ErrNotStarted`. Once root `Shutdown` began, it returns an error matching `doger.ErrStartAfterShutdown`, which takes precedence. It starts nothing in either case.
+- Before the first successful `Start`, it returns an error matching `doger.ErrNotStarted`, at once, even while that `Start` is still running. Once root `Shutdown` began, it returns an error matching `doger.ErrStartAfterShutdown`, which takes precedence. It starts nothing in either case.
 - Concurrent `Refresh` calls run one at a time. Never call `Refresh` synchronously from code that runs during a `Refresh` (a Starter, a kind handler, a provider or a hook): it would wait for itself.
 
 ### Starting one scope {#scope-start}
