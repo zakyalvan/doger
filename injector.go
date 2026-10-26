@@ -273,6 +273,14 @@ type InjectorOpts struct {
 	// Default: no timeout (individual health checks can run indefinitely).
 	HealthCheckTimeout time.Duration
 
+	// HealthCheckSingleTimeout bounds the single-service HealthCheck[T],
+	// HealthCheckWithContext[T], HealthCheckNamed and
+	// HealthCheckNamedWithContext functions in place of HealthCheckTimeout:
+	// a positive value is their bound and a negative value means no bound.
+	// Checks run by HealthCheck() keep HealthCheckTimeout.
+	// Default: 0, which keeps HealthCheckTimeout for them too.
+	HealthCheckSingleTimeout time.Duration
+
 	// StructTagKey specifies the tag key used for struct field injection.
 	// Default: "do" (see DefaultStructTagKey constant).
 	// This allows customization of the struct tag format for injection.
@@ -334,6 +342,7 @@ func (o *InjectorOpts) copy() *InjectorOpts {
 		HealthCheckParallelism:   o.HealthCheckParallelism,
 		HealthCheckGlobalTimeout: o.HealthCheckGlobalTimeout,
 		HealthCheckTimeout:       o.HealthCheckTimeout,
+		HealthCheckSingleTimeout: o.HealthCheckSingleTimeout,
 		StructTagKey:             o.StructTagKey,
 		Clock:                    o.Clock,
 

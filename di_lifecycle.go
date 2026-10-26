@@ -2,6 +2,7 @@ package doger
 
 import (
 	"context"
+	"time"
 
 	"github.com/jonboulle/clockwork"
 )
@@ -278,7 +279,12 @@ func HealthCheckNamed(i Injector, name string) error {
 func HealthCheckNamedWithContext(ctx context.Context, i Injector, name string) error {
 	injector := getInjectorOrDefault(i)
 
-	ctx, cancel := perServiceHealthCheckContext(ctx, injector)
+	opts := injector.RootScope().opts
+	timeout := opts.HealthCheckSingleTimeout
+	if timeout == 0 {
+		timeout = opts.HealthCheckTimeout
+	}
+	ctx, cancel := healthCheckContextWithin(ctx, opts.Clock, timeout)
 	defer cancel()
 
 	// @TODO: should we queue the health check into the healthcheck pool ?
@@ -290,12 +296,18 @@ func HealthCheckNamedWithContext(ctx context.Context, i Injector, name string) e
 // HealthCheck() is. HealthCheckGlobalTimeout does not apply.
 func perServiceHealthCheckContext(ctx context.Context, injector Injector) (context.Context, context.CancelFunc) {
 	opts := injector.RootScope().opts
-	if opts.HealthCheckTimeout <= 0 {
+	return healthCheckContextWithin(ctx, opts.Clock, opts.HealthCheckTimeout)
+}
+
+// healthCheckContextWithin bounds ctx by timeout on clock when timeout is
+// greater than zero, and leaves it unbounded otherwise.
+func healthCheckContextWithin(ctx context.Context, clock clockwork.Clock, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout <= 0 {
 		return ctx, func() {}
 	}
 
-	ctx = withHealthCheckDeadline(ctx, opts.Clock.Now().Add(opts.HealthCheckTimeout))
-	return clockwork.WithTimeout(ctx, opts.Clock, opts.HealthCheckTimeout)
+	ctx = withHealthCheckDeadline(ctx, clock.Now().Add(timeout))
+	return clockwork.WithTimeout(ctx, clock, timeout)
 }
 
 // Shutdown stops a service, using type inference to determine the service name.
