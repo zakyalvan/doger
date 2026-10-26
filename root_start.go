@@ -476,14 +476,20 @@ func (s *RootScope) discoverCandidates(roots []*Scope) []*startCandidate {
 }
 
 // claimCandidates drops the candidates of scopes that are shutting down, or
-// whose ancestor is, and records the scopes of the others, so that a child
-// scope shutdown waits for this run (see Scope.ShutdownWithContext). closing
-// reports that every root was shutting down, or under a scope that was.
+// whose ancestor is, and those their scope no longer holds (a shutdown that
+// ran entirely after discovery), and records the scopes of the others, so
+// that a child scope shutdown waits for this run (see
+// Scope.ShutdownWithContext). closing reports that every root was shutting
+// down, or under a scope that was.
 func (s *RootScope) claimCandidates(roots []*Scope, candidates []*startCandidate) (claimed []*startCandidate, closing bool) {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
 
-	candidates = slices.DeleteFunc(candidates, func(c *startCandidate) bool { return closingInLine(c.scope) })
+	// a shutdown marks its scope closing under lifecycleMu before it removes
+	// services, so a candidate here is closing, still held, or removed
+	candidates = slices.DeleteFunc(candidates, func(c *startCandidate) bool {
+		return closingInLine(c.scope) || !stillRegistered(c)
+	})
 	s.runScopes = make(map[*Scope]struct{}, len(candidates))
 	for _, candidate := range candidates {
 		s.runScopes[candidate.scope] = struct{}{}

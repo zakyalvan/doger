@@ -203,6 +203,32 @@ func TestScopeStartedHook_SkippedWhileClosing(t *testing.T) {
 	}
 }
 
+func TestScopeStartedHook_ShutdownBeforeClaim(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+	is := assert.New(t)
+
+	var started atomic.Int32
+	root := New()
+	root.AddScopeStartedHook(func(context.Context, *Scope) { started.Add(1) })
+	require.NoError(t, root.Start())
+	tenant := root.Scope("tenant")
+	starts := &countingStarters{}
+	provideCountedStarter(tenant, starts, "w")
+	pause := pauseCollection(tenant.Scope("jobs"))
+
+	startErr := make(chan error, 1)
+	go func() { startErr <- tenant.Start() }()
+	<-pause.reached
+	tenant.Shutdown()
+	close(pause.release)
+
+	is.NoError(<-startErr)
+	is.Zero(starts.count("w"))
+	// as for a tenant.Start() called after tenant.Shutdown() returned
+	is.Equal(int32(1), started.Load(), "HookScopeStarted runs")
+}
+
 func TestScopeHooks_ClosingClosed(t *testing.T) {
 	t.Parallel()
 

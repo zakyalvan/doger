@@ -1911,3 +1911,93 @@ func TestStart_ParallelHookPanic(t *testing.T) {
 		})
 	}
 }
+
+// pausingWrapper pauses the first getServiceType call made once it is armed,
+// which start collection makes for every registered service, so a test can
+// act between a run's collection and its claim.
+type pausingWrapper struct {
+	serviceWrapperAny
+	armed   atomic.Bool
+	reached chan struct{}
+	release chan struct{}
+}
+
+func (w *pausingWrapper) getServiceType() ServiceType {
+	if w.armed.CompareAndSwap(true, false) {
+		close(w.reached)
+		<-w.release
+	}
+
+	return w.serviceWrapperAny.getServiceType()
+}
+
+// pauseCollection registers an armed pausingWrapper as "pause" in scope.
+// Collection walks scopes breadth-first, so it pauses after every scope
+// nearer to the run's root than scope.
+func pauseCollection(scope *Scope) *pausingWrapper {
+	ProvideNamedValue(scope, "pause", 0)
+	inner, _ := scope.serviceGet("pause")
+	w := &pausingWrapper{
+		serviceWrapperAny: inner.(serviceWrapperAny), //nolint:errcheck,forcetypeassert
+		reached:           make(chan struct{}),
+		release:           make(chan struct{}),
+	}
+	w.armed.Store(true)
+	scope.serviceSet("pause", w)
+
+	return w
+}
+
+func TestStart_ShutdownBetweenCollectAndClaim(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		ancestor   bool // the root registers its own lazy Starter "w"
+		scopeStart bool // the run is tenant.Start(), not root.Refresh()
+		rootStarts int
+	}{
+		{name: "Refresh", rootStarts: 0},
+		{name: "Refresh, root w", ancestor: true, rootStarts: 1},
+		{name: "Scope.Start", scopeStart: true, rootStarts: 0},
+		{name: "Scope.Start, root w", ancestor: true, scopeStart: true, rootStarts: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+			is := assert.New(t)
+
+			root := New()
+			rootStarts, tenantStarts := &countingStarters{}, &countingStarters{}
+			if tt.ancestor {
+				provideCountedStarter(root, rootStarts, "w")
+			}
+			require.NoError(t, root.Start())
+			tenant := root.Scope("tenant")
+			provideCountedStarter(tenant, tenantStarts, "w")
+
+			// collection visits "pause" after tenant's own services
+			pauseIn := root.Scope("other").Scope("deep")
+			run := root.Refresh
+			if tt.scopeStart {
+				pauseIn = tenant.Scope("jobs")
+				run = tenant.Start
+			}
+			pause := pauseCollection(pauseIn)
+
+			runErr := make(chan error, 1)
+			go func() { runErr <- run() }()
+			<-pause.reached
+			report := tenant.Shutdown()
+			close(pause.release)
+			err := <-runErr
+
+			is.True(report.Succeed)
+			is.NoError(err)
+			is.Zero(tenantStarts.count("w"))
+			is.Equal(tt.rootStarts, rootStarts.count("w"))
+		})
+	}
+}
