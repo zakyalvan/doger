@@ -434,7 +434,7 @@ func waitForBlockedPipelineLock(t *testing.T, root *RootScope) {
 	buf := make([]byte, 1<<20)
 	for {
 		stacks := string(buf[:runtime.Stack(buf, true)])
-		for _, stack := range strings.Split(stacks, "\n\n") {
+		for stack := range strings.SplitSeq(stacks, "\n\n") {
 			if strings.Contains(stack, "sync.(*Mutex).Lock") && strings.Contains(stack, frame) {
 				return
 			}

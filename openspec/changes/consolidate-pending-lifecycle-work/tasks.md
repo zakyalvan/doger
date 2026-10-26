@@ -789,3 +789,11 @@ Each test passed on arrival and fails under the named mutation (reverted), recor
 - [x] 119.2 Benchmarks: `benchstat` against `76975ed` (the head before this round) and `ed65bdc` (10 alternating runs); a parallel regression found here was bisected and fixed in 116.5
 - [x] 119.3 Stress: the lifecycle and collection tests, with this round's new tests, at `-race -count=500` in four processes, and `TestContainerHooks_ShutdownCauseRace` alone at `-count=10`; a flake of this round's `TestPhase_RaceFree` (3 of 500) was fixed and its process re-run
 - [x] 119.4 Delete `FINDINGS.md`, the handover brief of this round
+
+## 120. Suggestions from the sixth verification (design V69)
+
+- [x] 120.1 `TestRefresh_QueuedBehindShutdown` waits, through the goroutine stacks, until the second Refresh of this container is blocked on `pipelineMu` instead of sleeping (synctest cannot see a mutex wait); verify 20 runs pass and the 117.1 mutation still times out
+- [x] 120.2 `TestCollection_ReaderExcludedByName` reads with nil inside the child provider too, and the scenario's When matches; verify the 106.1 mutation still fails the own-injector row
+- [x] 120.3 `TestScopeStartedHook_PanicDefault` builds "svc" and asserts it is not shut down; mutation: a Started hook panic shutting the scope down
+- [x] 120.4 Scenarios for the tests without one: "A stored provider injector still skips its service", "The alias skip compares names", "WithOrder on Clone and Override"
+- [x] 120.5 Test Strategy: `TestAbortOutcome`'s file, the "Single-service bound" row, the row names of 120.2 and 120.4; verify `openspec validate --strict` passes

@@ -101,13 +101,31 @@ Then "decor" wraps "base"
 And ExplainNamedService(root, "decor") lists exactly the dependency base
 ```
 
+#### Scenario: A stored provider injector still skips its service
+```gherkin
+Given a root scope with lazy "decor" implementing "Greeter", whose provider stores its injector and returns
+And lazy "base" implementing "Greeter", registered after "decor"
+And the consumer invoked "decor"
+When the consumer calls InvokeAs[Greeter] with the stored injector
+Then the result is "base"
+```
+
+#### Scenario: The alias skip compares names
+```gherkin
+Given a root scope with lazy "svc" implementing "Greeter" and alias "g" of "svc" registered with AsNamed
+And child scope "child" with lazy "svc" implementing "Greeter", whose provider calls InvokeAs[Greeter](i)
+When the consumer invokes "svc" from "child"
+Then the error matches ErrServiceNotMatch, not ErrCircularDependency, because "g" targets the name "svc" of the invoking service
+```
+
 <!-- cases: 1 default: the first row -->
 <!-- cases: N/A 2 overrides: InvokeNamed selects a specific service, including the provider's own -->
 <!-- cases: 3 zero values: no other match gives ErrServiceNotMatch -->
 <!-- cases: 4 boundaries: zero and one other match -->
 <!-- cases: 5 errors: ErrServiceNotMatch instead of ErrCircularDependency -->
-<!-- cases: 6 duplicates: registration order no longer matters for self-selection; aliases of the invoking service, direct or chained, are skipped too -->
-<!-- cases: N/A 7 lifecycle, 8 concurrency, 9 panics: unchanged -->
+<!-- cases: 6 duplicates: registration order no longer matters for self-selection; aliases of the invoking service, direct or chained, are skipped too, by target name, even when the target name resolves to a shadowed ancestor service -->
+<!-- cases: 7 lifecycle: a provider's injector stored and used after the provider returned still skips its service -->
+<!-- cases: N/A 8 concurrency, 9 panics: unchanged -->
 <!-- cases: 10 compatibility: BEHAVIOR CHANGE (flagged) - a decorator calling InvokeAs for its own interface no longer fails with ErrCircularDependency; a lone self-match fails with ErrServiceNotMatch. BEHAVIOR CHANGE (flagged) - an alias of the invoking service is skipped too -->
 
 ### Requirement: Implicit-aliasing struct injection uses the same selection

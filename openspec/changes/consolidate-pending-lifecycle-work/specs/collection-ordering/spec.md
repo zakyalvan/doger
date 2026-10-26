@@ -108,7 +108,7 @@ Examples:
 <!-- cases: N/A 2 overrides: WithOrder is covered by its own requirement -->
 <!-- cases: N/A 5 errors: covered by "Order() panic is reported" -->
 <!-- cases: N/A 6 duplicates: equal values are covered by the stable-sort rows -->
-<!-- cases: N/A 7 lifecycle: covered by "Ordering never affects lifecycle order" -->
+<!-- cases: 7 lifecycle: Clone copies WithOrder; an Override replaces the registration's options, with or without WithOrder (design K D5) -->
 <!-- cases: N/A 8 concurrency: Order() is called on the calling goroutine -->
 <!-- cases: N/A 10 compatibility: new API -->
 
@@ -169,6 +169,20 @@ And "a" is registered with WithOrder(1)
 When the consumer calls InvokeAll for type "EventHandler"
 Then the error is nil
 And the result has 1 element
+```
+
+#### Scenario: WithOrder on Clone and Override
+```gherkin
+Given a root scope with lazy "a" and lazy "b" implementing "EventHandler", "b" registered with <b-options>
+And the consumer <change>
+When the consumer calls InvokeAll for type "EventHandler" from <from>
+Then the result is <order>
+
+Examples:
+  | b-options    | change                                          | from      | order  |
+  | WithOrder(-1) | cloned the root                                 | the clone | [b, a] |
+  | WithOrder(-1) | called OverrideNamed for "b" without options    | the root  | [a, b] |
+  | none          | called OverrideNamed for "b" with WithOrder(-1) | the root  | [b, a] |
 ```
 
 #### Scenario: WithOrder outside collections has no effect

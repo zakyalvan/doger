@@ -412,3 +412,12 @@ Three reviewers in isolated worktrees, one per area, probed `76975ed`. Every pro
 
 The first hooks run failed 3 of 500 in `TestPhase_RaceFree`: this round's count assertion (110.7) found no observation when the goroutines saw `stop` before observing once. Each goroutine now observes before checking `stop`; 2000 runs pass, the 110.7 mutation still fails it in all 20 goroutines, and the re-run process passed. The `-count` is 500, not the 2000 of 104.2, because the earlier rounds' tests were already stressed at 2000.
 - 119.4: `FINDINGS.md` deleted.
+
+### 120. Suggestions from the sixth verification
+
+| Task | Check | Notes |
+|---|---|---|
+| 120.1 | 20 runs pass; with `error(nil)` in place of the phase re-check, the test times out (5s) | The wait matches `doger.(*RootScope).startIncremental(<root address>` together with `sync.(*Mutex).Lock` in one goroutine, so a parallel test's Refresh cannot satisfy it. |
+| 120.2 | dropping the reader seed fails the own-injector row; the nil row passes either way, as it should | |
+| 120.3 | passed on arrival; shutting the scope down after a Started hook panic fails it, "svc had Shutdown called" | |
+| 120.4, 120.5 | `openspec validate --strict` passes | |

@@ -399,6 +399,15 @@ Also documented: Started hooks may overlap Closing when a shutdown begins after 
 
 Suspected but not reproduced: a `DeclareDependency` racing an invocation edge; `InvokeAs` racing `ShutdownNamed`; a stale started or handled entry between `stillRegistered` and the record; a collection read with a reader from another container.
 
+**V69. Sixth verification.** `/opsx:verify` after V55–V68 found no CRITICAL issue, one WARNING and eight SUGGESTIONs. The WARNING was fixed by rewording: "Shutdown cancels a running Refresh" promised that Shutdown returns after Refresh returned, but the run releases Shutdown in its deferred cleanup, a moment before `RefreshWithContext` returns. The user asked to apply the suggestions:
+- `TestRefresh_QueuedBehindShutdown` no longer sleeps. It waits until the goroutine stacks show this container's `startIncremental` blocked on `pipelineMu`, matching the receiver address the trace prints, because synctest does not treat a mutex wait as durably blocked.
+- The reader-exclusion table reads with nil inside the provider too.
+- The Started-hook panic row asserts that "svc" is not shut down.
+- The tests without a scenario got one each.
+- The Test Strategy table is corrected.
+
+Two suggestions needed no change. The Part H table above already maps every container-lifecycle-hooks scenario. The suggested synctest fix for the queued Refresh cannot work, as explained above.
+
 ### Part H — Container lifecycle hooks (folded from `add-container-lifecycle-hooks`)
 
 #### H: Context
@@ -818,7 +827,7 @@ All tests run under `go test -race` with goleak (`TestMain`). Tests that could h
 | container-start | A child shutdown completes between collection and claim (4 rows) | `root_start_test.go: TestStart_ShutdownBetweenCollectAndClaim/<row>` | table (regression, V37) |
 | scope-lifecycle-hooks | A shutdown that completed before Scope.Start claimed the scope | `scope_hooks_test.go: TestScopeStartedHook_ShutdownBeforeClaim` | unit (regression, V37) |
 | container-start | Caller cancellation, then Shutdown (6 rows) | `root_start_test.go: TestStart_CallerCancelThenShutdown/<row>` | synctest (regression, V38) |
-| container-start | The abort outcome rule (6 rows) | `root_start_internal_test.go: TestAbortOutcome/<row>` | table (regression, V38) |
+| container-start | The abort outcome rule (6 rows) | `root_start_test.go: TestAbortOutcome/<row>` | table (regression, V38) |
 | container-lifecycle-hooks | A pipeline panic after Shutdown began (2 rows) | `container_hooks_test.go: TestContainerFailedHook_PipelinePanicAfterShutdown/<n>` | synctest (regression, V39) |
 | type-resolution | The invoking service is not a candidate (alias rows) | `invoke_test.go: TestInvokeAs_SkipsInvoker/<row>`, `TestInvokeStruct_FallbackSkipsInvokerAlias` | table (regression, V40) |
 | type-resolution | Selection among several matches (alias and clone rows) | `invoke_test.go: TestInvokeAs_Deterministic/<row>` | table (V42) |
@@ -838,10 +847,11 @@ All tests run under `go test -race` with goleak (`TestMain`). Tests that could h
 | container-phase | Phase names (7 rows) | `phase_test.go: TestContainerPhase_String/<name>` | table (V45) |
 | type-resolution | MustInvokeAs from a provider | `invoke_test.go: TestMustInvokeAs_FromProvider` | unit (V45) |
 | type-resolution | A stored provider injector still skips its service | `invoke_test.go: TestInvokeAs_StoredInjectorSkipsHolder` | unit (V44) |
-| live-collections | The reader is excluded by name (2 rows) | `collection_test.go: TestCollection_ReaderExcludedByName` | unit (V56) |
+| live-collections | The reader is excluded by name (2 rows) | `collection_test.go: TestCollection_ReaderExcludedByName/<reader>` | table (V56) |
 | live-collections | A read with nil records no edge (nil, a plain injector) | `collection_test.go: TestCollection_ReadWithNilRecordsNoEdge/<reader>` | table (V60) |
 | collection-ordering | WithOrder on Clone and Override (3 rows) | `invoke_all_order_test.go: TestInvokeAll_WithOrderCloneAndOverride/<row>` | table (V60) |
-| type-resolution | The alias skip is by name | `invoke_test.go: TestInvokeAs_SkipsAliasOfShadowedName` | unit, characterization (V60) |
+| type-resolution | The alias skip compares names | `invoke_test.go: TestInvokeAs_SkipsAliasOfShadowedName` | unit, characterization (V60) |
+| health-check-timeouts | Single-service bound (8 rows) | `healthcheck_timeout_test.go: TestHealthCheckSingleTimeout/<row>` | synctest (V52) |
 | type-resolution | Using an alias registered with nil (2 rows) | `di_test.go: TestAsNamed_NilInjector/<row>` | table (regression, V62) |
 | collection-invocation | A same-name service in another scope is not a cycle (3 rows) | `invoke_test.go: TestCircularDependency_SameNameInAnotherScope/<row>` | table (regression, V63) |
 | dependency-declaration | Explaining a graph with a cycle (2 rows) | `di_explain_test.go: TestExplainNamedService_GraphCycle/<row>` | table (regression, V64) |
