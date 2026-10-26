@@ -262,9 +262,11 @@ func HealthCheckNamed(i Injector, name string) error {
 //
 // Returns an error if the health check fails, or nil if the service is healthy.
 //
-// When InjectorOpts.HealthCheckTimeout is greater than zero, the check is
-// bounded by it, on the injector's clock, as each check of HealthCheck() is;
-// HealthCheckGlobalTimeout does not apply. HealthCheck, HealthCheckWithContext
+// The check is bounded, on the injector's clock, by
+// InjectorOpts.HealthCheckSingleTimeout when it is set (a negative value
+// means no bound), and otherwise by HealthCheckTimeout when it is greater
+// than zero, as each check of HealthCheck() is; HealthCheckGlobalTimeout
+// does not apply. HealthCheck, HealthCheckWithContext
 // and HealthCheckNamed go through this function and follow the same rule.
 //
 // Example:
@@ -280,11 +282,7 @@ func HealthCheckNamedWithContext(ctx context.Context, i Injector, name string) e
 	injector := getInjectorOrDefault(i)
 
 	opts := injector.RootScope().opts
-	timeout := opts.HealthCheckSingleTimeout
-	if timeout == 0 {
-		timeout = opts.HealthCheckTimeout
-	}
-	ctx, cancel := healthCheckContextWithin(ctx, opts.Clock, timeout)
+	ctx, cancel := healthCheckContextWithin(ctx, opts.Clock, opts.singleHealthCheckTimeout())
 	defer cancel()
 
 	// @TODO: should we queue the health check into the healthcheck pool ?
@@ -297,6 +295,17 @@ func HealthCheckNamedWithContext(ctx context.Context, i Injector, name string) e
 func perServiceHealthCheckContext(ctx context.Context, injector Injector) (context.Context, context.CancelFunc) {
 	opts := injector.RootScope().opts
 	return healthCheckContextWithin(ctx, opts.Clock, opts.HealthCheckTimeout)
+}
+
+// singleHealthCheckTimeout returns the bound of a single-service health
+// check: HealthCheckSingleTimeout, or HealthCheckTimeout when it is 0. A
+// value of 0 or less means no bound.
+func (o *InjectorOpts) singleHealthCheckTimeout() time.Duration {
+	if o.HealthCheckSingleTimeout != 0 {
+		return o.HealthCheckSingleTimeout
+	}
+
+	return o.HealthCheckTimeout
 }
 
 // healthCheckContextWithin bounds ctx by timeout on clock when timeout is
