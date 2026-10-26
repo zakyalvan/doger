@@ -389,9 +389,9 @@ Rules:
 
 ## 57. Build hooks run outside the wrapper lock (service-build-hooks; design V10)
 
-- [ ] 57.1 RED: add `TestAfterBuildHook_ReentersService` (3 rows) to `build_hooks_test.go`; verify `go test -race -run TestAfterBuildHook_ReentersService .` fails by timing out on the lazy rows
-- [ ] 57.2 GREEN: fire `HookAfterBuild` after the lazy wrapper releases `s.mu` and after the eager wrapper releases its dependency lock; verify the 57.1 command passes, `TestAfterBuildHook_*` pass unchanged, and `make test` is green
-- [ ] 57.3 REFACTOR: *Extract Function* if the lazy `getInstance` gains a second unlock path; update the `HookAfterBuild` godoc; verify `make test` and `make lint` pass
+- [x] 57.1 RED: add `TestAfterBuildHook_ReentersService` (3 rows) to `build_hooks_test.go`; verify `go test -race -run TestAfterBuildHook_ReentersService .` fails by timing out on the lazy rows
+- [x] 57.2 GREEN: fire `HookAfterBuild` after the lazy wrapper releases `s.mu` and after the eager wrapper releases its dependency lock; verify the 57.1 command passes, `TestAfterBuildHook_*` pass unchanged, and `make test` is green
+- [x] 57.3 REFACTOR: *Extract Function* if the lazy `getInstance` gains a second unlock path; update the `HookAfterBuild` godoc; verify `make test` and `make lint` pass
 
 ## 58. DependencySource decodes from text (dependency-declaration; design V11)
 

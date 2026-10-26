@@ -87,17 +87,33 @@ func (s *serviceLazy[T]) getInstance(i Injector) (T, error) {
 		}
 	}
 
+	instance, built, err := s.instanceOrBuild(i)
+	if err != nil {
+		return empty[T](), err
+	}
+
+	// outside s.mu, so the hook may use this service
+	if built {
+		onAfterBuild(i, s.name, instance)
+	}
+
+	return instance, nil
+}
+
+// instanceOrBuild returns the instance, building it first if needed, and
+// whether this call built it.
+func (s *serviceLazy[T]) instanceOrBuild(i Injector) (instance T, built bool, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if !s.built {
-		err := s.build(i)
-		if err != nil {
-			return empty[T](), err
+		if err := s.build(i); err != nil {
+			return empty[T](), false, err
 		}
+		built = true
 	}
 
-	return s.instance, nil
+	return s.instance, built, nil
 }
 
 func (s *serviceLazy[T]) build(i Injector) (err error) {
@@ -116,8 +132,6 @@ func (s *serviceLazy[T]) build(i Injector) (err error) {
 	s.instance = instance
 	s.built = true
 	s.buildTime = clock.Since(start)
-
-	onAfterBuild(i, s.name, instance)
 
 	return nil
 }

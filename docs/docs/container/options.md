@@ -118,7 +118,7 @@ With a fake clock, a context the container creates for a health check blocks on 
 
 ### Build hook {#build-hook}
 
-`HookAfterBuild` receives each instance the container builds, with its scope and service name: after every successful provider call (each transient instance included) and after an eager value's first successful invocation. It runs between the before- and after-invocation hooks. It does not run for a failed build, a cached lazy instance or an alias (the alias's target reports its own build). A panicking hook propagates to the caller.
+`HookAfterBuild` receives each instance the container builds, with its scope and service name: after every successful provider call (each transient instance included) and after an eager value's first successful invocation. It runs between the before- and after-invocation hooks. It does not run for a failed build, a cached lazy instance or an alias (the alias's target reports its own build). A panicking hook propagates to the caller. The hook runs after the service released its lock, so it may invoke, health-check or explain the service it receives; another goroutine may already be using the instance while the hook runs.
 
 ```go
 injector.AddAfterBuildHook(func(scope *doger.Scope, serviceName string, instance any) {

@@ -235,3 +235,84 @@ func TestAfterBuildHook_Panic(t *testing.T) {
 
 	assert.PanicsWithValue(t, "hook-boom", func() { _, _ = InvokeNamed[*buildDB](root, "db") })
 }
+
+// buildHC is a health checker built by a lazy provider.
+type buildHC struct{}
+
+func (*buildHC) HealthCheck() error { return nil }
+
+func TestAfterBuildHook_ReentersService(t *testing.T) {
+	t.Parallel()
+
+	reenter := map[string]func(scope *Scope, name string) error{
+		"HealthCheckNamed": func(scope *Scope, name string) error { return HealthCheckNamed(scope, name) },
+		"InvokeNamed": func(scope *Scope, name string) error {
+			_, err := InvokeNamed[any](scope, name)
+			return err
+		},
+	}
+
+	tests := []struct {
+		name    string
+		service string
+		call    string
+		setup   func(root *RootScope)
+		invoke  func(root *RootScope) (any, error)
+	}{
+		{
+			name:    "lazy health checker, HealthCheckNamed",
+			service: "hc",
+			call:    "HealthCheckNamed",
+			setup: func(root *RootScope) {
+				ProvideNamed(root, "hc", func(Injector) (*buildHC, error) { return &buildHC{}, nil })
+			},
+			invoke: func(root *RootScope) (any, error) { return InvokeNamed[*buildHC](root, "hc") },
+		},
+		{
+			name:    "lazy, InvokeNamed",
+			service: "db",
+			call:    "InvokeNamed",
+			setup: func(root *RootScope) {
+				ProvideNamed(root, "db", func(Injector) (*buildDB, error) { return &buildDB{}, nil })
+			},
+			invoke: func(root *RootScope) (any, error) { return InvokeNamed[*buildDB](root, "db") },
+		},
+		{
+			name:    "eager value with DependsOn, InvokeNamed",
+			service: "cfg",
+			call:    "InvokeNamed",
+			setup: func(root *RootScope) {
+				ProvideNamed(root, "db", func(Injector) (*buildDB, error) { return &buildDB{}, nil })
+				ProvideNamedValue(root, "cfg", &buildCfg{}, DependsOnNamed("db"))
+			},
+			invoke: func(root *RootScope) (any, error) { return InvokeNamed[*buildCfg](root, "cfg") },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+			is := assert.New(t)
+
+			var mu sync.Mutex
+			recorded := map[string]error{}
+			root := NewWithOpts(&InjectorOpts{HookAfterBuild: []func(*Scope, string, any){func(scope *Scope, name string, _ any) {
+				err := reenter[tt.call](scope, name)
+				mu.Lock()
+				defer mu.Unlock()
+				recorded[name] = err
+			}}})
+			tt.setup(root)
+
+			instance, err := tt.invoke(root)
+
+			is.NoError(err)
+			is.NotNil(instance)
+			mu.Lock()
+			defer mu.Unlock()
+			is.Contains(recorded, tt.service)
+			is.NoError(recorded[tt.service])
+		})
+	}
+}

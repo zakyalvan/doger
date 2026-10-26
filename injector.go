@@ -127,7 +127,10 @@ type InjectorOpts struct {
 	// included) and after an eager value's first successful invocation. It
 	// is not called for a failed build, a cached lazy instance or an alias,
 	// and runs between the before- and after-invocation hooks. A panic
-	// propagates to the caller, as for the other per-service hooks.
+	// propagates to the caller, as for the other per-service hooks. It runs
+	// after the service released its lock, so it may invoke, health-check or
+	// explain that service; another goroutine may obtain the instance before
+	// the hook returned.
 	HookAfterBuild []func(scope *Scope, serviceName string, instance any)
 
 	// HookBeforeShutdown is called before a service is shut down.

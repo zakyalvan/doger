@@ -83,25 +83,37 @@ func (s *serviceEager[T]) getInstance(i Injector) (T, error) {
 		s.invokationFramesMu.Unlock()
 	}
 
-	if s.opts != nil && len(s.opts.dependsOn) > 0 {
-		s.depsMu.Lock()
-		defer s.depsMu.Unlock()
-
-		// set only on success, so a failed resolution is retried on the next invocation
-		if !s.depsResolved {
-			if err := resolveDeclaredDependencies(i, s.opts); err != nil {
-				return empty[T](), err
-			}
-			s.depsResolved = true
-		}
+	if err := s.resolveDependsOn(i); err != nil {
+		return empty[T](), err
 	}
 
-	// the first successful invocation counts as the build of an eager value
+	// the first successful invocation counts as the build of an eager value;
+	// the hook runs outside depsMu, so it may use this service
 	if s.built.CompareAndSwap(false, true) {
 		onAfterBuild(i, s.name, s.instance)
 	}
 
 	return s.instance, nil
+}
+
+// resolveDependsOn builds the declared dependencies once. The flag is set
+// only on success, so a failed resolution is retried on the next invocation.
+func (s *serviceEager[T]) resolveDependsOn(i Injector) error {
+	if s.opts == nil || len(s.opts.dependsOn) == 0 {
+		return nil
+	}
+
+	s.depsMu.Lock()
+	defer s.depsMu.Unlock()
+
+	if !s.depsResolved {
+		if err := resolveDeclaredDependencies(i, s.opts); err != nil {
+			return err
+		}
+		s.depsResolved = true
+	}
+
+	return nil
 }
 
 func (s *serviceEager[T]) isHealthchecker() bool {
