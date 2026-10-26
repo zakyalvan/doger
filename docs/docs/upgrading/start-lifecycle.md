@@ -87,7 +87,7 @@ Migration: rename a service called `*`, or inject it by type.
 
 `HealthCheck[T]`, `HealthCheckWithContext[T]`, `HealthCheckNamed` and `HealthCheckNamedWithContext` are now bounded by `InjectorOpts.HealthCheckTimeout` when it is greater than zero, like each check of `injector.HealthCheck()`. They used to run unbounded. `HealthCheckGlobalTimeout` still does not apply to them.
 
-Migration: none if `HealthCheckTimeout` is `0`. Otherwise, a single-service check that runs longer than the timeout now returns an error matching `ErrHealthCheckTimeout`.
+Migration: none if `HealthCheckTimeout` is `0`. Otherwise, a single-service check that runs longer than the timeout now returns an error matching `ErrHealthCheckTimeout`. To keep single-service checks unbounded while `HealthCheckTimeout` bounds `injector.HealthCheck()`, set `HealthCheckSingleTimeout: -1`. A positive `HealthCheckSingleTimeout` gives single-service checks their own bound.
 
 ## Failed hooks run when a per-service hook panics during Start {#failed-on-hook-panic}
 
