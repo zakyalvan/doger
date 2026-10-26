@@ -148,3 +148,18 @@ func ExampleRootScope_AddScopeClosingHook() {
 	// closing tenant-a
 	// closed tenant-a
 }
+
+func ExampleRootScope_Phase() {
+	root := New()
+	fmt.Println(root.Phase())
+
+	_ = root.Start()
+	fmt.Println(root.Phase())
+
+	root.Shutdown()
+	fmt.Println(root.Phase())
+	// Output:
+	// idle
+	// ready
+	// closed
+}

@@ -40,6 +40,20 @@ stateDiagram-v2
 
 The two phases are independent: a container can shut down without ever starting, or while it is starting.
 
+`root.Phase()` reports where the container is, as a `doger.ContainerPhase`. Once root `Shutdown` began, the close phase wins:
+
+| `Phase()`       | `String()` | Meaning                                                 |
+| --------------- | ---------- | ------------------------------------------------------- |
+| `PhaseIdle`     | `idle`     | not started, not shut down                              |
+| `PhaseStarting` | `starting` | the first `Start` is running (Starting hooks, pipeline) |
+| `PhaseStarted`  | `started`  | `Start` succeeded; the Started hooks are running        |
+| `PhaseReady`    | `ready`    | the Started hooks returned; Ready hooks and later       |
+| `PhaseFailed`   | `failed`   | the first `Start` failed                                |
+| `PhaseClosing`  | `closing`  | root `Shutdown` is running (Closing hooks, services)    |
+| `PhaseClosed`   | `closed`   | root `Shutdown` completed                               |
+
+A clone starts in `PhaseIdle`. Child scopes have no phase of their own. `Phase()` is safe to call from any goroutine, including from hooks.
+
 ## Starting {#starting}
 
 `HookContainerStarting` hooks run on the goroutine that calls the first `Start`, after its one-shot guard and **before** its context check, discovery or any instantiation. They receive the Start-time context, which keeps the values of the context passed to `StartWithContext` and is cancelled by a root `Shutdown`.

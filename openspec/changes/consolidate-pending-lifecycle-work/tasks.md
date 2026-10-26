@@ -294,10 +294,10 @@ Rules:
 
 ## 43. RootScope.Phase (container-phase; design S2)
 
-- [ ] 43.1 RED: add `phase_test.go` with `TestPhase_Lifecycle` (6 rows), `TestPhase_SeenByHooks`, `TestPhase_RaceFree`, `TestContainerPhase_StringUnknown` and `TestPhase_CloneIdle`; verify `go test -race -run 'TestPhase_|TestContainerPhase_' .` fails to compile only on `ContainerPhase`, the `Phase*` constants and `RootScope.Phase`
-- [ ] 43.2 GREEN: add `ContainerPhase` with `String()` and `RootScope.Phase()` mapping both phases under `lifecycleMu` (design S2); verify the 43.1 command passes and `make test` is green
-- [ ] 43.3 REFACTOR: none needed, one mapping function; verify `make test` and `make lint` pass
-- [ ] 43.4 Add `ExampleRootScope_Phase` and the phase diagram mapping on the container-hooks page; verify the example and the docs lint and build pass
+- [x] 43.1 RED: add `phase_test.go` with `TestPhase_Lifecycle` (6 rows), `TestPhase_SeenByHooks`, `TestPhase_RaceFree`, `TestContainerPhase_StringUnknown` and `TestPhase_CloneIdle`; verify `go test -race -run 'TestPhase_|TestContainerPhase_' .` fails to compile only on `ContainerPhase`, the `Phase*` constants and `RootScope.Phase`
+- [x] 43.2 GREEN: add `ContainerPhase` with `String()` and `RootScope.Phase()` mapping both phases under `lifecycleMu` (design S2); verify the 43.1 command passes and `make test` is green
+- [x] 43.3 REFACTOR: none needed, one mapping function; verify `make test` and `make lint` pass
+- [x] 43.4 Add `ExampleRootScope_Phase` and the phase diagram mapping on the container-hooks page; verify the example and the docs lint and build pass
 
 ## 44. Deterministic InvokeAs (type-resolution; design S5)
 
