@@ -508,6 +508,84 @@ func TestInvokeAllMap_Keys(t *testing.T) {
 	}
 }
 
+func TestInvokeAllMap_MemberFailure(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+	is := assert.New(t)
+
+	root := New()
+	provideHandler(root, "console", newConsole)
+	ProvideNamed(root, "audit", func(Injector) (*AuditHandler, error) { return nil, errAuditDown })
+
+	handlers, err := InvokeAllMap[EventHandler](root)
+
+	is.Nil(handlers)
+	is.ErrorContains(err, "collection member `audit`")
+	is.ErrorIs(err, errAuditDown)
+}
+
+func TestInvokeAllMap_FromProvider(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+	is := assert.New(t)
+
+	root := New()
+	provideHandler(root, "console", newConsole)
+	provideHandler(root, "audit", newAudit)
+	var keys []string
+	ProvideNamed(root, "composite", func(i Injector) (*CompositeHandler, error) {
+		handlers, err := InvokeAllMap[EventHandler](i)
+		keys = slices.Collect(maps.Keys(handlers))
+		return &CompositeHandler{handlerBase{"composite"}}, err
+	})
+
+	_, err := InvokeNamed[*CompositeHandler](root, "composite")
+
+	require.NoError(t, err)
+	is.ElementsMatch([]string{"console", "audit"}, keys, "composite excludes itself")
+	is.Equal([]string{"audit", "console"}, explainedNames(t, root, "composite", false))
+}
+
+func TestInvokeAllMap_AliasExcluded(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	audit := newAudit("audit")
+	Provide(root, func(Injector) (*AuditHandler, error) { return audit, nil })
+	require.NoError(t, As[*AuditHandler, EventHandler](root))
+
+	handlers, err := InvokeAllMap[EventHandler](root)
+
+	require.NoError(t, err)
+	require.Len(t, handlers, 1)
+	for _, handler := range handlers {
+		assert.Same(t, audit, handler)
+	}
+}
+
+func TestInvokeAll_BuiltMembersStayBuilt(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+	is := assert.New(t)
+
+	root := New()
+	var builds atomic.Int32
+	ProvideNamed(root, "console", func(Injector) (*ConsoleHandler, error) {
+		builds.Add(1)
+		return newConsole("console"), nil
+	})
+	ProvideNamed(root, "audit", func(Injector) (*AuditHandler, error) { return nil, errAuditDown })
+
+	_, err := InvokeAll[EventHandler](root)
+	require.ErrorIs(t, err, errAuditDown)
+
+	_, err = InvokeNamed[*ConsoleHandler](root, "console")
+
+	is.NoError(err)
+	is.Equal(int32(1), builds.Load(), "console was built once, by the failed call")
+}
+
 func TestInvokeAll_CompositeExcludesSelf(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, time.Second)
@@ -688,6 +766,23 @@ func TestInvokeAll_CallerMutation(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.NotContains(t, second, nil)
+	assert.Len(t, second, 2)
+}
+
+func TestInvokeAllMap_CallerMutation(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	provideHandler(root, "console", newConsole)
+	provideHandler(root, "audit", newAudit)
+	first, err := InvokeAllMap[EventHandler](root)
+	require.NoError(t, err)
+	clear(first)
+
+	second, err := InvokeAllMap[EventHandler](root)
+
+	require.NoError(t, err)
 	assert.Len(t, second, 2)
 }
 

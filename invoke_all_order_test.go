@@ -392,6 +392,30 @@ func TestInvokeAllMap_IgnoresOrdered(t *testing.T) {
 	assert.Contains(t, handlers, "bad")
 }
 
+func TestInvokeAll_OrderDoesNotAffectConstruction(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+	is := assert.New(t)
+
+	root := New()
+	built := &callRecorder{}
+	for _, member := range []struct {
+		name  string
+		order int
+	}{{"a", 2}, {"b", 1}} {
+		ProvideNamed(root, member.name, func(Injector) (*ConsoleHandler, error) {
+			built.record(member.name)
+			return newConsole(member.name), nil
+		}, WithOrder(member.order))
+	}
+
+	handlers, err := InvokeAll[EventHandler](root)
+
+	require.NoError(t, err)
+	is.Equal([]string{"b", "a"}, handlerNames(handlers))
+	is.Equal([]string{"a", "b"}, built.list(), "built in registration order")
+}
+
 func TestInvokeAll_OrderDoesNotAffectShutdown(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, time.Second)

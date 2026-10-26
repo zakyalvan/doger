@@ -344,15 +344,32 @@ func TestCollection_ConcurrentReads(t *testing.T) {
 	c := InvokeCollection[EventHandler](root)
 
 	var wg sync.WaitGroup
+	results := make(chan []string, 50)
+	errs := make(chan error, 50)
 	for range 50 {
-		wg.Go(func() { _, _ = c.All() })
+		wg.Go(func() {
+			handlers, err := c.All()
+			results <- handlerNames(handlers)
+			errs <- err
+		})
 	}
 	for i := range 10 {
 		wg.Go(func() { provideHandler(root, fmt.Sprintf("h-%d", i), newAudit) })
 	}
 	wg.Wait()
+	close(results)
+	close(errs)
 
 	assert.Equal(t, int32(1), calls.Load())
+	for err := range errs {
+		assert.NoError(t, err)
+	}
+	for names := range results {
+		// console first, then whichever late handlers were registered already
+		require.NotEmpty(t, names)
+		assert.Equal(t, "console", names[0])
+		assert.LessOrEqual(t, len(names), 11)
+	}
 }
 
 func TestCollection_ReadDuringHolderProvider(t *testing.T) {

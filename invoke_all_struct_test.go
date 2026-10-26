@@ -100,6 +100,21 @@ func TestInvokeStruct_CollectionFields(t *testing.T) {
 	}
 }
 
+func TestInvokeStruct_CollectionOrdering(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	provideHandler(root, "a", newConsole, WithOrder(3))
+	provideHandler(root, "b", func(n string) *orderedHandler { return &orderedHandler{handlerBase: handlerBase{n}, order: 2} })
+	provideHandler(root, "c", newAudit, WithOrder(1))
+
+	value, err := InvokeStruct[structHandlers](root)
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"c", "b", "a"}, handlerNames(value.Handlers))
+}
+
 func TestInvokeStruct_CollectionCustomTag(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, time.Second)
