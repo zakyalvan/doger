@@ -97,6 +97,8 @@ Migration: none, unless a Failed hook assumed that `Start` had returned. Recover
 
 When root `Shutdown` begins during `Start`, `Refresh` or `Scope.Start`, the error they return matches `ErrStartAfterShutdown`. When the caller had already cancelled the context passed to `StartWithContext`, `RefreshWithContext` or `Scope.StartWithContext`, the error used to match only `context.Canceled`; it now matches both, and its message adds the Shutdown cause once, for example `DI: start aborted: context canceled (start aborted: DI: container is shut down)`.
 
+The `HookContainerFailed` hooks receive an error that matches `ErrStartAfterShutdown` in these cases too, including when a per-service hook panicked after `Shutdown` began; that error used to wrap only the panic value.
+
 Migration: none for code that checks `errors.Is(err, doger.ErrStartAfterShutdown)` or `errors.Is(err, context.Canceled)`. Code that compares the message must accept the added text.
 
 ## A child scope shutdown waits for a running start {#child-shutdown-waits}

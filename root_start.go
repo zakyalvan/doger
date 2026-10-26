@@ -96,7 +96,7 @@ func (s *RootScope) StartWithContext(ctx context.Context) error {
 
 	// pointAfterStart: startDone is closed, so code here may call Shutdown().
 	if panicked {
-		s.failAndRepanic(ctx, recovered)
+		s.failAndRepanic(ctx, recovered, err)
 	}
 	var first hookPanic
 	s.dispatchAfterStart(ctx, err, &first)
@@ -105,13 +105,13 @@ func (s *RootScope) StartWithContext(ctx context.Context) error {
 	return err
 }
 
-// failAndRepanic runs the Failed hooks for a panic that escaped the start
-// pipeline, then re-raises it. A Failed hook panic meanwhile goes to
+// failAndRepanic runs the Failed hooks with err for a panic that escaped the
+// start pipeline, then re-raises it. A Failed hook panic meanwhile goes to
 // HookContainerPanic when set and is logged otherwise, so that the pipeline
 // panic is the one re-raised.
-func (s *RootScope) failAndRepanic(ctx context.Context, recovered any) {
+func (s *RootScope) failAndRepanic(ctx context.Context, recovered any, err error) {
 	var first hookPanic
-	s.dispatchAfterStart(ctx, recoverAsError(recovered), &first)
+	s.dispatchAfterStart(ctx, err, &first)
 
 	switch {
 	case !first.panicked:
@@ -124,20 +124,9 @@ func (s *RootScope) failAndRepanic(ctx context.Context, recovered any) {
 	panic(recovered)
 }
 
-// runStartRecovering runs runStart, recovering a panic that escapes the
-// pipeline, such as one from a per-service hook.
+// runStartRecovering runs runStart.
 func (s *RootScope) runStartRecovering(startCtx context.Context) (recovered any, panicked bool, err error) {
-	panicked = true
-	defer func() {
-		if panicked {
-			recovered = recover()
-		}
-	}()
-
-	err = s.runStart(startCtx)
-	panicked = false
-
-	return nil, false, err
+	return s.runStart(startCtx)
 }
 
 // dispatchAfterStart fires the pointAfterStart hooks from Start's local
@@ -283,11 +272,19 @@ func (s *RootScope) beginStart(ctx context.Context) (context.Context, error) {
 	return startCtx, nil
 }
 
-// runStart runs the pipeline. Its deferred finishStart runs even when the
-// pipeline panics, so the lifecycle state is always released.
-func (s *RootScope) runStart(startCtx context.Context) (err error) {
-	panicked := true
-	defer func() { s.finishStart(startCtx, &err, panicked) }()
+// runStart runs the pipeline. A panic that escapes it, such as one from a
+// per-service hook, is recovered, and err is then the error the Failed
+// hooks receive. Its deferred finishStart runs either way, so the lifecycle
+// state is always released and the outcome carries the abort cause.
+func (s *RootScope) runStart(startCtx context.Context) (recovered any, panicked bool, err error) {
+	panicked = true
+	defer func() {
+		if panicked {
+			recovered = recover()
+			err = recoverAsError(recovered)
+		}
+		s.finishStart(startCtx, &err, panicked)
+	}()
 
 	s.pipelineMu.Lock()
 	defer s.pipelineMu.Unlock()
@@ -295,7 +292,7 @@ func (s *RootScope) runStart(startCtx context.Context) (err error) {
 	err = s.runStartPipeline(startCtx)
 	panicked = false
 
-	return err
+	return nil, false, err
 }
 
 // finishStart records the outcome of Start, ends the Start-time context and
@@ -304,7 +301,7 @@ func (s *RootScope) finishStart(startCtx context.Context, err *error, panicked b
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
 
-	if !panicked && s.closePhase != closeOpen {
+	if s.closePhase != closeOpen {
 		*err = abortOutcome(startCtx, *err)
 	}
 

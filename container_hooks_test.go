@@ -1726,3 +1726,50 @@ func TestContainerHooks_ShutdownInterruptsLateStep(t *testing.T) {
 		})
 	}
 }
+
+func TestContainerFailedHook_PipelinePanicAfterShutdown(t *testing.T) {
+	t.Parallel()
+
+	for _, n := range []uint{1, 4} {
+		t.Run(fmt.Sprintf("n=%d", n), func(t *testing.T) {
+			t.Parallel()
+
+			synctest.Test(t, func(t *testing.T) {
+				is := assert.New(t)
+
+				errBoom := errors.New("boom")
+				root := NewWithOpts(&InjectorOpts{
+					StartParallelism: n,
+					HookAfterStart: []func(*Scope, string, error){func(_ *Scope, name string, _ error) {
+						if name == "a" {
+							panic(errBoom)
+						}
+					}},
+				})
+				var failedErr error
+				root.AddContainerFailedHook(func(_ context.Context, _ *RootScope, err error) { failedErr = err })
+				entered := make(chan struct{})
+				provideLazy(root, "a", &ctxStarter{fn: func(ctx context.Context) error {
+					close(entered)
+					<-ctx.Done()
+					return nil
+				}})
+				if n > 1 {
+					provideLazy(root, "b", &ctxStarter{fn: func(context.Context) error { return nil }})
+				}
+				shutdownDone := make(chan struct{})
+				go func() {
+					defer close(shutdownDone)
+					<-entered
+					root.Shutdown()
+				}()
+
+				is.PanicsWithValue(errBoom, func() { _ = root.Start() })
+				<-shutdownDone
+
+				is.ErrorIs(failedErr, errBoom)
+				is.ErrorIs(failedErr, ErrStartAfterShutdown, "Failed error: %v", failedErr)
+			})
+		})
+	}
+}
