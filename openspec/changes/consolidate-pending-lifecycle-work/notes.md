@@ -389,3 +389,26 @@ Three reviewers in isolated worktrees, one per area, probed `76975ed`. Every pro
 | 116 | `ConcurrentShutdownsJoin` (both rows): HookScopeClosing and HookScopeClosed ran 2 times, expected 1. `JoinedWinnerPanics`: "Expected value not to be nil" (the joined call got a nil report) | `JoinBoundedByContext` passed on arrival; a wait that ignores the context makes it deadlock ("all goroutines in bubble are blocked"). A nil-report guard was first written without a test, removed as unreachable, then restored RED-first once the shutdowner page showed a custom `Logf` can panic inside the walk. |
 | 117 | test-only, passed on arrival | Mutations (reverted): `error(nil)` instead of the phase re-check: `TestRefresh_QueuedBehindShutdown` times out (5s); no check before each handler call: both rows of `TestKind_CancelBetweenComponents` fail, "no handler call after the cancel"; no abort check in the parallel scheduler: both rows of `TestStart_ParallelCancelStopsScheduling` fail, "c was scheduled after the cancel" (3 of 3 runs). |
 | 118 | docs | |
+
+### 119. Integration checks after the fifth verification and the audit
+
+- 119.1: `make test`, `make lint` (0 issues), `go vet ./... && go test -race ./...` in all 25 `go.work` modules, the docs lint and build, and `openspec validate --strict`: all pass.
+- 119.2: the first comparison against `76975ed` showed `InvokeLazyParallel` +7% and `InvokeAllParallel` +24% (p=0.000, confirmed with 20 runs), single-threaded benchmarks unchanged. A bisection over the production commits put it on `4f6ae29` (the shutdown join), whose code no benchmark runs. Moving the new field to the end of `RootScope` kept the regression, and an unused pointer field added to `76975ed` reproduced it exactly (+8%, +23%, `New` 1216 → 1248 B). So the cause is the container's allocation size class, not the new code. 116.5 keeps the struct sizes: afterwards the parallel benchmarks equal `76975ed` (p=0.72, p=0.67, 12 runs).
+
+| Final head (10 alternating runs) | against `76975ed` | against `ed65bdc` |
+|---|---|---|
+| Every benchmark, time | ~ (geomean −0.01%), except InvokeNestedScopes +1.7% (p=0.025) | InvokeAs −76.5%, InvokeAlias −12.2%, InvokeNamed −10.7%, ProviderChainTransient −8.3%, New −6.7%, InvokeLazySteadyState −4.9%, InvokeTransient −4.1%, InvokeNestedScopes −3.3%; InvokeLazyParallel, Provide, HealthCheck, Shutdown, ListProvidedServices ~; Ancestors +3.0% (p=0.050, untouched path) |
+| B/op, allocs/op | ~ | as recorded in 104.3; New 952 → 1216 B, 13 → 8 allocs |
+
+- 119.3: all pass with no data race.
+
+| Process | `-count` | Peak RSS | Time |
+|---|---|---|---|
+| start (`TestStart_*`, `TestAbortOutcome`) | 500 | 133 MB | 12 s |
+| incremental (`TestRefresh_*`, `TestScopeStart_*`, `TestScopeShutdown_*`, `TestIncrementalStart_*`, `TestKind_*`) | 500 | 130 MB | 80 s |
+| hooks (`TestContainerHooks_*` but ShutdownCauseRace, `TestContainerFailedHook_*`, `TestPhase_*`, scope hook tests), re-run | 500 | 136 MB | 12 s |
+| collections and resolution (`TestCollection_*`, `TestInvokeAll*`, `TestInvokeAs_*`, `TestMustInvokeAs_*`, `TestInvokeStruct_*`, `TestCircularDependency_*`, `TestExplainNamedService_*`, `TestAsNamed_NilInjector`) | 500 | 200 MB | 58 s |
+| `TestContainerHooks_ShutdownCauseRace` | 10 | 268 MB | 16 s |
+
+The first hooks run failed 3 of 500 in `TestPhase_RaceFree`: this round's count assertion (110.7) found no observation when the goroutines saw `stop` before observing once. Each goroutine now observes before checking `stop`; 2000 runs pass, the 110.7 mutation still fails it in all 20 goroutines, and the re-run process passed. The `-count` is 500, not the 2000 of 104.2, because the earlier rounds' tests were already stressed at 2000.
+- 119.4: `FINDINGS.md` deleted.

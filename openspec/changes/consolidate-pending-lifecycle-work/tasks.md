@@ -769,6 +769,7 @@ Each test that passes on arrival is checked with the named mutation (reverted), 
 - [x] 116.2 GREEN: `joinClose`, `finishScopeClose` and `waitForScopeClose` make a later shutdown wait for the running one and return a copy of its report; verify the 116.1 command and `TestScopeShutdown_*` pass, the auditor's probe passes 30 of 30 runs (27 of 30 failed before), and `make test` is green
 - [x] 116.3 Add `TestScopeShutdown_JoinBoundedByContext`, which deadlocks when the wait ignores its context (mutation, reverted), and, RED first, `TestScopeShutdown_JoinedWinnerPanics`, whose joined call got a nil report before `finishScopeClose` substituted a failed one
 - [x] 116.4 REFACTOR: *Extract Function* `failureReport`; godoc of `Scope.ShutdownWithContext`, container-hooks.md, shutdowner.md and the upgrading page (flagged); verify `make test`, `make lint` and the docs lint pass
+- [x] 116.5 REFACTOR (from 119.2): *Replace Field* `closing int` and the running shutdown with one `*scopeClosing`, so `Scope` and `RootScope` keep their size; verify every test passes unchanged and `benchstat` against `76975ed` shows no parallel regression
 
 ## 117. Untested checks (container-start; design V67; test-only)
 
@@ -781,3 +782,10 @@ Each test passed on arrival and fails under the named mutation (reverted), recor
 ## 118. Documentation corrections from the audit (design V67)
 
 - [x] 118.1 collection-invocation.md, starter.md (cycles, `Scope.Start` on the root's scope, escaped panics), the `StartWithContext` godoc, proposal assumption 6, the clock lists, and the overlap of Started and Closing hooks; verify the docs lint and build pass
+
+## 119. Integration checks after the fifth verification and the audit
+
+- [x] 119.1 Full run: `make test`, `make lint`, per-module `go vet ./... && go test -race ./...` in every `go.work` module, the docs lint and build, and `openspec validate consolidate-pending-lifecycle-work --strict`
+- [x] 119.2 Benchmarks: `benchstat` against `76975ed` (the head before this round) and `ed65bdc` (10 alternating runs); a parallel regression found here was bisected and fixed in 116.5
+- [x] 119.3 Stress: the lifecycle and collection tests, with this round's new tests, at `-race -count=500` in four processes, and `TestContainerHooks_ShutdownCauseRace` alone at `-count=10`; a flake of this round's `TestPhase_RaceFree` (3 of 500) was fixed and its process re-run
+- [x] 119.4 Delete `FINDINGS.md`, the handover brief of this round
