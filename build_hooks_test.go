@@ -68,7 +68,9 @@ func TestAfterBuildHook_Fires(t *testing.T) {
 			check: func(t *testing.T, records []buildRecord, instances []any) {
 				t.Helper()
 				require.Len(t, records, 1)
-				assert.Equal(t, buildRecord{scope: "[root]", name: "db", instance: instances[0]}, records[0])
+				assert.Equal(t, "[root]", records[0].scope)
+				assert.Equal(t, "db", records[0].name)
+				assert.Same(t, instances[0], records[0].instance)
 				assert.Same(t, instances[0], instances[1])
 			},
 		},
@@ -96,7 +98,9 @@ func TestAfterBuildHook_Fires(t *testing.T) {
 			check: func(t *testing.T, records []buildRecord, instances []any) {
 				t.Helper()
 				require.Len(t, records, 1)
-				assert.Equal(t, buildRecord{scope: "[root]", name: "cfg", instance: instances[0]}, records[0])
+				assert.Equal(t, "[root]", records[0].scope)
+				assert.Equal(t, "cfg", records[0].name)
+				assert.Same(t, instances[0], records[0].instance)
 			},
 		},
 		{
