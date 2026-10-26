@@ -985,12 +985,18 @@ func TestContainerHooks_ObserverContexts(t *testing.T) {
 			testWithTimeout(t, time.Second)
 
 			root := New()
-			var traces []any
-			tt.register(root, func(ctx context.Context) { traces = append(traces, ctx.Value(traceKey{})) })
+			var received []context.Context
+			tt.register(root, func(ctx context.Context) { received = append(received, ctx) })
+			callerCtx := context.WithValue(context.Background(), traceKey{}, "abc")
 
-			tt.operation(root, context.WithValue(context.Background(), traceKey{}, "abc"))
+			tt.operation(root, callerCtx)
 
-			assert.Equal(t, []any{"abc"}, traces)
+			require.Len(t, received, 1)
+			// the caller's context itself, not the operation's derived one,
+			// which Start cancels before these hooks run
+			assert.Same(t, callerCtx, received[0])
+			assert.NoError(t, received[0].Err())
+			assert.Equal(t, "abc", received[0].Value(traceKey{}))
 		})
 	}
 }
