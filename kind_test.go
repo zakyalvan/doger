@@ -791,6 +791,50 @@ func TestRunnable_RefreshRunsOnce(t *testing.T) {
 	assert.Equal(t, []string{"run migrate", "run seed"}, events.list())
 }
 
+func TestKind_CancelBetweenComponents(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		incremental bool // the components are registered after Start and handled by Refresh
+	}{
+		{name: "Start"},
+		{name: "Refresh", incremental: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+			is := assert.New(t)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			root := New()
+			k := NewKind[Job, Spec]("k")
+			var handled []string
+			k.Handle(root, StageBeforeStart, func(_ context.Context, c Component[Job, Spec]) error {
+				handled = append(handled, c.Name)
+				cancel() // the caller gives up after the first component
+				return nil
+			})
+			run := root.StartWithContext
+			if tt.incremental {
+				require.NoError(t, root.Start())
+				run = root.RefreshWithContext
+			}
+			for _, name := range []string{"j1", "j2"} {
+				ProvideNamed(root, name, func(Injector) (*CleanupJob, error) { return &CleanupJob{name: name}, nil }, k.With(Spec{}))
+			}
+
+			err := run(ctx)
+
+			is.ErrorIs(err, context.Canceled)
+			is.Equal([]string{"j1"}, handled, "no handler call after the cancel")
+		})
+	}
+}
+
 func TestKind_HandledGuard(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
