@@ -93,6 +93,12 @@ When a per-service hook (`HookBeforeStart`, `HookAfterStart`, `HookAfterBuild`) 
 
 Migration: none, unless a Failed hook assumed that `Start` had returned. Recover the panic in the per-service hook to turn it into a normal failure.
 
+## A start that Shutdown interrupts always reports it {#abort-cause}
+
+When root `Shutdown` begins during `Start`, `Refresh` or `Scope.Start`, the error they return matches `ErrStartAfterShutdown`. When the caller had already cancelled the context passed to `StartWithContext`, `RefreshWithContext` or `Scope.StartWithContext`, the error used to match only `context.Canceled`; it now matches both, and its message adds the Shutdown cause once, for example `DI: start aborted: context canceled (start aborted: DI: container is shut down)`.
+
+Migration: none for code that checks `errors.Is(err, doger.ErrStartAfterShutdown)` or `errors.Is(err, context.Canceled)`. Code that compares the message must accept the added text.
+
 ## A child scope shutdown waits for a running start {#child-shutdown-waits}
 
 `Scope.Shutdown()` and `Scope.ShutdownWithContext(ctx)` on a child scope now wait for a `Start`, `Refresh` or `Scope.Start` that is starting services of that scope before shutting it down, bounded by `ctx`. They used to run concurrently with it, so a service could start after its scope had been shut down and keep running. A run that begins while the scope shuts down now skips it.

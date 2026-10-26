@@ -64,7 +64,8 @@ func (s *RootScope) Start() error {
 // cancels the Start-time context with cause [ErrStartAfterShutdown] and waits
 // for Start to return, bounded by its own context. Start stops before its
 // next Starter or handler and returns an error matching
-// ErrStartAfterShutdown. A Starter that ignores its context and finishes
+// ErrStartAfterShutdown, and also ctx's cause when ctx was cancelled before
+// Shutdown began. A Starter that ignores its context and finishes
 // after Shutdown stopped waiting is not rolled back: honour ctx.
 //
 // Never call Shutdown synchronously from code that runs during Start (a
@@ -319,17 +320,26 @@ func (s *RootScope) finishStart(startCtx context.Context, err *error, panicked b
 
 // abortOutcome is the outcome of a run that Shutdown began during: a run
 // that succeeded after its last abort check is reported as aborted, and a
-// failure also carries the abort cause unless it already does. lifecycleMu
-// must be held, so that beginClose has set the cause.
+// failure also carries the abort cause unless it already does. The abort
+// cause always matches ErrStartAfterShutdown, even when the caller cancelled
+// first. lifecycleMu must be held, so that beginClose has set the cause.
 func abortOutcome(ctx context.Context, err error) error {
 	cause := context.Cause(ctx)
+	if !errors.Is(cause, ErrStartAfterShutdown) {
+		// the caller cancelled before Shutdown did
+		cause = fmt.Errorf("%w: %w", ErrStartAfterShutdown, cause)
+	}
+
 	switch {
 	case err == nil:
 		return fmt.Errorf("DI: start aborted: %w", cause)
-	case errors.Is(err, cause):
+	case errors.Is(err, ErrStartAfterShutdown):
 		return err
+	case errors.Is(err, context.Cause(ctx)):
+		// carries the caller's cause already
+		return fmt.Errorf("%w (start aborted: %w)", err, ErrStartAfterShutdown)
 	default:
-		return withAbortCause(ctx, err)
+		return fmt.Errorf("%w (start aborted: %w)", err, cause)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1998,6 +1999,127 @@ func TestStart_ShutdownBetweenCollectAndClaim(t *testing.T) {
 			is.NoError(err)
 			is.Zero(tenantStarts.count("w"))
 			is.Equal(tt.rootStarts, rootStarts.count("w"))
+		})
+	}
+}
+
+func TestStart_CallerCancelThenShutdown(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	tests := []struct {
+		name        string
+		parallelism uint
+		outcome     error // what "a" returns once released
+		incremental bool
+	}{
+		{name: "Start, failure", parallelism: 1, outcome: errBoom},
+		{name: "Refresh, failure", parallelism: 1, outcome: errBoom, incremental: true},
+		{name: "parallel Start, failure", parallelism: 4, outcome: errBoom},
+		{name: "parallel Refresh, failure", parallelism: 4, outcome: errBoom, incremental: true},
+		{name: "Start, nil", parallelism: 1},
+		{name: "Refresh, nil", parallelism: 1, incremental: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			synctest.Test(t, func(t *testing.T) {
+				is := assert.New(t)
+
+				root := NewWithOpts(&InjectorOpts{StartParallelism: tt.parallelism})
+				if tt.incremental {
+					require.NoError(t, root.Start())
+				}
+				entered, release := make(chan struct{}), make(chan struct{})
+				provideLazy(root, "a", &ctxStarter{fn: func(context.Context) error {
+					close(entered)
+					<-release
+					return tt.outcome
+				}})
+				if tt.parallelism > 1 {
+					// a second Starter, so the parallel scheduler runs
+					provideLazy(root, "b", &ctxStarter{fn: func(context.Context) error { return nil }})
+				}
+				ctx, cancel := context.WithCancel(context.Background())
+				runErr := make(chan error, 1)
+				go func() {
+					if tt.incremental {
+						runErr <- root.RefreshWithContext(ctx)
+					} else {
+						runErr <- root.StartWithContext(ctx)
+					}
+				}()
+				<-entered
+
+				cancel()
+				shutdownDone := make(chan struct{})
+				go func() {
+					defer close(shutdownDone)
+					root.Shutdown()
+				}()
+				synctest.Wait() // Shutdown waits for the run
+				close(release)
+				err := <-runErr
+				<-shutdownDone
+
+				is.ErrorIs(err, ErrStartAfterShutdown)
+				is.ErrorIs(err, context.Canceled)
+				if tt.outcome != nil {
+					is.ErrorIs(err, tt.outcome)
+				}
+				is.Equal(1, strings.Count(err.Error(), "context canceled"), "message: %v", err)
+			})
+		})
+	}
+}
+
+func TestAbortOutcome(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	alreadyAborted := fmt.Errorf("boom (start aborted: %w)", ErrStartAfterShutdown)
+	tests := []struct {
+		name   string
+		cause  error // nil: cancelled by the caller, context.Canceled
+		result error
+		want   string
+		same   bool // the result is returned unchanged
+	}{
+		{name: "Shutdown cause, nil", cause: ErrStartAfterShutdown, want: "DI: start aborted: DI: container is shut down"},
+		{name: "caller cause, nil", want: "DI: start aborted: DI: container is shut down: context canceled"},
+		{name: "Shutdown cause, failure", cause: ErrStartAfterShutdown, result: errBoom, want: "boom (start aborted: DI: container is shut down)"},
+		{name: "caller cause, failure", result: errBoom, want: "boom (start aborted: DI: container is shut down: context canceled)"},
+		{
+			name:   "caller cause, failure carrying it",
+			result: fmt.Errorf("boom (start aborted: %w)", context.Canceled),
+			want:   "boom (start aborted: context canceled) (start aborted: DI: container is shut down)",
+		},
+		{name: "caller cause, failure already aborted", result: alreadyAborted, want: alreadyAborted.Error(), same: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			is := assert.New(t)
+
+			ctx, cancel := context.WithCancelCause(context.Background())
+			cancel(tt.cause) // nil cause: context.Canceled
+
+			err := abortOutcome(ctx, tt.result)
+
+			is.EqualError(err, tt.want)
+			is.ErrorIs(err, ErrStartAfterShutdown)
+			if tt.result != nil {
+				is.ErrorIs(err, tt.result)
+			}
+			if tt.cause == nil && !tt.same {
+				is.ErrorIs(err, context.Canceled)
+			}
+			if tt.same {
+				is.Same(tt.result, err)
+			}
 		})
 	}
 }
