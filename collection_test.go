@@ -237,6 +237,22 @@ func TestCollection_InvocationsWithoutProvider(t *testing.T) {
 			require.NoError(t, err)
 			return "e"
 		}},
+		{name: "eager value invoked through a struct tag", setup: func(t *testing.T, root *RootScope) string {
+			t.Helper()
+			ProvideNamedValue(root, "e", newConsole("e"), DependsOnNamed("bus"))
+			_, err := InvokeStruct[struct {
+				E *ConsoleHandler `do:"e"`
+			}](root)
+			require.NoError(t, err)
+			return "e"
+		}},
+		{name: "eager value invoked by type", setup: func(t *testing.T, root *RootScope) string {
+			t.Helper()
+			ProvideNamedValue(root, "e", newConsole("e"), DependsOnNamed("bus"))
+			_, err := InvokeAs[*ConsoleHandler](root)
+			require.NoError(t, err)
+			return "e"
+		}},
 		{name: "lazy attempt failing before its provider", setup: func(t *testing.T, root *RootScope) string {
 			t.Helper()
 			ProvideNamed(root, "l", func(Injector) (*ConsoleHandler, error) { return newConsole("l"), nil },
