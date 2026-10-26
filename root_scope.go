@@ -610,6 +610,45 @@ func (s *RootScope) AddContainerClosedHook(hook func(context.Context, *RootScope
 	s.opts.HookContainerClosed = append(s.opts.HookContainerClosed, hook)
 }
 
+// AddScopeStartingHook adds a hook that will be called by Scope.Start on a
+// child scope before anything starts; a non-nil error vetoes it. A nil hook
+// is ignored. See [InjectorOpts.HookScopeStarting].
+func (s *RootScope) AddScopeStartingHook(hook func(context.Context, *Scope) error) {
+	if hook == nil {
+		return
+	}
+	s.opts.HookScopeStarting = append(s.opts.HookScopeStarting, hook)
+}
+
+// AddScopeStartedHook adds a hook that will be called by Scope.Start on a
+// child scope once its services started. A nil hook is ignored. See
+// [InjectorOpts.HookScopeStarted].
+func (s *RootScope) AddScopeStartedHook(hook func(context.Context, *Scope)) {
+	if hook == nil {
+		return
+	}
+	s.opts.HookScopeStarted = append(s.opts.HookScopeStarted, hook)
+}
+
+// AddScopeClosingHook adds a hook that will be called when a child scope
+// shuts down, before its services. A nil hook is ignored. See
+// [InjectorOpts.HookScopeClosing].
+func (s *RootScope) AddScopeClosingHook(hook func(context.Context, *Scope)) {
+	if hook == nil {
+		return
+	}
+	s.opts.HookScopeClosing = append(s.opts.HookScopeClosing, hook)
+}
+
+// AddScopeClosedHook adds a hook that will be called when a child scope shut
+// down. A nil hook is ignored. See [InjectorOpts.HookScopeClosed].
+func (s *RootScope) AddScopeClosedHook(hook func(context.Context, *Scope)) {
+	if hook == nil {
+		return
+	}
+	s.opts.HookScopeClosed = append(s.opts.HookScopeClosed, hook)
+}
+
 // Clone clones injector with provided services but not with invoked instances.
 // The clone keeps the options, hooks included, and the kind handlers
 // (including a replaced Runnable handler), but not the lifecycle state: it

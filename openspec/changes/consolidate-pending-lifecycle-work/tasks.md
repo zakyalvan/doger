@@ -275,9 +275,9 @@ Rules:
 
 ## 40. Scope hooks: registration and Scope.Start veto (scope-lifecycle-hooks; design S1)
 
-- [ ] 40.1 RED: add `scope_hooks_test.go` with `TestScopeHooks_RegistrationOrder` and `TestScopeStartingHook_Veto` (3 rows); verify `go test -race -run 'TestScopeHooks_RegistrationOrder|TestScopeStartingHook_Veto' .` fails to compile only on the `HookScope*` fields and `AddScope*Hook` methods
-- [ ] 40.2 GREEN: add the four fields (init, `copy()`, nil-skipping), the adders, and fire Starting (veto, recovered as a veto) and Started in `Scope.Start` for child scopes (design S1); verify the 40.1 command passes and `make test` is green
-- [ ] 40.3 REFACTOR: *Extract Function* `runScopeStartingHooks(ctx, scope) error`, reusing Part H's `callHookSafely`; verify `make test` and `make lint` pass
+- [x] 40.1 RED: add `scope_hooks_test.go` with `TestScopeHooks_RegistrationOrder` and `TestScopeStartingHook_Veto` (3 rows); verify `go test -race -run 'TestScopeHooks_RegistrationOrder|TestScopeStartingHook_Veto' .` fails to compile only on the `HookScope*` fields and `AddScope*Hook` methods
+- [x] 40.2 GREEN: add the four fields (init, `copy()`, nil-skipping), the adders, and fire Starting (veto, recovered as a veto) and Started in `Scope.Start` for child scopes (design S1); verify the 40.1 command passes and `make test` is green
+- [x] 40.3 REFACTOR: *Extract Function* `runScopeStartingHooks(ctx, scope) error`, reusing Part H's `callHookSafely`; verify `make test` and `make lint` pass
 
 ## 41. Scope Closing and Closed hooks (scope-lifecycle-hooks; design S1)
 

@@ -3,6 +3,7 @@ package doger
 import (
 	"context"
 	"fmt"
+	"slices"
 )
 
 // Refresh starts what is not started yet, with context.Background(); see
@@ -33,7 +34,8 @@ func (s *RootScope) RefreshWithContext(ctx context.Context) error {
 	return s.startIncremental(ctx, s.self)
 }
 
-// startIncremental runs the pipeline over the subtree of root.
+// startIncremental runs the pipeline over the subtree of root. For a child
+// scope, the scope Starting hooks run first and can veto it.
 func (s *RootScope) startIncremental(ctx context.Context, root *Scope) (err error) {
 	s.pipelineMu.Lock()
 	defer s.pipelineMu.Unlock()
@@ -44,7 +46,34 @@ func (s *RootScope) startIncremental(ctx context.Context, root *Scope) (err erro
 	}
 	defer func() { s.finishIncremental(incCtx, &err) }()
 
+	if root != s.self {
+		if err := s.runScopeStartingHooks(incCtx, root); err != nil {
+			return err
+		}
+	}
+
 	return s.runPipeline(incCtx, []*Scope{root})
+}
+
+// runScopeStartingHooks runs the scope Starting hooks for scope in order.
+// The first error or panic is a veto: the remaining hooks do not run and
+// Scope.Start fails with it.
+func (s *RootScope) runScopeStartingHooks(ctx context.Context, scope *Scope) error {
+	for _, hook := range slices.Clone(s.opts.HookScopeStarting) {
+		if hook == nil {
+			continue
+		}
+
+		var err error
+		if recovered, panicked := callHookSafely(func() { err = hook(ctx, scope) }); panicked {
+			err = recoverAsError(recovered)
+		}
+		if err != nil {
+			return fmt.Errorf("DI: scope `%s` start aborted: %w", scope.Name(), err)
+		}
+	}
+
+	return nil
 }
 
 // beginIncremental checks that the container may start incrementally and
@@ -125,7 +154,19 @@ func (s *Scope) StartWithContext(ctx context.Context) error {
 		ctx = context.Background()
 	}
 
-	return s.rootScope.startIncremental(ctx, s)
+	if err := s.rootScope.startIncremental(ctx, s); err != nil {
+		return err
+	}
+
+	if s != s.rootScope.self {
+		for _, hook := range slices.Clone(s.rootScope.opts.HookScopeStarted) {
+			if hook != nil {
+				hook(ctx, s)
+			}
+		}
+	}
+
+	return nil
 }
 
 // isHandled reports whether kind id already handled the service.

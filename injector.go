@@ -205,6 +205,26 @@ type InjectorOpts struct {
 	// copy of the first report.
 	HookContainerClosed []func(ctx context.Context, scope *RootScope, report *ShutdownReport)
 
+	// HookScopeStarting is called by Scope.Start on a child scope, after its
+	// phase check and before anything starts, with the scope. A non-nil error
+	// or a panic vetoes Scope.Start, which returns an error wrapping it. The
+	// root's own scope never fires scope hooks.
+	HookScopeStarting []func(ctx context.Context, scope *Scope) error
+
+	// HookScopeStarted is called by Scope.Start on a child scope once its
+	// services started successfully.
+	HookScopeStarted []func(ctx context.Context, scope *Scope)
+
+	// HookScopeClosing is called when a child scope shuts down, directly or
+	// as part of its parent's shutdown, after its children shut down and
+	// before its own services. Sibling scopes shut down in parallel, so their
+	// hooks may run concurrently.
+	HookScopeClosing []func(ctx context.Context, scope *Scope)
+
+	// HookScopeClosed is called when a child scope shut down, after its
+	// services.
+	HookScopeClosed []func(ctx context.Context, scope *Scope)
+
 	// HookContainerPanic receives the first panic recovered from a Started,
 	// Ready, Failed, Closing or Closed hook, once the operation is complete:
 	// every hook of the list has run, and so has the rest of Start or
@@ -288,6 +308,10 @@ func (o *InjectorOpts) copy() *InjectorOpts {
 		HookContainerClosing:     append([]func(context.Context, *RootScope){}, o.HookContainerClosing...),
 		HookContainerClosed:      append([]func(context.Context, *RootScope, *ShutdownReport){}, o.HookContainerClosed...),
 		HookContainerPanic:       o.HookContainerPanic,
+		HookScopeStarting:        append([]func(context.Context, *Scope) error{}, o.HookScopeStarting...),
+		HookScopeStarted:         append([]func(context.Context, *Scope){}, o.HookScopeStarted...),
+		HookScopeClosing:         append([]func(context.Context, *Scope){}, o.HookScopeClosing...),
+		HookScopeClosed:          append([]func(context.Context, *Scope){}, o.HookScopeClosed...),
 		Logf:                     o.Logf,
 		HealthCheckParallelism:   o.HealthCheckParallelism,
 		HealthCheckGlobalTimeout: o.HealthCheckGlobalTimeout,
@@ -323,6 +347,10 @@ func (o *InjectorOpts) initDefaults() {
 	emptyIfNil(&o.HookContainerFailed)
 	emptyIfNil(&o.HookContainerClosing)
 	emptyIfNil(&o.HookContainerClosed)
+	emptyIfNil(&o.HookScopeStarting)
+	emptyIfNil(&o.HookScopeStarted)
+	emptyIfNil(&o.HookScopeClosing)
+	emptyIfNil(&o.HookScopeClosed)
 
 	if o.Clock == nil {
 		o.Clock = clockwork.NewRealClock()
