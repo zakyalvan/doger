@@ -261,10 +261,10 @@ Rules:
 
 ## 38. Parallel start (container-start; design P4)
 
-- [ ] 38.1 RED: add `TestStart_Parallel` (scenario "Independent Starters start concurrently", 5 rows, `synctest.Test`), `TestStart_ParallelFailure` and `TestStart_ParallelHooks`; verify `go test -race -run 'TestStart_Parallel' .` fails to compile only on `InjectorOpts.StartParallelism`
-- [ ] 38.2 GREEN: add `StartParallelism` (copied in `copy()`) and the Kahn worker scheduler in `startStarters` for n > 1, keeping the sequential loop for 0 and 1 (design P4); verify the 38.1 command passes with `-race -count=20`, goleak is clean and `make test` is green
-- [ ] 38.3 REFACTOR: *Extract Function* `startStartersParallel(ctx, candidates, n)` and *Replace Conditional with Polymorphism* only if a third mode appears, otherwise a plain branch; verify `make test` and `make lint` pass
-- [ ] 38.4 Add `ExampleInjectorOpts_startParallelism`, godoc on the field (hooks may run concurrently), and the parallel-start section of the starter page; verify the example and the docs lint and build pass
+- [x] 38.1 RED: add `TestStart_Parallel` (scenario "Independent Starters start concurrently", 5 rows, `synctest.Test`), `TestStart_ParallelFailure` and `TestStart_ParallelHooks`; verify `go test -race -run 'TestStart_Parallel' .` fails to compile only on `InjectorOpts.StartParallelism`
+- [x] 38.2 GREEN: add `StartParallelism` (copied in `copy()`) and the Kahn worker scheduler in `startStarters` for n > 1, keeping the sequential loop for 0 and 1 (design P4); verify the 38.1 command passes with `-race -count=20`, goleak is clean and `make test` is green
+- [x] 38.3 REFACTOR: *Extract Function* `startStartersParallel(ctx, candidates, n)` and *Replace Conditional with Polymorphism* only if a third mode appears, otherwise a plain branch; verify `make test` and `make lint` pass
+- [x] 38.4 Add `ExampleInjectorOpts_startParallelism`, godoc on the field (hooks may run concurrently), and the parallel-start section of the starter page; verify the example and the docs lint and build pass
 
 ## 39. HookAfterBuild (service-build-hooks; design P5)
 

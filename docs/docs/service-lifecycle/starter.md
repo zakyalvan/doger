@@ -216,3 +216,18 @@ err := tenant.Start() // starts tenant-a and its child scopes only
 ```
 
 Services of ancestor scopes that the subtree depends on are built as needed, but `scope.Start` does not start them: `Refresh` does. On the root's own scope (for example the scope a root service's provider works with), `Start` behaves as `Refresh`. `scope.Start` follows the same rules as `Refresh`: `ErrNotStarted`, `ErrStartAfterShutdown`, at most once per service, and calls serialized with `Refresh`.
+
+## Parallel start {#parallel-start}
+
+By default, Starters start one at a time. With `InjectorOpts.StartParallelism` set to `n > 1`, `Start`, `Refresh` and `Scope.Start` run up to `n` Starters concurrently:
+
+```go
+root := doger.NewWithOpts(&doger.InjectorOpts{StartParallelism: 4})
+```
+
+- Dependency order is kept: a Starter starts only after every Starter it depends on, directly or transitively, has started. Among ready Starters, the one with the smallest scope depth, then registration order, goes first.
+- The first failure stops scheduling new Starters. `Start` waits for the running ones, then returns that failure.
+- `HookBeforeStart` and `HookAfterStart` may run concurrently: hooks that share state must synchronize it. Each Starter still gets its before hook before its after hook.
+- Kind handlers, including the `Runnable` handler, always run sequentially.
+
+`0` and `1` mean sequential.

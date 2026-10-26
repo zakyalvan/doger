@@ -446,8 +446,13 @@ func starterCandidates(candidates []*startCandidate) []*startCandidate {
 }
 
 // startStarters starts the Starter candidates in order, stopping at the
-// first error.
+// first error. With StartParallelism n > 1, independent Starters start
+// concurrently.
 func (s *RootScope) startStarters(startCtx context.Context, candidates []*startCandidate) error {
+	if s.opts.StartParallelism > 1 {
+		return s.startStartersParallel(startCtx, candidates, int(s.opts.StartParallelism)) //nolint:gosec // bounded by the number of Starters
+	}
+
 	for _, candidate := range candidates {
 		if !candidate.starter {
 			continue
@@ -457,21 +462,85 @@ func (s *RootScope) startStarters(startCtx context.Context, candidates []*startC
 			return err
 		}
 
-		if !instanceIsStarter(candidate.instance) {
-			startErr := newStartError(StartOpStart, candidate.scope, candidate.name, "", fmt.Errorf("DI: service `%s` was opted in with AsStarter but does not implement any Starter interface", candidate.name))
-			startErr.unprefixed = true // the cause names the service already
-			return startErr
+		if err := s.startCandidate(startCtx, candidate); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// startStartersParallel starts up to n Starters at a time, each once every
+// Starter it depends on has started, picking the ready one with the smallest
+// scope depth, then registration index. The first failure stops scheduling;
+// running Starters are awaited before it is returned. Every goroutine has
+// returned when it returns.
+func (s *RootScope) startStartersParallel(startCtx context.Context, candidates []*startCandidate, n int) error {
+	requires := s.dependencyRequirements(candidates)
+	pending := slices.Clone(candidates)
+	slices.SortFunc(pending, func(a, b *startCandidate) int {
+		return cmp.Or(cmp.Compare(a.depth, b.depth), cmp.Compare(a.regIndex, b.regIndex))
+	})
+	started := map[ServiceDescription]bool{}
+
+	type outcome struct {
+		candidate *startCandidate
+		err       error
+	}
+	outcomes := make(chan outcome)
+	running := 0
+	var firstErr error
+
+	for {
+		for firstErr == nil && running < n {
+			ready := slices.IndexFunc(pending, func(c *startCandidate) bool {
+				return !slices.ContainsFunc(requires[c.desc()], func(d ServiceDescription) bool { return !started[d] })
+			})
+			if ready < 0 {
+				break
+			}
+			if err := checkAbort(startCtx); err != nil {
+				firstErr = err
+				break
+			}
+
+			candidate := pending[ready]
+			pending = slices.Delete(pending, ready, ready+1)
+			running++
+			go func() { outcomes <- outcome{candidate: candidate, err: s.startCandidate(startCtx, candidate)} }()
 		}
 
-		s.opts.onBeforeStart(candidate.scope, candidate.name)
-		err := startInstance(startCtx, candidate.instance)
-		s.opts.onAfterStart(candidate.scope, candidate.name, err)
-		if err != nil {
-			err = newStartError(StartOpStart, candidate.scope, candidate.name, "", err)
-			return withAbortCause(startCtx, err)
+		if running == 0 {
+			return firstErr
 		}
-		s.markStarted(candidate.service)
+
+		o := <-outcomes
+		running--
+		if o.err != nil && firstErr == nil {
+			firstErr = o.err
+		}
+		if o.err == nil {
+			started[o.candidate.desc()] = true
+		}
 	}
+}
+
+// startCandidate starts one Starter candidate with its hooks.
+func (s *RootScope) startCandidate(startCtx context.Context, candidate *startCandidate) error {
+	if !instanceIsStarter(candidate.instance) {
+		startErr := newStartError(StartOpStart, candidate.scope, candidate.name, "", fmt.Errorf("DI: service `%s` was opted in with AsStarter but does not implement any Starter interface", candidate.name))
+		startErr.unprefixed = true // the cause names the service already
+		return startErr
+	}
+
+	s.opts.onBeforeStart(candidate.scope, candidate.name)
+	err := startInstance(startCtx, candidate.instance)
+	s.opts.onAfterStart(candidate.scope, candidate.name, err)
+	if err != nil {
+		err = newStartError(StartOpStart, candidate.scope, candidate.name, "", err)
+		return withAbortCause(startCtx, err)
+	}
+	s.markStarted(candidate.service)
 
 	return nil
 }

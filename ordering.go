@@ -57,12 +57,36 @@ func (s *RootScope) checkCycles(candidates []*startCandidate) error {
 // directly or transitively. Ties are broken by the input order (scope depth,
 // then registration order).
 func (s *RootScope) orderByDependencies(candidates []*startCandidate) []*startCandidate {
+	requires := s.dependencyRequirements(candidates)
+
+	ordered := make([]*startCandidate, 0, len(candidates))
+	emitted := map[ServiceDescription]bool{}
+	remaining := candidates
+	for len(remaining) > 0 {
+		ready := slices.IndexFunc(remaining, func(c *startCandidate) bool {
+			return !slices.ContainsFunc(requires[c.desc()], func(d ServiceDescription) bool { return !emitted[d] })
+		})
+		if ready < 0 {
+			// defensive: cycles are rejected before ordering
+			return append(ordered, remaining...)
+		}
+
+		ordered = append(ordered, remaining[ready])
+		emitted[remaining[ready].desc()] = true
+		remaining = slices.Delete(slices.Clone(remaining), ready, ready+1)
+	}
+
+	return ordered
+}
+
+// dependencyRequirements returns, for each candidate, the other candidates it
+// reaches through dependency edges, directly or transitively.
+func (s *RootScope) dependencyRequirements(candidates []*startCandidate) map[ServiceDescription][]ServiceDescription {
 	inSet := map[ServiceDescription]bool{}
 	for _, candidate := range candidates {
 		inSet[candidate.desc()] = true
 	}
 
-	// the candidates each candidate reaches, directly or transitively
 	requires := map[ServiceDescription][]ServiceDescription{}
 	for _, starter := range candidates {
 		from := starter.desc()
@@ -84,22 +108,5 @@ func (s *RootScope) orderByDependencies(candidates []*startCandidate) []*startCa
 		}
 	}
 
-	ordered := make([]*startCandidate, 0, len(candidates))
-	emitted := map[ServiceDescription]bool{}
-	remaining := candidates
-	for len(remaining) > 0 {
-		ready := slices.IndexFunc(remaining, func(c *startCandidate) bool {
-			return !slices.ContainsFunc(requires[c.desc()], func(d ServiceDescription) bool { return !emitted[d] })
-		})
-		if ready < 0 {
-			// defensive: cycles are rejected before ordering
-			return append(ordered, remaining...)
-		}
-
-		ordered = append(ordered, remaining[ready])
-		emitted[remaining[ready].desc()] = true
-		remaining = slices.Delete(slices.Clone(remaining), ready, ready+1)
-	}
-
-	return ordered
+	return requires
 }

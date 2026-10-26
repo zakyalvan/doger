@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
+	"time"
 )
 
 type exampleDB struct{}
@@ -136,4 +138,43 @@ func ExampleScope_Start() {
 	}
 	// Output:
 	// tenant-a sync started
+}
+
+// exampleBarrierStarter waits, in Start, until every Starter of its group
+// has entered Start: it returns only if they start concurrently.
+type exampleBarrierStarter struct {
+	entered *sync.WaitGroup
+}
+
+func (s *exampleBarrierStarter) Start() error {
+	s.entered.Done()
+
+	all := make(chan struct{})
+	go func() {
+		s.entered.Wait()
+		close(all)
+	}()
+
+	select {
+	case <-all:
+		return nil
+	case <-time.After(5 * time.Second):
+		return errors.New("not started concurrently")
+	}
+}
+
+func ExampleInjectorOpts_startParallelism() {
+	// Up to 4 independent Starters start at the same time; a Starter still
+	// waits for the Starters it depends on.
+	root := NewWithOpts(&InjectorOpts{StartParallelism: 4})
+
+	var entered sync.WaitGroup
+	entered.Add(4)
+	for _, name := range []string{"cache-a", "cache-b", "cache-c", "cache-d"} {
+		ProvideNamedValue(root, name, &exampleBarrierStarter{entered: &entered})
+	}
+
+	fmt.Println(root.Start())
+	// Output:
+	// <nil>
 }

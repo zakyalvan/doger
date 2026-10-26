@@ -131,11 +131,14 @@ type InjectorOpts struct {
 	HookAfterShutdown []func(scope *Scope, serviceName string, err error)
 
 	// HookBeforeStart is called by Start just before a service's Start method.
+	// With StartParallelism > 1, calls for different services may run
+	// concurrently.
 	HookBeforeStart []func(scope *Scope, serviceName string)
 
 	// HookAfterStart is called by Start just after a service's Start method,
 	// with the error the method returned, unwrapped (nil on success; a
-	// recovered panic as an error).
+	// recovered panic as an error). With StartParallelism > 1, calls for
+	// different services may run concurrently.
 	HookAfterStart []func(scope *Scope, serviceName string, err error)
 
 	// HookContainerStarting is called by the root container's first Start,
@@ -243,6 +246,15 @@ type InjectorOpts struct {
 	// registered type implements a Starter variant is started too.
 	DisableStarterAutoDetection bool
 
+	// StartParallelism is the number of Starters that Start, Refresh and
+	// Scope.Start may run concurrently, each only after every Starter it
+	// depends on has started. The first failure stops scheduling new
+	// Starters; running ones are awaited, then the failure is returned.
+	// Default: 0 or 1, sequential. With n > 1, HookBeforeStart and
+	// HookAfterStart may run concurrently and must synchronize their state.
+	// Kind handlers always run sequentially.
+	StartParallelism uint
+
 	// EnableRunnerAutoDetection makes Start run, as a Runnable, every
 	// non-transient service whose registered type implements Runner. By
 	// default, runners must opt in with AsRunnable, because Run is too
@@ -275,6 +287,7 @@ func (o *InjectorOpts) copy() *InjectorOpts {
 		Clock:                    o.Clock,
 
 		DisableStarterAutoDetection: o.DisableStarterAutoDetection,
+		StartParallelism:            o.StartParallelism,
 		EnableRunnerAutoDetection:   o.EnableRunnerAutoDetection,
 	}
 }

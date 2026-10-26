@@ -1545,3 +1545,116 @@ func TestRefresh_ShutdownCancels(t *testing.T) {
 		is.True(report.Succeed, report.Error())
 	})
 }
+
+// sleepingStarter records "<name> start", sleeps for d (bubble time), then
+// records "<name> returned" and returns err.
+type sleepingStarter struct {
+	name string
+	d    time.Duration
+	err  error
+	rec  *callRecorder
+}
+
+func (s *sleepingStarter) Start() error {
+	s.rec.record(s.name + " start")
+	time.Sleep(s.d)
+	s.rec.record(s.name + " returned")
+	return s.err
+}
+
+func TestStart_Parallel(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		n       uint
+		elapsed time.Duration
+	}{
+		{n: 0, elapsed: 5 * time.Second},
+		{n: 1, elapsed: 5 * time.Second},
+		{n: 2, elapsed: 3 * time.Second},
+		{n: 3, elapsed: 2 * time.Second},
+		{n: 8, elapsed: 2 * time.Second},
+	}
+
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("%d", tt.n), func(t *testing.T) {
+			t.Parallel()
+
+			synctest.Test(t, func(t *testing.T) {
+				is := assert.New(t)
+
+				root := NewWithOpts(&InjectorOpts{StartParallelism: tt.n})
+				rec := &callRecorder{}
+				for _, name := range []string{"a", "b", "c", "d", "e"} {
+					ProvideNamed(root, name, func(i Injector) (*sleepingStarter, error) {
+						if name == "d" {
+							if _, err := InvokeNamed[*sleepingStarter](i, "a"); err != nil {
+								return nil, err
+							}
+						}
+						return &sleepingStarter{name: name, d: time.Second, rec: rec}, nil
+					})
+				}
+
+				begin := time.Now()
+				is.NoError(root.Start())
+
+				is.Equal(tt.elapsed, time.Since(begin))
+				events := rec.list()
+				is.Less(indexOf(events, "a returned"), indexOf(events, "d start"))
+			})
+		})
+	}
+}
+
+func TestStart_ParallelFailure(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		is := assert.New(t)
+
+		errBoom := errors.New("boom")
+		root := NewWithOpts(&InjectorOpts{StartParallelism: 2})
+		rec := &callRecorder{}
+		ProvideNamedValue(root, "a", &sleepingStarter{name: "a", d: time.Second, err: errBoom, rec: rec})
+		ProvideNamedValue(root, "b", &sleepingStarter{name: "b", d: 2 * time.Second, rec: rec})
+		ProvideNamedValue(root, "c", &sleepingStarter{name: "c", d: time.Second, rec: rec})
+
+		begin := time.Now()
+		err := root.Start()
+
+		is.Equal(2*time.Second, time.Since(begin))
+		is.ErrorIs(err, errBoom)
+		is.ErrorContains(err, "`a`")
+		events := rec.list()
+		is.Equal(0, countOf(events, "c start"))
+		is.Equal(1, countOf(events, "b start"))
+	})
+}
+
+func TestStart_ParallelHooks(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, 5*time.Second)
+	is := assert.New(t)
+
+	rec := &callRecorder{}
+	root := NewWithOpts(&InjectorOpts{
+		StartParallelism: 4,
+		HookBeforeStart:  []func(*Scope, string){func(_ *Scope, name string) { rec.record("before " + name) }},
+		HookAfterStart:   []func(*Scope, string, error){func(_ *Scope, name string, _ error) { rec.record("after " + name) }},
+	})
+	starts := &countingStarters{}
+	for i := range 8 {
+		provideCountedStarter(root, starts, fmt.Sprintf("s%d", i))
+	}
+
+	require.NoError(t, root.Start())
+
+	events := rec.list()
+	for i := range 8 {
+		name := fmt.Sprintf("s%d", i)
+		is.Equal(1, countOf(events, "before "+name))
+		is.Equal(1, countOf(events, "after "+name))
+		is.Less(indexOf(events, "before "+name), indexOf(events, "after "+name))
+	}
+}
