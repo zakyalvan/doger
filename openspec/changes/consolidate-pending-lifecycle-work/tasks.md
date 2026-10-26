@@ -584,68 +584,68 @@ Each step runs `make test` and `make lint` after it; no test input or assertion 
 
 ## 86. A run skips services shut down before it claims them (container-start, scope-lifecycle-hooks; design V37)
 
-- [ ] 86.1 RED: add `TestStart_ShutdownBetweenCollectAndClaim` (4 rows) to `root_start_test.go`, pausing collection with a white-box wrapper whose `getServiceType` blocks, and `TestScopeStartedHook_ShutdownBeforeClaim` to `scope_hooks_test.go`; verify `go test -race -run 'TestStart_ShutdownBetweenCollectAndClaim|TestScopeStartedHook_ShutdownBeforeClaim' .` fails with a build error matching `ErrServiceNotFound`, and with the root "w" started twice
-- [ ] 86.2 GREEN: in `claimCandidates`, also drop candidates for which `stillRegistered` is false; verify the 86.1 command passes, `TestScopeShutdown_*` pass unchanged, and `make test` is green
-- [ ] 86.3 REFACTOR: *Extract Function* the claim predicate if it reads better named; verify `make test` and `make lint` pass
+- [x] 86.1 RED: add `TestStart_ShutdownBetweenCollectAndClaim` (4 rows) to `root_start_test.go`, pausing collection with a white-box wrapper whose `getServiceType` blocks, and `TestScopeStartedHook_ShutdownBeforeClaim` to `scope_hooks_test.go`; verify `go test -race -run 'TestStart_ShutdownBetweenCollectAndClaim|TestScopeStartedHook_ShutdownBeforeClaim' .` fails with a build error matching `ErrServiceNotFound`, and with the root "w" started twice
+- [x] 86.2 GREEN: in `claimCandidates`, also drop candidates for which `stillRegistered` is false; verify the 86.1 command passes, `TestScopeShutdown_*` pass unchanged, and `make test` is green
+- [x] 86.3 REFACTOR: none needed: the claim predicate is one line with a comment; verify `make test` and `make lint` pass
 
 ## 87. An aborted run matches ErrStartAfterShutdown when the caller cancelled first (container-start; design V38)
 
-- [ ] 87.1 RED: add `TestStart_CallerCancelThenShutdown` (6 rows) to `root_start_test.go` and `TestAbortOutcome` (6 rows, white-box) to `root_start_internal_test.go`; verify `go test -race -run 'TestStart_CallerCancelThenShutdown|TestAbortOutcome' .` fails because the errors do not match `ErrStartAfterShutdown`
-- [ ] 87.2 GREEN: `abortOutcome` wraps an abort cause that always matches `ErrStartAfterShutdown`, and adds only `ErrStartAfterShutdown` to an error that already carries the caller's cause; verify the 87.1 command passes, `TestStart_FailureThenShutdown` and the Part H tables pass unchanged, and `make test` is green
-- [ ] 87.3 REFACTOR: *Extract Function* `shutdownCause(ctx)`; update the `StartWithContext` godoc and the upgrading page (flagged); verify `make test`, `make lint` and the docs lint and build pass
+- [x] 87.1 RED: add `TestStart_CallerCancelThenShutdown` (6 rows) to `root_start_test.go` and `TestAbortOutcome` (6 rows, white-box) to `root_start_test.go`; verify `go test -race -run 'TestStart_CallerCancelThenShutdown|TestAbortOutcome' .` fails because the errors do not match `ErrStartAfterShutdown`
+- [x] 87.2 GREEN: `abortOutcome` wraps an abort cause that always matches `ErrStartAfterShutdown`, and adds only `ErrStartAfterShutdown` to an error that already carries the caller's cause; verify the 87.1 command passes, `TestStart_FailureThenShutdown` and the Part H tables pass unchanged, and `make test` is green
+- [x] 87.3 REFACTOR: *Extract Function* `shutdownCause(ctx)`; update the `StartWithContext` godoc and the upgrading page (flagged); verify `make test`, `make lint` and the docs lint and build pass
 
 ## 88. The Failed error after a pipeline panic carries the abort cause (container-lifecycle-hooks; design V39)
 
-- [ ] 88.1 RED: add `TestContainerFailedHook_PipelinePanicAfterShutdown` (2 rows) to `container_hooks_test.go`; verify `go test -race -run TestContainerFailedHook_PipelinePanicAfterShutdown .` fails because the Failed error does not match `ErrStartAfterShutdown`
-- [ ] 88.2 GREEN: `runStart` recovers the pipeline panic into `recoverAsError(value)` before its deferred `finishStart`, which applies the abort outcome to it; `StartWithContext` passes that error to the Failed hooks and re-panics with the value; verify the 88.1 command passes, `TestContainerFailedHook_Pipeline*` and `TestStart_ParallelHookPanic` pass unchanged, and `make test` is green
-- [ ] 88.3 REFACTOR: *Inline Function* `runStartRecovering`; *Remove Parameter* `panicked` from `finishStart`; verify `make test` and `make lint` pass
+- [x] 88.1 RED: add `TestContainerFailedHook_PipelinePanicAfterShutdown` (2 rows) to `container_hooks_test.go`; verify `go test -race -run TestContainerFailedHook_PipelinePanicAfterShutdown .` fails because the Failed error does not match `ErrStartAfterShutdown`
+- [x] 88.2 GREEN: `runStart` recovers the pipeline panic into `recoverAsError(value)` before its deferred `finishStart`, which applies the abort outcome to it; `StartWithContext` passes that error to the Failed hooks and re-panics with the value; verify the 88.1 command passes, `TestContainerFailedHook_Pipeline*` and `TestStart_ParallelHookPanic` pass unchanged, and `make test` is green
+- [x] 88.3 REFACTOR: *Inline Function* `runStartRecovering`; *Remove Parameter* `panicked` from `finishStart`; verify `make test` and `make lint` pass
 
 ## 89. InvokeAs skips aliases of the invoking service (type-resolution; design V40)
 
-- [ ] 89.1 RED: add the three alias rows to `TestInvokeAs_SkipsInvoker` and `TestInvokeStruct_FallbackSkipsInvokerAlias` to `invoke_test.go`; verify `go test -race -run 'TestInvokeAs_SkipsInvoker|TestInvokeStruct_FallbackSkipsInvokerAlias' .` fails with `ErrCircularDependency`
-- [ ] 89.2 GREEN: in `selectByType`, skip an alias match whose target chain resolves to the invoking service's name, following targets through each alias's scope and stopping on a loop; verify the 89.1 command passes, `TestInvokeAs_*` and `TestInvokeStruct_*` pass unchanged, and `make test` is green
-- [ ] 89.3 REFACTOR: *Extract Function* `aliasResolvesTo`; update the `InvokeAs` godoc and the upgrading page (flagged); verify `make test`, `make lint` and the docs lint and build pass
+- [x] 89.1 RED: add the three alias rows to `TestInvokeAs_SkipsInvoker` and `TestInvokeStruct_FallbackSkipsInvokerAlias` to `invoke_test.go`; verify `go test -race -run 'TestInvokeAs_SkipsInvoker|TestInvokeStruct_FallbackSkipsInvokerAlias' .` fails with `ErrCircularDependency`
+- [x] 89.2 GREEN: in `selectByType`, skip an alias match whose target chain resolves to the invoking service's name, following targets through each alias's scope and stopping on a loop; verify the 89.1 command passes, `TestInvokeAs_*` and `TestInvokeStruct_*` pass unchanged, and `make test` is green
+- [x] 89.3 REFACTOR: none needed (`aliasResolvesTo` was written as its own function in GREEN, with `TestAliasResolvesTo_Loop` for its loop bound); update the `InvokeAs` godoc and the upgrading page (flagged); verify `make test`, `make lint` and the docs lint and build pass
 
 ## 90. Scope Starting hooks skip a scope that is shutting down (scope-lifecycle-hooks; design V41)
 
-- [ ] 90.1 RED: add `TestScopeStartingHook_SkippedWhileClosing` (2 rows) to `scope_hooks_test.go`; verify `go test -race -run TestScopeStartingHook_SkippedWhileClosing .` fails because the Starting hook ran
-- [ ] 90.2 GREEN: in `startIncremental`, for a child scope, return closing without running hooks or the pipeline when `closingInLine` holds under `lifecycleMu`; verify the 90.1 command passes, `TestScopeStartedHook_SkippedWhileClosing` passes unchanged, and `make test` is green
-- [ ] 90.3 REFACTOR: *Extract Function* `scopeClosing`; update the `HookScopeStarting` and `Scope.StartWithContext` godoc, `container-hooks.md` and the upgrading page (flagged); verify `make test`, `make lint` and the docs lint and build pass
+- [x] 90.1 RED: add `TestScopeStartingHook_SkippedWhileClosing` (2 rows) to `scope_hooks_test.go`; verify `go test -race -run TestScopeStartingHook_SkippedWhileClosing .` fails because the Starting hook ran
+- [x] 90.2 GREEN: in `startIncremental`, for a child scope, return closing without running hooks or the pipeline when `closingInLine` holds under `lifecycleMu`; verify the 90.1 command passes, `TestScopeStartedHook_SkippedWhileClosing` passes unchanged, and `make test` is green
+- [x] 90.3 REFACTOR: *Extract Function* `scopeClosing`; update the `HookScopeStarting` and `Scope.StartWithContext` godoc, `container-hooks.md` and the upgrading page (flagged); verify `make test`, `make lint` and the docs lint and build pass
 
 ## 91. Tests that could not fail (design V42)
 
 Each test below that passes on arrival is checked with the named temporary mutation (reverted), recorded in notes.md.
 
-- [ ] 91.1 Add `TestIncrementalStart_CallerContext` (6 rows) to `root_refresh_test.go`; verify it fails when `RefreshWithContext` or `Scope.StartWithContext` pass `context.Background()` instead of ctx, and when their nil-ctx normalization is dropped
-- [ ] 91.2 `TestContainerHooks_ObserverContexts`: assert the Started, Ready and Failed hooks receive the caller's context itself, not cancelled; verify it fails when `dispatchAfterStart` receives the Start-time context
-- [ ] 91.3 Collections: a child member registered before a root member (fails under `depth: 0`); 13 equal-order members (fails under `slices.SortFunc`); `InvokeStruct` `do:"e"` and `InvokeAs` mark their invocation over (fail when `child.returned.Store(true)` is removed in `invokeAnyByNameAs` and `invokeServiceInstance`); a detached read records no edge (fails without `if s.detached { return }`) and keeps the running chain through `parent` (fails without `read.parent = vScope.parent`)
-- [ ] 91.4 `InvokeAs`: the alias row of `TestInvokeAs_Deterministic` (fails when aliases are filtered); the clone row "b then a, cloned" (fails when `serviceLazy.clone` drops `regIndex`)
+- [x] 91.1 Add `TestIncrementalStart_CallerContext` (6 rows) to `root_refresh_test.go`; verify it fails when `RefreshWithContext` or `Scope.StartWithContext` pass `context.Background()` instead of ctx, and when their nil-ctx normalization is dropped
+- [x] 91.2 `TestContainerHooks_ObserverContexts`: assert the Started, Ready and Failed hooks receive the caller's context itself, not cancelled; verify it fails when `dispatchAfterStart` receives the Start-time context
+- [x] 91.3 Collections (with spec scenarios in collection-ordering and live-collections): a child member registered before a root member (fails under `depth: 0`); 13 equal-order members (fails under `slices.SortFunc`); `InvokeStruct` `do:"e"` and `InvokeAs` mark their invocation over (fail when `child.returned.Store(true)` is removed in `invokeAnyByNameAs` and `invokeServiceInstance`); a detached read records no edge (fails without `if s.detached { return }`) and keeps the running chain through `parent` (fails without `read.parent = vScope.parent`)
+- [x] 91.4 `InvokeAs`: the alias row of `TestInvokeAs_Deterministic` (fails when aliases are filtered); the clone row "b then a, cloned" (fails when `serviceLazy.clone` drops `regIndex`)
 
 ## 92. The cycle message of a live-collection read names the holder (live-collections; design V47)
 
-- [ ] 92.1 RED: assert the message in `TestCollection_ReadDuringOuterProvider`; verify `go test -race -run TestCollection_ReadDuringOuterProvider .` fails on `` `app` -> `app` ``
-- [ ] 92.2 GREEN: the detached read keeps the holder, and `invokerChain` appends it after the running chain; verify the 92.1 command passes, `TestCollection_*` pass unchanged, and `make test` is green
-- [ ] 92.3 REFACTOR: none needed; verify `make test` and `make lint` pass
+- [x] 92.1 RED: assert the message in `TestCollection_ReadDuringOuterProvider`; verify `go test -race -run TestCollection_ReadDuringOuterProvider .` fails on `` `app` -> `app` ``
+- [x] 92.2 GREEN: the detached read keeps the holder, and `invokerChain` appends it after the running chain; verify the 92.1 command passes, `TestCollection_*` pass unchanged, and `make test` is green
+- [x] 92.3 REFACTOR: none needed; verify `make test` and `make lint` pass
 
 ## 93. Observer hook panics carry their subject (design V48; refactor, behavior unchanged)
 
-- [ ] 93.1 *Replace Type Code with Field*: `hookPanic` stores its subject, set by the observer loop; `logHookPanic` formats from it, without parsing the point; verify `make test` and `make lint` pass with no test change
+- [x] 93.1 *Replace Type Code with Field*: `hookPanic` stores its subject, set by the observer loop; `logHookPanic` formats from it, without parsing the point; verify `make test` and `make lint` pass with no test change
 
 ## 94. Suggestion tests (design V45)
 
 Each test that passes on arrival is checked with a temporary mutation (reverted), recorded in notes.md.
 
-- [ ] 94.1 `TestStart_ParallelHookPanic` "n=4, HookAfterStart": "b" returns at once while "a" and "c" sleep; verify it fails when the coordinator re-panics without waiting for running Starters
-- [ ] 94.2 Add `TestKind_HandledGuard` for the V21 guard in `runStage`; verify it fails without `if stillRegistered(component)`
-- [ ] 94.3 Add parallel dependency-order rows for Refresh and Scope.Start; verify they fail when the parallel scheduler ignores requirements
-- [ ] 94.4 `assert.Same` in the eager and lazy build-hook rows; `MustInvokeAs` from a provider; an edge recorded both as depends-on and invoked; `PhaseStarted.String()` and `PhaseClosing.String()`; the scope nil-entry test starts the root; per-member `HookBeforeInvocation` for collections
-- [ ] 94.5 Verify `make test` and `make lint` pass
+- [x] 94.1 `TestStart_ParallelHookPanic` "n=4, HookAfterStart": "b" returns at once while "a" and "c" sleep; verify it fails when the coordinator re-panics without waiting for running Starters
+- [x] 94.2 Add `TestKind_HandledGuard` for the V21 guard in `runStage`; verify it fails without `if stillRegistered(component)`
+- [x] 94.3 Add parallel dependency-order rows for Refresh and Scope.Start; verify they fail when the parallel scheduler ignores requirements
+- [x] 94.4 `TestInvokeAs_StoredInjectorSkipsHolder` pins the 95.3 godoc claim; `assert.Same` in the eager and lazy build-hook rows; `MustInvokeAs` from a provider; an edge recorded both as depends-on and invoked; `PhaseStarted.String()` and `PhaseClosing.String()`; `TestScopeHooks_LaterPanicLogged` starts the root, as its scenario says; per-member `HookBeforeInvocation` for collections
+- [x] 94.5 Verify `make test` and `make lint` pass
 
 ## 95. Documentation (design V43, V44, V46)
 
-- [ ] 95.1 proposal.md: F4, What Changes (V27, V28, V38–V41 flagged), assumption 6
-- [ ] 95.2 design.md: the flagged list, X4, V23, Q1 and the Test Strategy row counts
-- [ ] 95.3 Godoc: `HookBeforeStart`, `HookAfterStart`, `AddBeforeStartHook`, `AddAfterStartHook` (Start, Refresh and Scope.Start), `AddAfterBuildHook` (configuration-time), `InvokeAs` (a stored injector still skips its holder)
+- [x] 95.1 proposal.md: F4, What Changes (V27, V28, V38–V41 flagged), assumption 6
+- [x] 95.2 design.md: the flagged list, X4, V23, Q1 and the Test Strategy row counts
+- [x] 95.3 Godoc: `HookBeforeStart`, `HookAfterStart`, `AddBeforeStartHook`, `AddAfterStartHook` (Start, Refresh and Scope.Start), `AddAfterBuildHook` (configuration-time), `InvokeAs` (a stored injector still skips its holder)
 - [ ] 95.4 Upgrading page: the latest `InvokeAs` measurement replaces "+9%"; verify the docs lint and build pass
 
 ## 96. Examples (design V44)

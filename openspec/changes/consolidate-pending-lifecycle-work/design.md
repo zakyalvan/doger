@@ -738,6 +738,20 @@ All tests run under `go test -race` with goleak (`TestMain`). Tests that could h
 | scope-lifecycle-hooks | Scope.Start during the scope's shutdown fires no scope hook (2 rows) | `scope_hooks_test.go: TestScopeStartingHook_SkippedWhileClosing/<row>` | table (regression, V41) |
 | container-start | The caller's context reaches the run (6 rows) | `root_refresh_test.go: TestIncrementalStart_CallerContext/<row>` | table (V42) |
 | live-collections | A read while an outer provider still runs (holder in the message) | `collection_test.go: TestCollection_ReadDuringOuterProvider` | unit (regression, V47) |
+| collection-ordering | Scope depth decides before registration order | `invoke_all_order_test.go: TestInvokeAll_DefaultOrder/child_registered_first` | table (V42) |
+| collection-ordering | Equal values keep the default order among many members | `invoke_all_order_test.go: TestInvokeAll_OrderedStableBeyondTwelve` | unit (V42) |
+| live-collections | Invocations that ran no provider are not running (struct-tag and by-type rows) | `collection_test.go: TestCollection_InvocationsWithoutProvider/<row>` | table (V42) |
+| live-collections | A read while an outer provider runs records no edge | `collection_test.go: TestCollection_DetachedReadRecordsNoEdge` | unit (V42) |
+| live-collections | A member built by such a read keeps the running chain | `collection_test.go: TestCollection_DetachedReadKeepsRunningChain` | unit (V42) |
+| container-lifecycle-hooks | Observer hooks receive the operation's context (identity rows) | `container_hooks_test.go: TestContainerHooks_ObserverContexts/<hook>` | table (V42) |
+| container-start | A panicking start hook under parallel start ("b" returns at once) | `root_start_test.go: TestStart_ParallelHookPanic/<row>` | synctest (V45) |
+| container-start | Parallel incremental start keeps dependency order (2 rows) | `root_start_test.go: TestStart_ParallelIncrementalDependencyOrder/<row>` | synctest (V45) |
+| component-kinds | A component shut down during its handler stays out of the handled set | `kind_test.go: TestKind_HandledGuard` | synctest (V45) |
+| dependency-declaration | An edge both depended on and invoked | `dependency_test.go: TestExplain_EdgeSourceStrongest` | unit (V45) |
+| container-phase | Phase names (7 rows) | `phase_test.go: TestContainerPhase_String/<name>` | table (V45) |
+| type-resolution | MustInvokeAs from a provider | `invoke_test.go: TestMustInvokeAs_FromProvider` | unit (V45) |
+| type-resolution | A stored provider injector still skips its service | `invoke_test.go: TestInvokeAs_StoredInjectorSkipsHolder` | unit (V44) |
+| collection-invocation | Invocation hooks per member (before and after) | `invoke_all_test.go: TestInvokeAll_HooksPerMember` | unit (V45) |
 
 Finding tests without a spec scenario (F2, F4, F5, V12):
 - `root_refresh_test.go: TestRootScope_ForgetsShutDownServices` (group 49) and `TestRootScope_ForgetsOverriddenServices` (regression, V12, internal);
@@ -749,7 +763,8 @@ Documentation tests:
 - `ExampleRootScope_Refresh`, `ExampleScope_Start`, `ExampleInjectorOpts_startParallelism`, `ExampleRootScope_AddAfterBuildHook`;
 - `ExampleRootScope_Phase`, `ExampleRootScope_AddScopeClosingHook`;
 - `ExampleInvokeCollection`, `ExampleInvokeStruct_collection`;
-- `ExampleStartError`, `ExampleExplainNamedService_source`.
+- `ExampleStartError`, `ExampleExplainNamedService_source`;
+- V44: `ExampleInvokeAs_decorator`, `ExampleMustInvokeAll`, `ExampleRootScope_AddContainerStartedHook`, `ExampleRootScope_AddContainerClosingHook`, `ExampleRootScope_AddContainerClosedHook`, `ExampleRootScope_AddScopeClosedHook`, `ExampleRootScope_RefreshWithContext`, `ExampleScope_StartWithContext`.
 
 Hot paths and their coverage:
 - **Resolution/invocation:**
