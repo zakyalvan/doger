@@ -421,3 +421,12 @@ The first hooks run failed 3 of 500 in `TestPhase_RaceFree`: this round's count 
 | 120.2 | dropping the reader seed fails the own-injector row; the nil row passes either way, as it should | |
 | 120.3 | passed on arrival; shutting the scope down after a Started hook panic fails it, "svc had Shutdown called" | |
 | 120.4, 120.5 | `openspec validate --strict` passes | |
+
+### 121. Suggestions from the seventh verification
+
+| Task | Passed on arrival; the mutation and what it fails |
+|---|---|
+| 121.1 | the parallel coordinator re-panicking on receipt: both Refresh rows fail when run alone ("Starters still inside Start", 1 and 2). Run together, the bubble deadlock of a failing row ("main bubble goroutine has exited but blocked goroutines remain") ends the test binary, so `-v` output of the other rows is lost; `-json` per row confirmed each. |
+| 121.2 | `callKindHandler(context.Background(), …)`: the two value rows fail |
+| 121.3 | a nil root in `runObserverHooks`: the Started, Ready and Closing rows fail; in the Failed and Closed dispatch: those two rows fail |
+| 121.4, 121.5 | docs; `openspec validate --strict` passes |

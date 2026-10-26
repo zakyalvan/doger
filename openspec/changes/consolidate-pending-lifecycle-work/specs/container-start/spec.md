@@ -203,7 +203,7 @@ Examples:
 Given a started root container with a HookContainerClosing hook that sleeps 100ms
 And lazy Starter "late", registered after Start, whose Start(ctx) blocks until ctx is done and returns ctx.Err()
 And a first root.Refresh() is running in another goroutine and "late" has entered Start
-And a second root.Refresh() was called in another goroutine 50ms later, waiting for the first
+And a second root.Refresh() was called in another goroutine and is waiting for the pipeline held by the first
 When the consumer calls root.Shutdown()
 Then both Refresh calls return an error matching ErrStartAfterShutdown
 And "late"'s Start was called 1 time
@@ -371,17 +371,19 @@ With `StartParallelism` n > 1, a panic in a per-service start hook (`HookBeforeS
 #### Scenario: A panicking start hook under parallel start
 ```gherkin
 Given a root scope created with StartParallelism <n> and a <hook> hook that panics with "hook-boom" for "b"
-And lazy Starters "a", "b" and "c" without dependencies, where "a" and "c" take 1s to start and "b" returns at once
-When the consumer calls Start()
-Then Start panics on the calling goroutine with "hook-boom"
+And lazy Starters "a", "b" and "c" without dependencies, registered <when>, where "a" and "c" take 1s to start and "b" returns at once
+When the consumer calls <operation>
+Then it panics on the calling goroutine with "hook-boom"
 And no Starter's Start is still running when the panic is raised
-And Phase() is PhaseFailed afterwards
+And Phase() is <phase> afterwards
 
 Examples:
-  | n | hook            |
-  | 1 | HookBeforeStart |
-  | 4 | HookBeforeStart |
-  | 4 | HookAfterStart  |
+  | n | hook            | when         | operation | phase       |
+  | 1 | HookBeforeStart | before Start | Start()   | PhaseFailed |
+  | 4 | HookBeforeStart | before Start | Start()   | PhaseFailed |
+  | 4 | HookAfterStart  | before Start | Start()   | PhaseFailed |
+  | 4 | HookBeforeStart | after Start  | Refresh() | PhaseReady  |
+  | 4 | HookAfterStart  | after Start  | Refresh() | PhaseReady  |
 ```
 
 <!-- cases: 1 default: the n = 1 row is the sequential reference -->
@@ -389,7 +391,7 @@ Examples:
 <!-- cases: N/A 3 zero values, 4 boundaries: one panicking hook among three Starters -->
 <!-- cases: N/A 5 errors: a returned error is covered by "A failure stops scheduling" -->
 <!-- cases: N/A 6 duplicates: the first panic wins, as for container hooks -->
-<!-- cases: 7 lifecycle: the phase is failed afterwards -->
+<!-- cases: 7 lifecycle: the phase is failed after Start, and stays ready after Refresh -->
 <!-- cases: 8 concurrency: no Starter is left running; runs under -race with goleak -->
 <!-- cases: 9 panics: the subject -->
 <!-- cases: N/A 10 compatibility: new API -->
@@ -616,18 +618,19 @@ Examples:
 #### Scenario: The caller's context reaches the run
 ```gherkin
 Given a started root container and lazy Starter "a", registered after Start in <scope>, whose Start(ctx) records ctx
+And component "j" of kind "k", registered with "a", whose StageBeforeStart handler records its context
 And a HookScopeStarting hook recording its context
 When the consumer calls <operation> with <ctx>
 Then <result>
 
 Examples:
-  | scope                         | operation          | ctx                                   | result                                                                        |
-  | the root                      | RefreshWithContext | a context holding value "v" for key k | it returns nil and "a" recorded a context holding "v" for k                    |
-  | child scope "tenant"          | tenant.StartWithContext | a context holding value "v" for key k | it returns nil and "a" and the Starting hook recorded a context holding "v" for k |
-  | the root                      | RefreshWithContext | an already cancelled context          | it returns an error matching context.Canceled and "a" was started 0 times      |
-  | child scope "tenant"          | tenant.StartWithContext | an already cancelled context     | it returns an error matching context.Canceled and "a" was started 0 times      |
-  | the root                      | RefreshWithContext | nil                                   | it returns nil and "a" recorded a non-nil context                              |
-  | child scope "tenant"          | tenant.StartWithContext | nil                              | it returns nil and "a" recorded a non-nil context                              |
+  | scope                         | operation               | ctx                                   | result                                                                                          |
+  | the root                      | RefreshWithContext      | a context holding value "v" for key k | it returns nil and "a" and the handler recorded a context holding "v" for k                      |
+  | child scope "tenant"          | tenant.StartWithContext | a context holding value "v" for key k | it returns nil and "a", the handler and the Starting hook recorded a context holding "v" for k   |
+  | the root                      | RefreshWithContext      | an already cancelled context          | it returns an error matching context.Canceled; "a" was started 0 times and the handler not called |
+  | child scope "tenant"          | tenant.StartWithContext | an already cancelled context          | it returns an error matching context.Canceled; "a" was started 0 times and the handler not called |
+  | the root                      | RefreshWithContext      | nil                                   | it returns nil and "a" and the handler recorded a non-nil context                                |
+  | child scope "tenant"          | tenant.StartWithContext | nil                                   | it returns nil and "a" and the handler recorded a non-nil context                                |
 ```
 
 <!-- cases: 1 default: Refresh() and Scope.Start() use context.Background() -->

@@ -797,3 +797,11 @@ Each test passed on arrival and fails under the named mutation (reverted), recor
 - [x] 120.3 `TestScopeStartedHook_PanicDefault` builds "svc" and asserts it is not shut down; mutation: a Started hook panic shutting the scope down
 - [x] 120.4 Scenarios for the tests without one: "A stored provider injector still skips its service", "The alias skip compares names", "WithOrder on Clone and Override"
 - [x] 120.5 Test Strategy: `TestAbortOutcome`'s file, the "Single-service bound" row, the row names of 120.2 and 120.4; verify `openspec validate --strict` passes
+
+## 121. Suggestions from the seventh verification (design V70)
+
+- [x] 121.1 `TestStart_ParallelHookPanic` gains two Refresh rows (phase stays ready); mutation: the coordinator re-panicking on receipt fails both, run alone
+- [x] 121.2 `TestIncrementalStart_CallerContext` records a kind handler's context too; mutation: `callKindHandler` receiving `context.Background()` fails both value rows
+- [x] 121.3 `TestContainerHooks_ObserverContexts` asserts each hook receives its root; mutations: a nil root in `runObserverHooks` fails Started, Ready and Closing, and in the Failed and Closed dispatch fails those two rows
+- [x] 121.4 Spec wording: the queued-Refresh Given, the pipeline-panic Given ("a" and "b"), the hook-panic and caller-context Examples
+- [x] 121.5 Test Strategy: drop the duplicate `TestKind_CloneReplaceIsolated` row; subtest names and row counts; the holder row labelled as supporting; verify `openspec validate --strict` passes

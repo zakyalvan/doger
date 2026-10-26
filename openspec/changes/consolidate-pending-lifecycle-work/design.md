@@ -408,6 +408,13 @@ Suspected but not reproduced: a `DeclareDependency` racing an invocation edge; `
 
 Two suggestions needed no change. The Part H table above already maps every container-lifecycle-hooks scenario. The suggested synctest fix for the queued Refresh cannot work, as explained above.
 
+**V70. Seventh verification.** `/opsx:verify` after V69 found no CRITICAL issue, no WARNING and 11 SUGGESTIONs; the user asked to apply them. Test changes, each checked with a mutation (notes.md):
+- Start-hook panics under parallel Refresh;
+- the kind handler's context on incremental start;
+- the root that every container observer hook receives.
+
+The rest is wording: two scenario Givens and two Examples tables now match their tests, and the Test Strategy rows are corrected.
+
 ### Part H — Container lifecycle hooks (folded from `add-container-lifecycle-hooks`)
 
 #### H: Context
@@ -745,7 +752,7 @@ All tests run under `go test -race` with goleak (`TestMain`). Tests that could h
 | service-aliases | Target is shut down once (6 rows) | `service_alias_test.go: TestServiceAlias_ShutdownTargetOnce/<row>` | table (regression) |
 | service-aliases | Repeated runs are stable | `service_alias_test.go: TestServiceAlias_ShutdownTargetOnce_Stable` (200 runs) | race (regression) |
 | service-aliases | Invoking the alias after its target is shut down | `service_alias_test.go: TestServiceAlias_InvokeAfterTargetShutdown` | unit |
-| type-resolution | Selection among several matches (6 rows) | `invoke_test.go: TestInvokeAs_Deterministic/<row>` | table |
+| type-resolution | Selection among several matches (8 rows; the alias and clone rows came with V42) | `invoke_test.go: TestInvokeAs_Deterministic/<row>` | table |
 | type-resolution | Selection is stable across runs | `invoke_test.go: TestInvokeAs_DeterministicStable` | unit |
 | type-resolution | Single and missing matches are unchanged (2 rows) | `invoke_test.go: TestInvokeAs_SingleAndMissing/<row>` | table |
 | type-resolution | Struct fallback selects deterministically | `invoke_test.go: TestInvokeStruct_ImplicitAliasingDeterministic` | unit |
@@ -756,11 +763,11 @@ All tests run under `go test -race` with goleak (`TestMain`). Tests that could h
 | collection-struct-injection | Struct collections inside a provider exclude the invoking service | `invoke_all_struct_test.go: TestInvokeStruct_CollectionExcludesSelf` | unit |
 | live-collections | Later registrations are visible (2 rows) | `collection_test.go: TestCollection_LaterRegistrations/<read>` | table |
 | live-collections | Creating a live collection builds nothing | `collection_test.go: TestCollection_CreationBuildsNothing` | unit |
-| live-collections | The holder is excluded from every read (later registrations, nil reader) | `collection_test.go: TestCollection_HeldByProvider` | unit |
+| live-collections | The holder stays excluded (supporting test: later registrations, nil reader) | `collection_test.go: TestCollection_HeldByProvider` | unit |
 | live-collections | Reads after shutdown and failures (3 rows) | `collection_test.go: TestCollection_ReadOutcomes/<row>` | table |
 | live-collections | Concurrent reads are race-free | `collection_test.go: TestCollection_ConcurrentReads` | race |
 | container-start | Dependency-ordered build and start; Child scopes are started after their ancestors; Start on an empty container; Late registration | unchanged: `TestStart_DependencyOrder`, `TestStart_ScopeTraversal`, `TestStart_Empty`, `TestStart_LateRegistrationNotStarted` | unit |
-| container-start | Refresh starts late registrations and new scopes once (2 rows) | `root_start_test.go: TestRefresh_StartsNew/<times>` | table |
+| container-start | Refresh starts late registrations and new scopes once (2 rows) | `root_start_test.go: TestRefresh_StartsNew/<1, 2>` | table |
 | container-start | Refresh with nothing new | `root_start_test.go: TestRefresh_NothingNew` | unit |
 | container-start | Scope.Start starts only its subtree | `root_start_test.go: TestScopeStart_Subtree` | unit |
 | container-start | Scope.Start on the root's own scope | `root_start_test.go: TestScopeStart_RootScope` | unit |
@@ -773,7 +780,6 @@ All tests run under `go test -race` with goleak (`TestMain`). Tests that could h
 | container-start | StartError fields per failure point (4 rows) | `root_start_test.go: TestStartError_Fields/<row>` | table |
 | container-start | Errors that are not service failures are not StartError (3 rows) | `root_start_test.go: TestStartError_NotForGuards/<row>` | table |
 | component-kinds | Clone keeps replaced handlers (2 rows) | `kind_test.go: TestKind_CloneCopiesHandlers/<clone>` | table |
-| component-kinds | Replacing a handler on the clone leaves the source unchanged | `kind_test.go: TestKind_CloneReplaceIsolated` | unit |
 | component-kinds | Refresh handles only new components | `kind_test.go: TestKind_RefreshHandlesNew` | unit |
 | component-kinds | Runners run once | `kind_test.go: TestRunnable_RefreshRunsOnce` | unit |
 | registration-options | Each constructor yields an option recognized by registration (new `with_order` row) | `options_test.go: TestProvideOptions_Constructors/with_order` | table |
@@ -810,7 +816,7 @@ All tests run under `go test -race` with goleak (`TestMain`). Tests that could h
 | live-collections | Reads outside providers ignore finished invocations (4 rows) | `collection_test.go: TestCollection_InvocationsWithoutProvider/<row>` | table (regression, V24, V42; V51) |
 | container-start | A failure followed by Shutdown under parallel start (2 rows) | `root_start_test.go: TestStart_FailureThenShutdown/<operation>` | synctest (regression, V25) |
 | container-start | StartError values built by the consumer (4 rows) | `errors_test.go: TestStartError_ConsumerBuilt/<row>` | table (regression, V26) |
-| type-resolution | The invoking service is not a candidate (3 rows) | `invoke_test.go: TestInvokeAs_SkipsInvoker/<row>` | table (regression, V27) |
+| type-resolution | The invoking service is not a candidate (6 rows; the 3 alias rows came with V40) | `invoke_test.go: TestInvokeAs_SkipsInvoker/<row>` | table (regression, V27, V40) |
 | type-resolution | Struct fallback skips the invoking service | `invoke_test.go: TestInvokeStruct_FallbackSkipsInvoker` | unit (regression, V27) |
 | container-lifecycle-hooks | A pipeline panic runs Failed hooks before it is re-raised (3 rows) | `container_hooks_test.go: TestContainerFailedHook_PipelinePanic/<row>` | table (regression, V28) |
 | container-lifecycle-hooks | A Failed hook panic does not replace the pipeline panic (2 rows) | `container_hooks_test.go: TestContainerFailedHook_PanicDuringPipelinePanic/<policy>` | table (regression, V28) |
@@ -901,7 +907,7 @@ Files: `container_hooks_test.go` and `container_hooks_example_test.go` (package 
 | Failure point decides which hooks run (7 rows) | `TestContainerFailedHook_FailurePoint/<row>` | table |
 | One-shot guard errors do not fire Failed (3 rows) | `TestContainerFailedHook_GuardErrors/<row>` | table |
 | Post-start or Closed hook calls Shutdown (4 rows) | `TestContainerHooks_HookCallsShutdown/<hook>` (`testWithTimeout`) | table |
-| Starting or Closing hook calls Shutdown with a deadline (2 rows) | `TestContainerHooks_HookCallsShutdownWithDeadline/<hook>` (`synctest.Test`) | table / synctest |
+| Starting or Closing hook calls Shutdown with a deadline (3 rows) | `TestContainerHooks_HookCallsShutdownWithDeadline/<row>` (`synctest.Test`) | table / synctest |
 | Closing and Closed around service shutdown from every state (3 rows) | `TestContainerClosingClosedHooks_Order/<state>` | table |
 | Closed hook sees shutdown errors in the report | `TestContainerClosedHook_ReportErrors` | unit |
 | Signal-driven shutdown fires the hooks | `TestContainerHooks_ShutdownOnSignalsWithContext` | unit |

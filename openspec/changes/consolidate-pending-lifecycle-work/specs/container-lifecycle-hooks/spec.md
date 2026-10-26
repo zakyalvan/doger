@@ -181,7 +181,7 @@ When a panic escapes the start pipeline (from a per-service hook such as `HookBe
 ```gherkin
 Given a root container created with StartParallelism <n> and a <hook> hook that panics with <value>
 And one hook registered for each of Starting, Started, Ready and Failed
-And lazy Starter "a"
+And lazy Starters "a" and "b"
 When the consumer calls Start
 Then Start panics on the calling goroutine with <value>
 And the hooks that ran, in order, are "starting, failed"
