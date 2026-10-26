@@ -413,47 +413,44 @@ func invokingServiceName(injector Injector) (string, bool) {
 // opposite of collection order, on purpose: it keeps the "current scope
 // first" behavior of InvokeAs.
 func selectByType(injector Injector, target reflect.Type) (collectionCandidate, bool) {
-	var selected collectionCandidate
-	var found bool
 	from := injectorScope(injector)
 	invoker, fromProvider := invokingServiceName(injector)
 
-	injector.serviceForEachRec(func(name string, scope *Scope, s any) bool {
-		// scopes come nearest first, each one whole: once a scope had a match,
-		// a farther scope cannot win, so the walk stops there
-		if found && scope != selected.scope {
-			return false
+	// nearest scope first: once a scope has a match, a farther scope cannot
+	// win, so the walk stops there
+	for scope := from; scope != nil; scope = scope.parentScope {
+		var selected collectionCandidate
+		var found bool
+
+		for _, match := range scope.matchesFor(target) {
+			if fromProvider && match.name == invoker {
+				continue
+			}
+
+			// an alias of the invoking service would resolve to it
+			if fromProvider && aliasResolvesTo(match.service, invoker) {
+				continue
+			}
+
+			// a nearer service of the same name hides this one, as for collections
+			if shadowedBetween(from, scope, match.name) {
+				continue
+			}
+
+			// one scope at a time, so the depth never decides
+			candidate := placement{name: match.name, regIndex: match.regIndex}
+			if !found || candidate.compare(selected.placement) < 0 {
+				selected = collectionCandidate{placement: candidate, scope: scope, service: match.service}
+				found = true
+			}
 		}
 
-		if fromProvider && name == invoker {
-			return true
+		if found {
+			return selected, true
 		}
+	}
 
-		service, ok := s.(serviceWrapperAny)
-		if !ok || !typeCanCastToType(service.getReflectType(), target) {
-			return true
-		}
-
-		// an alias of the invoking service would resolve to it
-		if fromProvider && aliasResolvesTo(s, invoker) {
-			return true
-		}
-
-		// a nearer service of the same name hides this one, as for collections
-		if shadowedBetween(from, scope, name) {
-			return true
-		}
-
-		// one scope at a time, so the depth never decides
-		candidate := placement{name: name, regIndex: service.getRegistrationIndex()}
-		if !found || candidate.compare(selected.placement) < 0 {
-			selected = collectionCandidate{placement: candidate, scope: scope, service: s}
-			found = true
-		}
-		return true
-	})
-
-	return selected, found
+	return collectionCandidate{}, false
 }
 
 // maxAliasHops bounds the alias chain aliasResolvesTo follows: a longer

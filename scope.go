@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"reflect"
 	"sync"
 	"time"
 
@@ -57,6 +58,11 @@ type Scope struct {
 
 	mu       sync.RWMutex   // Mutex for thread-safe operations
 	services map[string]any // Map of registered services
+
+	// typeMatches caches, per target type, the services of this scope whose
+	// registered type is assignable to it; reset whenever services change.
+	// Guarded by mu.
+	typeMatches map[reflect.Type][]typeMatch
 
 	// Storing the invocation order is not needed anymore, but we keep it
 	// for improved observability in unit tests.
@@ -735,6 +741,7 @@ func (s *Scope) serviceSet(name string, service any) {
 	s.mu.Lock()
 	replaced, ok := s.services[name]
 	s.services[name] = service
+	s.typeMatches = nil
 	s.mu.Unlock()
 
 	// an Override leaves the replaced wrapper behind for good
@@ -772,6 +779,46 @@ func (s *Scope) serviceForEach(cb func(name string, scope *Scope, service any) b
 			break
 		}
 	}
+}
+
+// typeMatch is a service of a scope whose registered type is assignable to
+// a target type.
+type typeMatch struct {
+	name     string
+	service  any
+	regIndex uint64
+}
+
+// matchesFor returns the services of this scope whose registered type is
+// assignable to target, in no particular order. The result is cached until
+// the scope's services change; callers must not modify it.
+func (s *Scope) matchesFor(target reflect.Type) []typeMatch {
+	s.mu.RLock()
+	matches, ok := s.typeMatches[target]
+	s.mu.RUnlock()
+	if ok {
+		return matches
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if matches, ok := s.typeMatches[target]; ok {
+		return matches
+	}
+	matches = []typeMatch{}
+	for name, serviceAny := range s.services {
+		service, ok := serviceAny.(serviceWrapperAny)
+		if ok && typeCanCastToType(service.getReflectType(), target) {
+			matches = append(matches, typeMatch{name: name, service: serviceAny, regIndex: service.getRegistrationIndex()})
+		}
+	}
+	if s.typeMatches == nil {
+		s.typeMatches = map[reflect.Type][]typeMatch{}
+	}
+	s.typeMatches[target] = matches
+
+	return matches
 }
 
 // serviceForEachRec iterates over all services in the current scope and all ancestor scopes,
@@ -877,6 +924,7 @@ func (s *Scope) serviceShutdown(ctx context.Context, name string) error {
 	serviceAny, ok := s.services[name]
 	if ok {
 		delete(s.services, name) // service is removed from DI container
+		s.typeMatches = nil
 		delete(s.orderedInvocation, name)
 		s.RootScope().dag.removeService(s.id, s.name, name)
 	}
