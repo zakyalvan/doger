@@ -75,7 +75,7 @@ Since the previous pick was random, no code could rely on a specific one, but a 
 
 Migration: none for decorators; code that checked for `ErrCircularDependency` in that case checks for `ErrServiceNotMatch`.
 
-Performance: to pick deterministically, `InvokeAs` checks every service of the nearest scope that has a match, instead of stopping at the first one found. In the latest measurement (a scope with 20 services, 10 runs alternating with the previous release), the difference per call was within noise (1.30µs → 1.39µs, not significant), with 8 allocations instead of 11; earlier measurements found up to about 0.1µs (+5% to +9%) per call. On hot paths, prefer `InvokeNamed` or `Invoke` with the concrete type, or resolve once and keep the instance.
+Performance: to pick deterministically, `InvokeAs` considers every match of the nearest scope that has one, instead of stopping at the first one found. Each scope caches, per requested type, its services assignable to it, and resets that cache whenever a service is registered, overridden or removed, so a call no longer scans and reflects over every service. In a scope with 20 services (10 runs alternating with the previous release), a call takes about 0.3µs instead of 1.3µs, with 4 allocations instead of 11. The first call for a type in a scope, and the first after each registration in it, builds that scope's entry.
 
 ## The `do:"*"` struct tag injects a collection {#star-struct-tag}
 
