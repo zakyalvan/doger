@@ -695,6 +695,6 @@ Each step runs `make test` and `make lint`, and uses gopls references to prove t
 
 ## 104. Integration checks after the fourth verification
 
-- [ ] 104.1 Full run: `make test`, `make lint`, per-module `go vet ./... && go test -race ./...` in every `go.work` module, the docs lint and build, and `openspec validate consolidate-pending-lifecycle-work --strict`
-- [ ] 104.2 Stress (design V54): run the lifecycle and collection tests with `-race -count=2000 -timeout 110m` in several processes, and `TestContainerHooks_ShutdownCauseRace` alone with `-count=50`; verify no failure and record the peak RSS
-- [ ] 104.3 Benchmarks: `benchstat` against `ed65bdc` (10 runs, alternating the two test binaries; the base built from a temporary worktree with `GOWORK=off`), recorded in notes.md
+- [x] 104.1 Full run: `make test`, `make lint`, per-module `go vet ./... && go test -race ./...` in every `go.work` module, the docs lint and build, and `openspec validate consolidate-pending-lifecycle-work --strict`
+- [x] 104.2 Stress (design V54): run the lifecycle and collection tests with `-race -count=2000 -timeout 110m` in several processes, and `TestContainerHooks_ShutdownCauseRace` alone with `-count=50`; verify no failure and record the peak RSS
+- [x] 104.3 Benchmarks: `benchstat` against `ed65bdc` (10 runs, alternating the two test binaries; the base built from a temporary worktree with `GOWORK=off`), recorded in notes.md

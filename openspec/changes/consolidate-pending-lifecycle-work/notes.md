@@ -342,3 +342,16 @@ The 10-run comparison showed −7.6% time without significance (p=0.105) on this
 Why the stress is split: a first single `-race -count=2000` process over all of these tests grew to 7.3 GB of RSS in 34 minutes (about 190 MB/min on a 15 GB machine) and was stopped. Measured: after 100 runs, peak RSS was 2066 MB with `-race` and 26 MB without, while the live Go heap at exit was about 1 MB in both (`inuse_space`), so nothing is retained. A standalone program showed the race runtime keeping about 280 bytes per goroutine ever created (RSS linear up to 1 million short-lived goroutines with `-race`, flat at 8 MB without). `/sched/goroutines-created`, read per top-level test, attributed 80,009 of the suite's 81,636 goroutines per run (98%) to `TestContainerHooks_ShutdownCauseRace`.
 
 While measuring, `TestStart_CallerCancelThenShutdown`'s parallel row failed 1 time in 100 (3 under `-race`), and 2 times in 3000 on the previous version of the test: when the cancel landed before the scheduler dispatched "b", its own abort check was the first failure, which is correct. Fixed in `ae5f69f` (the row cancels once both Starters run); 3000 runs, and 300 under `-race`, pass.
+- 104.3: interleaved against the PR base `ed65bdc` (10 alternating runs, `a0c2b85`):
+
+| Benchmark | time | B/op | allocs/op |
+|---|---|---|---|
+| InvokeLazySteadyState, InvokeLazyParallel, InvokeTransient, InvokeNestedScopes | ~ | 192 → 192 | 6 → 5 |
+| InvokeNamed | ~ (p=0.089) | 96 → 96 | 4 → 3 |
+| InvokeAlias | −11.7% (p=0.007) | 256 → 240 | 9 → 7 |
+| InvokeAs | −77.2% (p=0.000), 1.30µs → 0.30µs | 937 → 144 | 11 → 4 |
+| ProviderChainTransient | −12.7% (p=0.000) | 816 → 768 | 24 → 20 |
+| New | ~ (p=0.739) | 952 → 1216 | 13 → 8 |
+| Provide, HealthCheck, Shutdown, ListProvidedServices, Ancestors | ~ | ~ | ~ |
+
+Removing `virtualScope.returned` (V51) took the per-invocation bytes back to the base's, so the invoker link of V17 no longer costs memory; each invocation still allocates one object fewer (V36). The `New` bytes above the base are the larger public `InjectorOpts`. `NewFrameFromPC` (+8.7%, p=0.005) is in the untouched `stacktrace` package: noise.
