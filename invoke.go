@@ -57,8 +57,6 @@ func invokeAnyByNameAs(i Injector, name string, source DependencySource) (any, e
 	injector.RootScope().opts.onBeforeInvocation(serviceScope, name)
 	child := newChildVirtualScope(vScope, serviceScope, name)
 	instance, err := service.getInstanceAny(child)
-	// the invocation is over, even when no provider ran with child
-	child.returned.Store(true)
 	injector.RootScope().opts.onAfterInvocation(serviceScope, name, err)
 	if err != nil {
 		return nil, err
@@ -110,8 +108,6 @@ func invokeByName[T any](i Injector, name string) (T, error) {
 	injector.RootScope().opts.onBeforeInvocation(serviceScope, name)
 	child := newChildVirtualScope(vScope, serviceScope, name)
 	instance, err := service.getInstance(child)
-	// the invocation is over, even when no provider ran with child
-	child.returned.Store(true)
 	injector.RootScope().opts.onAfterInvocation(serviceScope, name, err)
 
 	if err != nil {
@@ -169,8 +165,6 @@ func invokeServiceInstance(injector Injector, vScope *virtualScope, hookName, re
 	injector.RootScope().opts.onBeforeInvocation(scope, hookName)
 	child := newChildVirtualScope(vScope, scope, realName)
 	instance, err := service.(serviceWrapperGetInstanceAny).getInstanceAny(child) //nolint:errcheck,forcetypeassert
-	// the invocation is over, even when no provider ran with child
-	child.returned.Store(true)
 	injector.RootScope().opts.onAfterInvocation(scope, hookName, err)
 	if err != nil {
 		return nil, err
@@ -717,11 +711,6 @@ func humanReadableInvokerChain(invokerChain []string) string {
 }
 
 func handleProviderPanic[T any](provider Provider[T], i Injector) (svc T, err error) {
-	if vScope, ok := i.(*virtualScope); ok {
-		// live collections created by the provider read without its chain
-		defer vScope.returned.Store(true)
-	}
-
 	defer func() {
 		if r := recover(); r != nil {
 			if e, ok := r.(error); ok {

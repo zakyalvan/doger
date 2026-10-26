@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"slices"
-	"sync/atomic"
 )
 
 var _ Injector = (*virtualScope)(nil)
@@ -44,11 +43,10 @@ func newVirtualScope(predecessor Injector, invokerChain []string) *virtualScope 
 // The chain is not copied into each virtual scope: an invocation allocates
 // one virtual scope, and a stored injector keeps O(depth) memory alive.
 type virtualScope struct {
-	self     Injector
-	name     string        // the service this invocation builds; unused when base is set
-	parent   *virtualScope // the virtual scope of the invoking provider, if any
-	base     []string      // the whole invoker chain, for a scope not built by an invocation
-	returned atomic.Bool   // its provider returned, or its invocation is over
+	self   Injector
+	name   string        // the service this invocation builds; unused when base is set
+	parent *virtualScope // the virtual scope of the invoking provider, if any
+	base   []string      // the whole invoker chain, for a scope not built by an invocation
 }
 
 // newChildVirtualScope returns the virtual scope of an invocation of name
