@@ -3,6 +3,7 @@ package doger
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -87,4 +88,86 @@ func TestScopeStartingHook_Veto(t *testing.T) {
 			assert.Equal(t, tt.recorded, started.list())
 		})
 	}
+}
+
+// scopeShutdowner records "shutdown <scope>" when shut down.
+type scopeShutdowner struct {
+	scope string
+	rec   *callRecorder
+}
+
+func (s *scopeShutdowner) Shutdown() error {
+	s.rec.record("shutdown " + s.scope)
+	return nil
+}
+
+// provideBuiltScopeShutdowner registers and builds a scopeShutdowner in scope.
+func provideBuiltScopeShutdowner(t *testing.T, scope *Scope, rec *callRecorder) {
+	t.Helper()
+	ProvideNamed(scope, "svc", func(Injector) (*scopeShutdowner, error) {
+		return &scopeShutdowner{scope: scope.Name(), rec: rec}, nil
+	})
+	_, err := InvokeNamed[*scopeShutdowner](scope, "svc")
+	require.NoError(t, err)
+}
+
+func TestScopeHooks_ClosingClosed(t *testing.T) {
+	t.Parallel()
+
+	nested := []string{"closing jobs", "shutdown jobs", "closed jobs", "closing tenant", "shutdown tenant", "closed tenant"}
+
+	tests := []struct {
+		name      string
+		operation func(root *RootScope, tenant, jobs *Scope)
+		events    []string
+	}{
+		{name: "tenant.Shutdown()", operation: func(_ *RootScope, tenant, _ *Scope) { tenant.Shutdown() }, events: nested},
+		{name: "root.Shutdown()", operation: func(root *RootScope, _, _ *Scope) { root.Shutdown() }, events: nested},
+		{name: "jobs.Shutdown()", operation: func(_ *RootScope, _, jobs *Scope) { jobs.Shutdown() }, events: []string{"closing jobs", "shutdown jobs", "closed jobs"}},
+		{
+			name: "tenant.Shutdown() then root.Shutdown()",
+			operation: func(root *RootScope, tenant, _ *Scope) {
+				tenant.Shutdown()
+				root.Shutdown()
+			},
+			events: append(append([]string{}, nested...), "closing tenant", "closed tenant"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+
+			root := New()
+			rec := &callRecorder{}
+			tenant := root.Scope("tenant")
+			jobs := tenant.Scope("jobs")
+			provideBuiltScopeShutdowner(t, tenant, rec)
+			provideBuiltScopeShutdowner(t, jobs, rec)
+			root.AddScopeClosingHook(func(_ context.Context, scope *Scope) { rec.record("closing " + scope.Name()) })
+			root.AddScopeClosedHook(func(_ context.Context, scope *Scope) { rec.record("closed " + scope.Name()) })
+
+			tt.operation(root, tenant, jobs)
+
+			assert.Equal(t, tt.events, rec.list())
+		})
+	}
+}
+
+func TestScopeHooks_RootFiresNone(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	var calls atomic.Int32
+	root.AddScopeStartingHook(func(context.Context, *Scope) error { calls.Add(1); return nil })
+	root.AddScopeStartedHook(func(context.Context, *Scope) { calls.Add(1) })
+	root.AddScopeClosingHook(func(context.Context, *Scope) { calls.Add(1) })
+	root.AddScopeClosedHook(func(context.Context, *Scope) { calls.Add(1) })
+
+	require.NoError(t, root.Start())
+	root.Shutdown()
+
+	assert.Equal(t, int32(0), calls.Load())
 }

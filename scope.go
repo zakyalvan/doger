@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"slices"
 	"sync"
 	"time"
 
@@ -381,8 +382,27 @@ func (s *Scope) ShutdownWithContext(ctx context.Context) *ShutdownReport {
 	start := s.clock().Now()
 
 	rep1 := s.shutdownChildrenInParallel(ctx)
+
+	// child scopes only: the root's own scope fires no scope hook
+	isChild := s.parentScope != nil
+	if isChild {
+		for _, hook := range slices.Clone(s.rootScope.opts.HookScopeClosing) {
+			if hook != nil {
+				hook(ctx, s)
+			}
+		}
+	}
+
 	rep2 := s.shutdownServicesInParallel(ctx)
 	s.logf("shut down services")
+
+	if isChild {
+		for _, hook := range slices.Clone(s.rootScope.opts.HookScopeClosed) {
+			if hook != nil {
+				hook(ctx, s)
+			}
+		}
+	}
 
 	report := mergeShutdownReports(rep1, rep2)
 	report.ShutdownTime = s.clock().Since(start)

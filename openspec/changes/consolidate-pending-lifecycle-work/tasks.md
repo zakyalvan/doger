@@ -281,9 +281,9 @@ Rules:
 
 ## 41. Scope Closing and Closed hooks (scope-lifecycle-hooks; design S1)
 
-- [ ] 41.1 RED: add `TestScopeHooks_ClosingClosed` (4 rows) and `TestScopeHooks_RootFiresNone`; verify `go test -race -run 'TestScopeHooks_(ClosingClosed|RootFiresNone)' .` fails on the missing events; record that RootFiresNone passes on arrival and show it can fail by temporarily firing scope hooks for the root's own scope (not committed)
-- [ ] 41.2 GREEN: fire Closing after the children and before the services, and Closed at the end of `Scope.ShutdownWithContext` for non-root scopes (design S1); verify the 41.1 command passes, the existing `scope_test.go` shutdown tests pass unchanged, and `make test` is green
-- [ ] 41.3 REFACTOR: none needed if 41.2 adds two calls; verify `make test` and `make lint` pass
+- [x] 41.1 RED: add `TestScopeHooks_ClosingClosed` (4 rows) and `TestScopeHooks_RootFiresNone`; verify `go test -race -run 'TestScopeHooks_(ClosingClosed|RootFiresNone)' .` fails on the missing events; record that RootFiresNone passes on arrival and show it can fail by temporarily firing scope hooks for the root's own scope (not committed)
+- [x] 41.2 GREEN: fire Closing after the children and before the services, and Closed at the end of `Scope.ShutdownWithContext` for non-root scopes (design S1); verify the 41.1 command passes, the existing `scope_test.go` shutdown tests pass unchanged, and `make test` is green
+- [x] 41.3 REFACTOR: none needed if 41.2 adds two calls; verify `make test` and `make lint` pass
 
 ## 42. Scope hook panics (scope-lifecycle-hooks; design S1)
 
