@@ -387,6 +387,10 @@ func (s *Scope) Shutdown() *ShutdownReport {
 //
 // Play: https://go.dev/play/p/nkiBBYow2d5
 func (s *Scope) ShutdownWithContext(ctx context.Context) *ShutdownReport {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	var first hookPanic
 	report := s.shutdownWithContext(ctx, &first)
 	s.rootScope.dispatchFirstPanic(first)
@@ -437,10 +441,6 @@ func (s *Scope) shutdownWithContext(ctx context.Context, first *hookPanic) *Shut
 // that is running with candidates in this scope. It returns an error when ctx
 // ended first. Each call must be paired with endClosing.
 func (s *Scope) beginClosing(ctx context.Context) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
 	root := s.rootScope
 	root.lifecycleMu.Lock()
 	s.closing++

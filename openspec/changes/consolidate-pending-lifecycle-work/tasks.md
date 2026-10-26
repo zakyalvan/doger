@@ -447,9 +447,9 @@ Rules:
 
 ## 67. Scope hooks get a non-nil context (scope-lifecycle-hooks; design V20)
 
-- [ ] 67.1 RED: add `TestScopeHooks_NilContext` (2 rows) to `scope_hooks_test.go`; verify `go test -race -run TestScopeHooks_NilContext .` fails on the shutdown row and record whether the start row passes on arrival
-- [ ] 67.2 GREEN: normalize a nil context at the top of `Scope.ShutdownWithContext` (and `Scope.StartWithContext` if needed); verify the 67.1 command passes and `make test` is green
-- [ ] 67.3 REFACTOR: drop the now redundant nil check in `beginClosing`; verify `make test` and `make lint` pass
+- [x] 67.1 RED: add `TestScopeHooks_NilContext` (2 rows) to `scope_hooks_test.go`; verify `go test -race -run TestScopeHooks_NilContext .` fails on the shutdown row and record whether the start row passes on arrival
+- [x] 67.2 GREEN: normalize a nil context at the top of `Scope.ShutdownWithContext` (and `Scope.StartWithContext` if needed); verify the 67.1 command passes and `make test` is green
+- [x] 67.3 REFACTOR: drop the now redundant nil check in `beginClosing`; verify `make test` and `make lint` pass
 
 ## 68. Bookkeeping skips services that left their scope (container-start; design V21)
 

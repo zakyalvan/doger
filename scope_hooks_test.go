@@ -276,3 +276,40 @@ func TestScopeHooks_ObserverPanicThroughParent(t *testing.T) {
 	is.Equal(int32(1), svc.shutdowns.Load())
 	is.ErrorIs(root.Start(), ErrStartAfterShutdown)
 }
+
+func TestScopeHooks_NilContext(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		operation func(tenant *Scope)
+	}{
+		{name: "tenant.StartWithContext(nil)", operation: func(tenant *Scope) { _ = tenant.StartWithContext(nil) }},       //nolint:staticcheck // nil is the subject
+		{name: "tenant.ShutdownWithContext(nil)", operation: func(tenant *Scope) { _ = tenant.ShutdownWithContext(nil) }}, //nolint:staticcheck // nil is the subject
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+			is := assert.New(t)
+
+			root := New()
+			require.NoError(t, root.Start())
+			tenant := root.Scope("tenant")
+			var contexts []context.Context
+			record := func(ctx context.Context, _ *Scope) { contexts = append(contexts, ctx) }
+			root.AddScopeStartingHook(func(ctx context.Context, scope *Scope) error { record(ctx, scope); return nil })
+			root.AddScopeStartedHook(record)
+			root.AddScopeClosingHook(record)
+			root.AddScopeClosedHook(record)
+
+			tt.operation(tenant)
+
+			is.Len(contexts, 2)
+			for _, ctx := range contexts {
+				is.NotNil(ctx)
+			}
+		})
+	}
+}
