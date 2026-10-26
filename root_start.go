@@ -92,7 +92,7 @@ func (s *RootScope) StartWithContext(ctx context.Context) error {
 		return err
 	}
 
-	recovered, panicked, err := s.runStartRecovering(startCtx)
+	recovered, panicked, err := s.runStart(startCtx)
 
 	// pointAfterStart: startDone is closed, so code here may call Shutdown().
 	if panicked {
@@ -122,11 +122,6 @@ func (s *RootScope) failAndRepanic(ctx context.Context, recovered any, err error
 	}
 
 	panic(recovered)
-}
-
-// runStartRecovering runs runStart.
-func (s *RootScope) runStartRecovering(startCtx context.Context) (recovered any, panicked bool, err error) {
-	return s.runStart(startCtx)
 }
 
 // dispatchAfterStart fires the pointAfterStart hooks from Start's local
@@ -283,7 +278,7 @@ func (s *RootScope) runStart(startCtx context.Context) (recovered any, panicked 
 			recovered = recover()
 			err = recoverAsError(recovered)
 		}
-		s.finishStart(startCtx, &err, panicked)
+		s.finishStart(startCtx, &err)
 	}()
 
 	s.pipelineMu.Lock()
@@ -297,7 +292,7 @@ func (s *RootScope) runStart(startCtx context.Context) (recovered any, panicked 
 
 // finishStart records the outcome of Start, ends the Start-time context and
 // releases its waiters. Once Shutdown began, the outcome is abortOutcome's.
-func (s *RootScope) finishStart(startCtx context.Context, err *error, panicked bool) {
+func (s *RootScope) finishStart(startCtx context.Context, err *error) {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
 
@@ -305,7 +300,7 @@ func (s *RootScope) finishStart(startCtx context.Context, err *error, panicked b
 		*err = abortOutcome(startCtx, *err)
 	}
 
-	if *err != nil || panicked {
+	if *err != nil {
 		s.startPhase = startFailed
 	} else {
 		s.startPhase = startStarted
