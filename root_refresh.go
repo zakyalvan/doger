@@ -58,10 +58,7 @@ func (s *RootScope) startIncremental(ctx context.Context, root *Scope) (closing 
 
 	if root != s.self {
 		// a scope shutting down starts nothing and runs no scope hook
-		s.lifecycleMu.Lock()
-		closing := closingInLine(root)
-		s.lifecycleMu.Unlock()
-		if closing {
+		if s.scopeClosing(root) {
 			return true, nil
 		}
 
@@ -71,6 +68,15 @@ func (s *RootScope) startIncremental(ctx context.Context, root *Scope) (closing 
 	}
 
 	return s.runPipeline(incCtx, []*Scope{root})
+}
+
+// scopeClosing reports whether scope or one of its ancestors is shutting
+// down.
+func (s *RootScope) scopeClosing(scope *Scope) bool {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+
+	return closingInLine(scope)
 }
 
 // runScopeStartingHooks runs the scope Starting hooks for scope in order.
