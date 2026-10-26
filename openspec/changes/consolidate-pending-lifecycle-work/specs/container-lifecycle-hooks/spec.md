@@ -289,7 +289,7 @@ Examples:
   | setup                                                                                                                                         |
   | a Starting hook that starts Shutdown in a goroutine, waits for ctx.Done() and returns ctx.Err()                                                |
   | lazy "x" registered as any with kind "k" for Job, whose provider starts Shutdown in a goroutine, waits until it is blocked and returns a non-Job value |
-  | a StageBeforeStart handler of kind "k" for lazy "j" that declares the dependency cycle a -> b -> a, starts Shutdown in a goroutine, waits until it is blocked and returns nil |
+  | lazy Starter "scheduler", lazy Starter "job" whose provider invokes "scheduler", DeclareDependency(root, "scheduler", "job") before Start, and a StageBeforeStart handler of kind "k" for lazy "j" that starts Shutdown in a goroutine, waits until it is blocked and returns nil, so the cycle check fails |
 ```
 
 #### Scenario: A start finishing as Shutdown begins

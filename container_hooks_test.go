@@ -526,6 +526,9 @@ func TestContainerHooks_HookCallsShutdown(t *testing.T) {
 	}
 }
 
+// errHookVeto is a Starting hook's own veto.
+var errHookVeto = errors.New("veto")
+
 func TestContainerHooks_HookCallsShutdownWithDeadline(t *testing.T) {
 	t.Parallel()
 
@@ -548,6 +551,24 @@ func TestContainerHooks_HookCallsShutdownWithDeadline(t *testing.T) {
 			check: func(t *testing.T, root *RootScope, failed *atomic.Int32) {
 				t.Helper()
 				assert.ErrorIs(t, root.Start(), ErrStartAfterShutdown)
+				assert.Equal(t, int32(1), failed.Load())
+			},
+		},
+		{
+			name: "Starting returning errVeto",
+			register: func(root *RootScope, record func(*ShutdownReport)) {
+				root.AddContainerStartingHook(func(_ context.Context, r *RootScope) error {
+					ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+					defer cancel()
+					record(r.ShutdownWithContext(ctx))
+					return errHookVeto
+				})
+			},
+			check: func(t *testing.T, root *RootScope, failed *atomic.Int32) {
+				t.Helper()
+				err := root.Start()
+				assert.ErrorIs(t, err, ErrStartAfterShutdown)
+				assert.ErrorIs(t, err, errHookVeto)
 				assert.Equal(t, int32(1), failed.Load())
 			},
 		},
@@ -1401,6 +1422,78 @@ func TestContainerHooks_ShutdownCauseRace(t *testing.T) {
 			}
 
 			assert.Zero(t, bad, "errors not matching ErrStartAfterShutdown, e.g. %v", sample)
+		})
+	}
+}
+
+func TestContainerHooks_ShutdownInterruptsLateStep(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		setup func(root *RootScope, shutdowns *sync.WaitGroup)
+	}{
+		{
+			name: "Starting hook waiting for ctx",
+			setup: func(root *RootScope, shutdowns *sync.WaitGroup) {
+				root.AddContainerStartingHook(func(ctx context.Context, r *RootScope) error {
+					shutdowns.Go(func() { r.Shutdown() })
+					<-ctx.Done()
+					return ctx.Err()
+				})
+			},
+		},
+		{
+			name: "deferred kind binding",
+			setup: func(root *RootScope, shutdowns *sync.WaitGroup) {
+				k := NewKind[Job, Spec]("k")
+				ProvideNamed[any](root, "x", func(Injector) (any, error) {
+					shutdowns.Go(func() { root.Shutdown() })
+					synctest.Wait()        // Shutdown is blocked, waiting for this Start
+					return struct{}{}, nil // not a Job
+				}, k.With(Spec{}))
+			},
+		},
+		{
+			name: "cycle check",
+			setup: func(root *RootScope, shutdowns *sync.WaitGroup) {
+				ProvideNamed(root, "scheduler", func(Injector) (*startWithErr, error) { return &startWithErr{}, nil })
+				ProvideNamed(root, "job", func(i Injector) (*startWithErr, error) {
+					_, err := InvokeNamed[*startWithErr](i, "scheduler")
+					return &startWithErr{}, err
+				})
+				if err := DeclareDependency(root, "scheduler", "job"); err != nil {
+					panic(err)
+				}
+				k := NewKind[Job, Spec]("k")
+				ProvideNamed(root, "j", func(Injector) (*CleanupJob, error) { return &CleanupJob{name: "j"}, nil }, k.With(Spec{}))
+				k.Handle(root, StageBeforeStart, func(context.Context, Component[Job, Spec]) error {
+					shutdowns.Go(func() { root.Shutdown() })
+					synctest.Wait()
+					return nil
+				})
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				is := assert.New(t)
+
+				root := New()
+				var failedErr error
+				root.AddContainerFailedHook(func(_ context.Context, _ *RootScope, err error) { failedErr = err })
+				var shutdowns sync.WaitGroup
+				tt.setup(root, &shutdowns)
+
+				err := root.Start()
+				shutdowns.Wait()
+
+				is.ErrorIs(err, ErrStartAfterShutdown)
+				is.Equal(err, failedErr)
+			})
 		})
 	}
 }

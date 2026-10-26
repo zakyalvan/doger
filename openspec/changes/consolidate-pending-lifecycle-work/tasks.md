@@ -441,9 +441,9 @@ Rules:
 
 ## 66. Start failures after Shutdown began carry the abort cause (container-lifecycle-hooks, container-start; design V18)
 
-- [ ] 66.1 RED: add the errVeto row to `TestContainerHooks_HookCallsShutdownWithDeadline`, `TestContainerHooks_ShutdownInterruptsLateStep` (3 rows) and `TestScopeStartingHook_ShutdownCause`; verify `go test -race -run 'TestContainerHooks_HookCallsShutdownWithDeadline|TestContainerHooks_ShutdownInterruptsLateStep|TestScopeStartingHook_ShutdownCause' .` fails because the errors do not match `ErrStartAfterShutdown`
-- [ ] 66.2 GREEN: wrap the Starting-hook vetoes, the deferred kind-binding error and the cycle error with `withAbortCause`; verify the 66.1 command passes, the Part H tables pass unchanged, and `make test` is green
-- [ ] 66.3 REFACTOR: none needed if each site is one wrap; verify `make test` and `make lint` pass
+- [x] 66.1 RED: add the errVeto row to `TestContainerHooks_HookCallsShutdownWithDeadline`, `TestContainerHooks_ShutdownInterruptsLateStep` (3 rows) and `TestScopeStartingHook_ShutdownCause`; verify `go test -race -run 'TestContainerHooks_HookCallsShutdownWithDeadline|TestContainerHooks_ShutdownInterruptsLateStep|TestScopeStartingHook_ShutdownCause' .` fails because the errors do not match `ErrStartAfterShutdown`
+- [x] 66.2 GREEN: wrap the Starting-hook vetoes, the deferred kind-binding error and the cycle error with `withAbortCause`; verify the 66.1 command passes, the Part H tables pass unchanged, and `make test` is green
+- [x] 66.3 REFACTOR: none needed if each site is one wrap; verify `make test` and `make lint` pass
 
 ## 67. Scope hooks get a non-nil context (scope-lifecycle-hooks; design V20)
 

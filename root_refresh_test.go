@@ -439,3 +439,26 @@ func TestRootScope_ForgetsOverriddenServices(t *testing.T) {
 	assert.Len(t, root.started, 1)
 	assert.Equal(t, 6, starts.count("s"))
 }
+
+func TestScopeStartingHook_ShutdownCause(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		root := New()
+		require.NoError(t, root.Start())
+		tenant := root.Scope("tenant")
+		done := make(chan struct{})
+		root.AddScopeStartingHook(func(ctx context.Context, _ *Scope) error {
+			go func() {
+				root.Shutdown()
+				close(done)
+			}()
+			<-ctx.Done()
+			return ctx.Err()
+		})
+
+		err := tenant.Start()
+		<-done
+
+		assert.ErrorIs(t, err, ErrStartAfterShutdown)
+	})
+}

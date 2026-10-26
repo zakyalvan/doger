@@ -65,7 +65,7 @@ func (s *RootScope) startIncremental(ctx context.Context, root *Scope) (err erro
 // Scope.Start fails with it.
 func (s *RootScope) runScopeStartingHooks(ctx context.Context, scope *Scope) error {
 	if err := runVetoHooks(ctx, s.opts.HookScopeStarting, scope, recoverAsError); err != nil {
-		return fmt.Errorf("DI: scope `%s` start aborted: %w", scope.Name(), err)
+		return withAbortCause(ctx, fmt.Errorf("DI: scope `%s` start aborted: %w", scope.Name(), err))
 	}
 
 	return nil

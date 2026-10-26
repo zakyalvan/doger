@@ -295,7 +295,7 @@ func (s *RootScope) runPipeline(ctx context.Context, roots []*Scope) error {
 	}
 
 	if err := s.checkCycles(candidates); err != nil {
-		return err
+		return withAbortCause(ctx, err)
 	}
 
 	if err := s.startStarters(ctx, s.orderByDependencies(starterCandidates(candidates))); err != nil {
@@ -315,7 +315,7 @@ func (s *RootScope) runPipeline(ctx context.Context, roots []*Scope) error {
 // with it.
 func (s *RootScope) runStartingHooks(startCtx context.Context) error {
 	if err := runVetoHooks(startCtx, s.opts.HookContainerStarting, s, startingHookPanicError); err != nil {
-		return fmt.Errorf("DI: container start aborted: %w", err)
+		return withAbortCause(startCtx, fmt.Errorf("DI: container start aborted: %w", err))
 	}
 
 	return nil
@@ -472,7 +472,7 @@ func buildCandidates(startCtx context.Context, candidates []*startCandidate) err
 			}
 			if instance == nil || !reflect.TypeOf(instance).Implements(binding.target) {
 				err := fmt.Errorf("DI: service `%s` does not implement `%s` required by kind `%s`", candidate.name, binding.target.String(), binding.id.name)
-				return newStartError(StartOpBuild, candidate.scope, candidate.name, "", err)
+				return withAbortCause(startCtx, newStartError(StartOpBuild, candidate.scope, candidate.name, "", err))
 			}
 		}
 	}
