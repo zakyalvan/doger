@@ -75,6 +75,8 @@ Since the previous pick was random, no code could rely on a specific one, but a 
 
 Migration: none for decorators; code that checked for `ErrCircularDependency` in that case checks for `ErrServiceNotMatch`.
 
+**Cycle detection compares services, not names.** A service invoked while another service with the same name, registered in a different scope, is being built (for example, a child scope's `x` invokes a root aggregator that resolves the root's `x`, by name or as an `InvokeAll` member) used to fail with `ErrCircularDependency`. It is now built. A service that really depends on itself still fails as before. Migration: none, unless code relied on that error.
+
 **The struct fallback decides by name (BREAKING, edge cases).** An empty `do:""` tag falls back to resolution by type only when no service is registered under the field type, or when the only one is the service whose provider calls `InvokeStruct`.
 - A service registered under the field type that fails with an error matching `ErrServiceNotFound` (for example, its own provider could not find a dependency) used to make the field silently fall back to another assignable service. That error is now returned.
 - A decorator registered under the field type (`doger.Provide[Logger]` whose provider calls `InvokeStruct` with a `Logger` field) used to fail with `ErrCircularDependency`; it now receives the service it wraps. With no other match, it still fails with `ErrCircularDependency`.

@@ -134,7 +134,7 @@ Examples:
   | nil                      | [app, console] |
 ```
 
-The child's "app" shares its name with the root's "app", so a read with its own injector excludes the root's "app" as well. Including it would fail with `ErrCircularDependency` (the name `app` is already in the build chain), and `InvokeAs` skips its invoker by name in the same way.
+The child's "app" shares its name with the root's "app", so a read with its own injector excludes the root's "app" as well, as `InvokeAs` skips its invoker and the aliases resolving to it by name.
 
 #### Scenario: A read with nil records no edge
 ```gherkin
