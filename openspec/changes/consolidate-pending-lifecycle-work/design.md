@@ -706,6 +706,9 @@ Changed behavior, flagged, with migration:
 - `Scope.Start` on a scope that is shutting down runs no Starting hook (V41). Migration: observe the shutdown with a Closing hook.
 - `ExplainServiceDependencyOutput.String()` marks non-invoked edges with ` (depends-on)` or ` (declared)`, and its JSON gains `"source"` (Q2). Migration: text parsers accept the suffixes; strict JSON decoders accept `source`.
 - **BREAKING (unkeyed literals only):** new exported fields in `InjectorOpts` and `ExplainServiceDependencyOutput`. Migration: name the fields.
+- **BREAKING (edge case):** the empty-tag struct fallback decides by name (V65): a service registered under the field type that fails with `ErrServiceNotFound` returns that error instead of falling back, and a decorator registered under the field type resolves the service it wraps. Migration: fix the failing provider, or register the wanted service under the field type's name.
+- Overlapping shutdowns of one child scope join (V66): its hooks run once, and a later caller gets a copy of the running shutdown's report. Migration: do not shut a scope down synchronously from its own Closing or Closed hooks or its services' Shutdown.
+- Cycle detection compares services, not names (V63): a same-name service in another scope is no longer a false cycle. Migration: none.
 
 Defaults: see the proposal's Defaults & Control table. Every new hook list defaults to empty, and `StartParallelism` to sequential.
 
@@ -720,7 +723,7 @@ All tests run under `go test -race` with goleak (`TestMain`). Tests that could h
 | container-phase | Phase is race-free | `phase_test.go: TestPhase_RaceFree` | race |
 | container-phase | Unknown phase values print as a number | `phase_test.go: TestContainerPhase_StringUnknown` | unit |
 | container-phase | Clone starts idle | `phase_test.go: TestPhase_CloneIdle` | unit |
-| scope-lifecycle-hooks | Registration order and nil hooks | `scope_hooks_test.go: TestScopeHooks_RegistrationOrder` | unit |
+| scope-lifecycle-hooks | Registration order and nil hooks (4 hook lists) | `scope_hooks_test.go: TestScopeHooks_RegistrationOrder/<list>` | table (V60) |
 | scope-lifecycle-hooks | Starting hook allows or vetoes Scope.Start (4 rows) | `scope_hooks_test.go: TestScopeStartingHook_Veto/<row>` | table |
 | scope-lifecycle-hooks | Closing and Closed around child scope shutdown (4 rows) | `scope_hooks_test.go: TestScopeHooks_ClosingClosed/<row>` | table |
 | scope-lifecycle-hooks | Root scope fires no scope hook | `scope_hooks_test.go: TestScopeHooks_RootFiresNone` | unit |
@@ -756,7 +759,7 @@ All tests run under `go test -race` with goleak (`TestMain`). Tests that could h
 | container-start | Concurrent incremental starts | `root_start_test.go: TestRefresh_Concurrent` | race |
 | container-start | Shutdown cancels a running Refresh | `root_start_test.go: TestRefresh_ShutdownCancels` | synctest / race |
 | container-start | Independent Starters start concurrently (5 rows) | `root_start_test.go: TestStart_Parallel/<n>` | table / synctest |
-| container-start | A failure stops scheduling | `root_start_test.go: TestStart_ParallelFailure` | synctest |
+| container-start | A failure stops scheduling (Start, Refresh) | `root_start_test.go: TestStart_ParallelFailure/<operation>` | synctest (V60) |
 | container-start | Start hooks under parallel start | `root_start_test.go: TestStart_ParallelHooks` | race |
 | container-start | StartError fields per failure point (4 rows) | `root_start_test.go: TestStartError_Fields/<row>` | table |
 | container-start | Errors that are not service failures are not StartError (3 rows) | `root_start_test.go: TestStartError_NotForGuards/<row>` | table |
@@ -802,11 +805,11 @@ All tests run under `go test -race` with goleak (`TestMain`). Tests that could h
 | type-resolution | Struct fallback skips the invoking service | `invoke_test.go: TestInvokeStruct_FallbackSkipsInvoker` | unit (regression, V27) |
 | container-lifecycle-hooks | A pipeline panic runs Failed hooks before it is re-raised (3 rows) | `container_hooks_test.go: TestContainerFailedHook_PipelinePanic/<row>` | table (regression, V28) |
 | container-lifecycle-hooks | A Failed hook panic does not replace the pipeline panic (2 rows) | `container_hooks_test.go: TestContainerFailedHook_PanicDuringPipelinePanic/<policy>` | table (regression, V28) |
-| container-start | A Starter that failed is tried again (2 rows) | `root_refresh_test.go: TestRefresh_RetriesFailedStarter/<operation>` | table (V29) |
+| container-start | A Starter that failed is tried again (4 rows) | `root_refresh_test.go: TestRefresh_RetriesFailedStarter/<operation, failure>` | table (V29, V57) |
 | component-kinds | A failed handler is called again | `kind_test.go: TestKind_RetriesFailedHandler` | unit (V29) |
 | component-kinds | Scope.Start handles only its subtree | `kind_test.go: TestKind_ScopeStartSubtree` | unit (V32) |
 | component-kinds | Replacing a handler on the clone leaves the source unchanged (2 rows) | `kind_test.go: TestKind_CloneReplaceIsolated/<container>` | table (V32) |
-| scope-lifecycle-hooks | Scope.Start during the scope's shutdown fires no Started hook (2 rows) | `scope_hooks_test.go: TestScopeStartedHook_SkippedWhileClosing/<row>` | table (regression, V30) |
+| scope-lifecycle-hooks | Scope.Start during the scope's shutdown fires no Started hook (3 rows) | `scope_hooks_test.go: TestScopeStartedHook_SkippedWhileClosing/<row>` | table (regression, V30, V55) |
 | scope-lifecycle-hooks | Starting hook allows or vetoes Scope.Start (panic rows) | `scope_hooks_test.go: TestScopeStartingHook_Veto/<row>` | table (regression, V31) |
 | scope-lifecycle-hooks | Later scope hook panics are logged with their point | `scope_hooks_test.go: TestScopeHooks_LaterPanicLogged` | unit (regression, V31) |
 | scope-lifecycle-hooks | Observer scope hook panics (scope-closing and default-policy Started rows) | `scope_hooks_test.go: TestScopeHooks_ObserverPanic/<row>`, `TestScopeStartedHook_PanicDefault` | table (V32) |
@@ -835,6 +838,18 @@ All tests run under `go test -race` with goleak (`TestMain`). Tests that could h
 | container-phase | Phase names (7 rows) | `phase_test.go: TestContainerPhase_String/<name>` | table (V45) |
 | type-resolution | MustInvokeAs from a provider | `invoke_test.go: TestMustInvokeAs_FromProvider` | unit (V45) |
 | type-resolution | A stored provider injector still skips its service | `invoke_test.go: TestInvokeAs_StoredInjectorSkipsHolder` | unit (V44) |
+| live-collections | The reader is excluded by name (2 rows) | `collection_test.go: TestCollection_ReaderExcludedByName` | unit (V56) |
+| live-collections | A read with nil records no edge (nil, a plain injector) | `collection_test.go: TestCollection_ReadWithNilRecordsNoEdge/<reader>` | table (V60) |
+| collection-ordering | WithOrder on Clone and Override (3 rows) | `invoke_all_order_test.go: TestInvokeAll_WithOrderCloneAndOverride/<row>` | table (V60) |
+| type-resolution | The alias skip is by name | `invoke_test.go: TestInvokeAs_SkipsAliasOfShadowedName` | unit, characterization (V60) |
+| type-resolution | Using an alias registered with nil (2 rows) | `di_test.go: TestAsNamed_NilInjector/<row>` | table (regression, V62) |
+| collection-invocation | A same-name service in another scope is not a cycle (3 rows) | `invoke_test.go: TestCircularDependency_SameNameInAnotherScope/<row>` | table (regression, V63) |
+| dependency-declaration | Explaining a graph with a cycle (2 rows) | `di_explain_test.go: TestExplainNamedService_GraphCycle/<row>` | table (regression, V64) |
+| dependency-declaration | Explaining from another scope | `di_explain_test.go: TestExplainNamedService_FromOtherScope` | unit (regression, V64) |
+| type-resolution | The fallback decides by name (3 rows) | `invoke_test.go: TestInvokeStruct_FallbackKeepsNestedNotFound`, `TestInvokeStruct_DecoratorNamedAfterFieldType/<row>` | unit, table (regression, V65) |
+| scope-lifecycle-hooks | Overlapping shutdowns of a child scope join (4 rows) | `root_refresh_test.go: TestScopeShutdown_ConcurrentShutdownsJoin/<row>`, `TestScopeShutdown_JoinBoundedByContext`, `TestScopeShutdown_JoinedWinnerPanics` | synctest (regression, V66) |
+| container-start | A Refresh queued behind a Shutdown | `root_refresh_test.go: TestRefresh_QueuedBehindShutdown` | unit (V67) |
+| container-start | A cancel between two steps (4 rows) | `kind_test.go: TestKind_CancelBetweenComponents/<operation>`, `root_start_test.go: TestStart_ParallelCancelStopsScheduling/<operation>` | table (V67) |
 | collection-invocation | Invocation hooks per member (before and after) | `invoke_all_test.go: TestInvokeAll_HooksPerMember` | unit (V45) |
 
 Finding tests without a spec scenario (F2, F4, F5, V12):
