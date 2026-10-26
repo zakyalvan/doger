@@ -50,8 +50,8 @@ Implementation starts only after PR #8 (`consolidate-pending-lifecycle-work`) me
 
 ## 9. Report types and the overall state
 
-- [ ] 9.1 RED: add `TestHealthState_String` (4 rows) and `TestHealthReport_OverallState` (8 rows); verify `go test -race -run 'TestHealthState_String|TestHealthReport_OverallState' .` fails to compile naming only `HealthState`, `HealthReport`, `ServiceHealth` and their constants
-- [ ] 9.2 GREEN: add `HealthState`, `ServiceHealth`, `HealthReport` and the overall-state function in `health_report.go`; verify the tests pass and `make test` is green
+- [ ] 9.1 RED: add `TestHealthState_String` (5 rows) and `TestHealthReport_OverallState` (11 rows, including HealthDegraded); verify `go test -race -run 'TestHealthState_String|TestHealthReport_OverallState' .` fails to compile naming only `HealthState`, `HealthReport`, `ServiceHealth` and their constants
+- [ ] 9.2 GREEN: add `HealthState` (with `HealthDegraded`), `ServiceHealth`, `HealthReport` and the overall-state function (design H15 rule) in `health_report.go`; verify the tests pass and `make test` is green
 - [ ] 9.3 REFACTOR: none needed: plain value types and one pure function; verify `make test` and `make lint` pass
 
 ## 10. Report membership, coverage, order and isolation
@@ -73,52 +73,71 @@ Implementation starts only after PR #8 (`consolidate-pending-lifecycle-work`) me
 - [ ] 12.3 REFACTOR: *Decompose Conditional* the phase switch into `readMode()`; verify `make test` and `make lint` pass
 - [ ] 12.4 Add `ExampleScope_HealthReport` (idle container, on-demand read with TTL) and godoc for `HealthReportCacheTTL`; verify `go test -run ExampleScope_HealthReport .` passes
 
-## 13. Scheduling starts at Ready and runs at the interval
+## 13. Health classification at registration
 
-- [ ] 13.1 RED: add `TestHealthMonitor_StartsAtReady` (6 rows), `_NeverStartedNoGoroutine`, `_Interval` (6 rows), `_ConsecutiveRounds`, `_ClockJump` (2 rows), `_LateServices` (6 rows), `_RemovedServices` (3 rows); verify `go test -race -run 'TestHealthMonitor_(StartsAtReady|NeverStarted|Interval|ConsecutiveRounds|ClockJump|LateServices|RemovedServices)' .` fails to compile naming only `HealthCheckInterval`, or on the Start rows
-- [ ] 13.2 GREEN: add `HealthCheckInterval` and `DefaultHealthCheckInterval`; start the scheduler in `markReady` under `lifecycleMu` when the close phase is open (design H1); loop dispatch, then `clock.NewTimer(interval)`, skipping services with a check in flight, with pruning (design H2, H9); verify the tests pass and `make test` is green
-- [ ] 13.3 Audit the existing suite and `examples/*` for tests that call `Start` without `Shutdown`, or count health checks after `Start`; add the missing `Shutdown` or set `HealthCheckInterval: -1` with a comment naming this behavior change; verify `make test` (goleak) and each `examples/*` module's `go test ./...` pass
-- [ ] 13.4 REFACTOR: *Extract Function* `dispatchRound()`; *Move Function* scheduler code into `health_monitor.go`; verify `make test` and `make lint` pass
+- [ ] 13.1 RED: add `TestHealthClassification_Registration` (9 rows), `TestHealthTags_Constants` (2 rows), `TestHealthOptions_InvalidPanics` (5 rows) and `TestHealthClassification_CloneOverrideAlias` (4 rows) for the health-classification scenarios "Classification of a registration", "Predefined tag values", "Invalid classification" and "Classification across clone, override and alias"; verify `go test -race -run 'TestHealthClassification_|TestHealthTags_Constants|TestHealthOptions_InvalidPanics' .` fails to compile naming only `WithHealthTags`, `AsOptionalHealth` and the tag constants
+- [ ] 13.2 GREEN: add `WithHealthTags`, `AsOptionalHealth`, `HealthTagReadiness`, `HealthTagLiveness`, the two option fields with registration-time validation, and `Tags`/`Optional` on `ServiceHealth`, carried by `visibleCheckers`/`containerCheckers` (design H15); verify the tests pass and `make test` is green
+- [ ] 13.3 REFACTOR: *Extract Function* `healthClassification(opts)` returning the effective tags and severity; verify `make test` and `make lint` pass
 
-## 14. Scheduled checks have a default timeout
+## 14. Tag-filtered reports and zero-config liveness
 
-- [ ] 14.1 RED: add `TestHealthMonitor_ScheduledTimeout` (4 rows) and `TestHealthCheck_ForcedUnboundedByDefault`; verify `go test -race -run 'TestHealthMonitor_ScheduledTimeout|TestHealthCheck_ForcedUnboundedByDefault' .` fails on the 10s row (ForcedUnboundedByDefault passes on arrival; record it)
-- [ ] 14.2 GREEN: add `DefaultScheduledHealthCheckTimeout`; the scheduler starts checks with the bound of design H10; verify the tests pass and `make test` is green
-- [ ] 14.3 REFACTOR: *Extract Function* `scheduledBound(opts)`; verify `make test` and `make lint` pass
+- [ ] 14.1 RED: add `TestHealthReport_MatchTags` (8 rows), `TestHealthReport_MatchTagsOnDemand` and `TestHealthReport_LivenessZeroConfig` (4 rows) for scenarios "Filtered reports", "A filtered on-demand read checks only the covered services" and "Zero-config liveness"; verify `go test -race -run 'TestHealthReport_(MatchTags|LivenessZeroConfig)' .` fails to compile naming only `HealthReportOption` and `MatchHealthTags`
+- [ ] 14.2 GREEN: add `HealthReportOption` and `MatchHealthTags`; make `HealthReport`/`HealthReportWithContext` variadic and filter the covered entries before the overall state and the on-demand stale set (design H15); verify the tests pass and `make test` is green
+- [ ] 14.3 REFACTOR: *Introduce Parameter Object* `reportQuery{scope, tags}` passed through the report builder; verify `make test` and `make lint` pass
+- [ ] 14.4 Add `ExampleMatchHealthTags` (readiness and liveness reports, one optional service) and godoc for the tag constants and options; verify `go test -run ExampleMatchHealthTags .` passes
 
-## 15. Scheduling stops at root shutdown; clones are independent
+## 15. A failing optional service is degraded
 
-- [ ] 15.1 RED: add `TestHealthMonitor_StopsBeforeClosing`, `_ShutdownSkipsHungCheck`, `_ShutdownCancelsCheck`, `_Clone` (2 rows), `_CloneShutdownKeepsSource`; verify `go test -race -run 'TestHealthMonitor_(Stops|Shutdown|Clone)' .` fails on rounds after Shutdown or on goleak
-- [ ] 15.2 GREEN: stop the scheduler first in `shutdownAsWinner` (flag under `lifecycleMu`, cancel the monitor context, wait for the scheduler goroutine, release pinned references) (design H1); verify the tests pass and `make test` is green
-- [ ] 15.3 REFACTOR: *Extract Function* `stopMonitor()`; verify `make test` and `make lint` pass
+- [ ] 15.1 RED: add `TestHealthReport_Degraded` (5 rows) and `TestHealthCheck_IgnoresClassification` (3 rows) for scenarios "Degraded entries" and "Forced results ignore classification"; verify `go test -race -run 'TestHealthReport_Degraded|TestHealthCheck_IgnoresClassification' .` fails on the HealthDegraded rows (IgnoresClassification passes on arrival; record it and show it can fail by temporarily dropping optional errors, not committed)
+- [ ] 15.2 GREEN: when recording a failing result of an optional service, store `HealthDegraded` with its error; forced paths keep returning the raw error (design H15); verify the tests pass and `make test` is green
+- [ ] 15.3 REFACTOR: *Extract Function* `stateOf(result, optional)` as the single place mapping a result to a state; verify `make test` and `make lint` pass
 
-## 16. A monitored container's report never runs a check
+## 16. Scheduling starts at Ready and runs at the interval
 
-- [ ] 16.1 RED: add `TestHealthReport_MonitoredNoChecks` and `_BeforeFirstResult`; verify `go test -race -run 'TestHealthReport_(MonitoredNoChecks|BeforeFirstResult)' .` fails on Monitored or PendingSince
-- [ ] 16.2 GREEN: `readMode()` returns monitored while the scheduler runs; entries show `PendingSince` from the in-flight call; verify the tests pass and `make test` is green
-- [ ] 16.3 REFACTOR: none needed: one branch of `readMode()`; verify `make test` and `make lint` pass
-- [ ] 16.4 Add `ExampleRootScope_HealthReport` (started container, default interval, opt-out with `HealthCheckInterval: -1`) and godoc for `HealthCheckInterval` and the `Start` doc's note that Shutdown stops scheduling; verify `go test -run ExampleRootScope_HealthReport .` passes
+- [ ] 16.1 RED: add `TestHealthMonitor_StartsAtReady` (6 rows), `_NeverStartedNoGoroutine`, `_Interval` (6 rows), `_ConsecutiveRounds`, `_ClockJump` (2 rows), `_LateServices` (6 rows), `_RemovedServices` (3 rows); verify `go test -race -run 'TestHealthMonitor_(StartsAtReady|NeverStarted|Interval|ConsecutiveRounds|ClockJump|LateServices|RemovedServices)' .` fails to compile naming only `HealthCheckInterval`, or on the Start rows
+- [ ] 16.2 GREEN: add `HealthCheckInterval` and `DefaultHealthCheckInterval`; start the scheduler in `markReady` under `lifecycleMu` when the close phase is open (design H1); loop dispatch, then `clock.NewTimer(interval)`, skipping services with a check in flight, with pruning (design H2, H9); verify the tests pass and `make test` is green
+- [ ] 16.3 Audit the existing suite and `examples/*` for tests that call `Start` without `Shutdown`, or count health checks after `Start`; add the missing `Shutdown` or set `HealthCheckInterval: -1` with a comment naming this behavior change; verify `make test` (goleak) and each `examples/*` module's `go test ./...` pass
+- [ ] 16.4 REFACTOR: *Extract Function* `dispatchRound()`; *Move Function* scheduler code into `health_monitor.go`; verify `make test` and `make lint` pass
 
-## 17. Health-change hooks
+## 17. Scheduled checks have a default timeout
 
-- [ ] 17.1 RED: add `TestHookServiceHealthChanged` (3 rows), `_ForcedRun`, `_Serialized`, `TestHookContainerHealthChanged` (3 rows), `TestHealthHooks_Panic` (2 rows), `TestHealthMonitor_PanicKeepsScheduling`; verify `go test -race -run 'TestHook(Service|Container)HealthChanged|TestHealthHooks_Panic|TestHealthMonitor_PanicKeepsScheduling' .` fails to compile naming only the hook fields and `Add*HealthChangedHook`
-- [ ] 17.2 GREEN: add `HookServiceHealthChanged`, `HookContainerHealthChanged`, their `Add*` methods and their copies in `InjectorOpts.copy()`; deliver as in design H12 with per-hook recovery to `HookContainerPanic(root, "healthchanged", v)` or `Logf`; verify the tests pass and `make test` is green
-- [ ] 17.3 REFACTOR: *Extract Function* `deliverHealthTransitions(ts)`; verify `make test` and `make lint` pass
-- [ ] 17.4 Add `ExampleRootScope_AddServiceHealthChangedHook` and godoc stating hooks are synchronous and must be fast; verify `go test -run ExampleRootScope_AddServiceHealthChangedHook .` passes
+- [ ] 17.1 RED: add `TestHealthMonitor_ScheduledTimeout` (4 rows) and `TestHealthCheck_ForcedUnboundedByDefault`; verify `go test -race -run 'TestHealthMonitor_ScheduledTimeout|TestHealthCheck_ForcedUnboundedByDefault' .` fails on the 10s row (ForcedUnboundedByDefault passes on arrival; record it)
+- [ ] 17.2 GREEN: add `DefaultScheduledHealthCheckTimeout`; the scheduler starts checks with the bound of design H10; verify the tests pass and `make test` is green
+- [ ] 17.3 REFACTOR: *Extract Function* `scheduledBound(opts)`; verify `make test` and `make lint` pass
 
-## 18. The container measures health time on its clock
+## 18. Scheduling stops at root shutdown; clones are independent
 
-- [ ] 18.1 RED: add row `health check` to `TestClock_ReportedDurations` and `TestClock_HealthSchedulingOnClock` (2 rows) for the container-clock scenarios; verify `go test -race -run 'TestClock_(ReportedDurations|HealthSchedulingOnClock)' .` fails, or passes on arrival because groups 10-13 already used the clock (record which, and show the assertion can fail by temporarily using a real clock, not committed)
-- [ ] 18.2 GREEN: read every health time from `opts.Clock` where any path still uses wall time; verify the tests pass and `make test` is green
-- [ ] 18.3 REFACTOR: none needed if 18.1 passed on arrival; otherwise *Replace Inline Code with Function Call* to the clock helper; update the `InjectorOpts.Clock` godoc list; verify `make test` and `make lint` pass
+- [ ] 18.1 RED: add `TestHealthMonitor_StopsBeforeClosing`, `_ShutdownSkipsHungCheck`, `_ShutdownCancelsCheck`, `_Clone` (2 rows), `_CloneShutdownKeepsSource`; verify `go test -race -run 'TestHealthMonitor_(Stops|Shutdown|Clone)' .` fails on rounds after Shutdown or on goleak
+- [ ] 18.2 GREEN: stop the scheduler first in `shutdownAsWinner` (flag under `lifecycleMu`, cancel the monitor context, wait for the scheduler goroutine, release pinned references) (design H1); verify the tests pass and `make test` is green
+- [ ] 18.3 REFACTOR: *Extract Function* `stopMonitor()`; verify `make test` and `make lint` pass
 
-## 19. Integration checks
+## 19. A monitored container's report never runs a check
 
-- [ ] 19.1 Add `BenchmarkHealthReport_Monitored` (1,000 services) and record its result in design.md Test Strategy; verify `go test -run '^$' -bench BenchmarkHealthReport_Monitored -benchmem .` runs
-- [ ] 19.2 Run `make test`, `make lint`, and `go test ./...` in every `http/*` and `examples/*` module; verify all pass
-- [ ] 19.3 Cross-check every `#### Scenario:` in the four spec deltas against design.md Test Strategy and a passing test; verify `openspec validate add-scheduled-health-checks --strict` passes
+- [ ] 19.1 RED: add `TestHealthReport_MonitoredNoChecks` and `_BeforeFirstResult`; verify `go test -race -run 'TestHealthReport_(MonitoredNoChecks|BeforeFirstResult)' .` fails on Monitored or PendingSince
+- [ ] 19.2 GREEN: `readMode()` returns monitored while the scheduler runs; entries show `PendingSince` from the in-flight call; verify the tests pass and `make test` is green
+- [ ] 19.3 REFACTOR: none needed: one branch of `readMode()`; verify `make test` and `make lint` pass
+- [ ] 19.4 Add `ExampleRootScope_HealthReport` (started container, default interval, opt-out with `HealthCheckInterval: -1`) and godoc for `HealthCheckInterval` and the `Start` doc's note that Shutdown stops scheduling; verify `go test -run ExampleRootScope_HealthReport .` passes
+
+## 20. Health-change hooks
+
+- [ ] 20.1 RED: add `TestHookServiceHealthChanged` (3 rows), `_ForcedRun`, `_Serialized`, `TestHookContainerHealthChanged` (4 rows), `TestHealthHooks_Panic` (2 rows), `TestHealthHooks_Degraded`, `TestHealthMonitor_PanicKeepsScheduling`; verify `go test -race -run 'TestHook(Service|Container)HealthChanged|TestHealthHooks_(Panic|Degraded)|TestHealthMonitor_PanicKeepsScheduling' .` fails to compile naming only the hook fields and `Add*HealthChangedHook`
+- [ ] 20.2 GREEN: add `HookServiceHealthChanged`, `HookContainerHealthChanged`, their `Add*` methods and their copies in `InjectorOpts.copy()`; deliver as in design H12 with per-hook recovery to `HookContainerPanic(root, "healthchanged", v)` or `Logf`; verify the tests pass and `make test` is green
+- [ ] 20.3 REFACTOR: *Extract Function* `deliverHealthTransitions(ts)`; verify `make test` and `make lint` pass
+- [ ] 20.4 Add `ExampleRootScope_AddServiceHealthChangedHook` and godoc stating hooks are synchronous and must be fast; verify `go test -run ExampleRootScope_AddServiceHealthChangedHook .` passes
+
+## 21. The container measures health time on its clock
+
+- [ ] 21.1 RED: add row `health check` to `TestClock_ReportedDurations` and `TestClock_HealthSchedulingOnClock` (2 rows) for the container-clock scenarios; verify `go test -race -run 'TestClock_(ReportedDurations|HealthSchedulingOnClock)' .` fails, or passes on arrival because groups 10-20 already used the clock (record which, and show the assertion can fail by temporarily using a real clock, not committed)
+- [ ] 21.2 GREEN: read every health time from `opts.Clock` where any path still uses wall time; verify the tests pass and `make test` is green
+- [ ] 21.3 REFACTOR: none needed if 18.1 passed on arrival; otherwise *Replace Inline Code with Function Call* to the clock helper; update the `InjectorOpts.Clock` godoc list; verify `make test` and `make lint` pass
+
+## 22. Integration checks
+
+- [ ] 22.1 Add `BenchmarkHealthReport_Monitored` (1,000 services) and record its result in design.md Test Strategy; verify `go test -run '^$' -bench BenchmarkHealthReport_Monitored -benchmem .` runs
+- [ ] 22.2 Run `make test`, `make lint`, and `go test ./...` in every `http/*` and `examples/*` module; verify all pass
+- [ ] 22.3 Cross-check every `#### Scenario:` in the five spec deltas against design.md Test Strategy and a passing test; verify `openspec validate add-scheduled-health-checks --strict` passes
 
 ## Workflow follow-up
 
-- Open the follow-up change for the HTTP health handler in `http/*` (readiness-style, serves `HealthReport` as JSON, 200/503).
+- Open the follow-up change for the HTTP health handlers in `http/*` (readiness and liveness, serving tag-filtered `HealthReport` as JSON; 200 for Healthy and Degraded, 503 otherwise), then the next items in `ROADMAP.md`.
 - Archive this change after review, then verify the synced specs.

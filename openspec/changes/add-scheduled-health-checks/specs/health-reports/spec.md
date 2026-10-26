@@ -7,7 +7,7 @@ Defines the health report a consumer reads instead of running checks: what it co
 ## ADDED Requirements
 
 ### Requirement: A report lists each health-checked service with its last result
-`HealthReport()` and `HealthReportWithContext(ctx)` SHALL return a `HealthReport` whose `Services` holds one `ServiceHealth` per covered health checker: its `ServiceDescription`, `State`, `Err`, `CheckedAt` and `Duration` of its last recorded result, and `PendingSince` while a check is in flight. `Services` SHALL be ordered by scope depth, then scope name, then service name.
+`HealthReport()` and `HealthReportWithContext(ctx)` SHALL return a `HealthReport` whose `Services` holds one `ServiceHealth` per covered health checker: its `ServiceDescription`, `Tags`, `Optional`, `State`, `Err`, `CheckedAt` and `Duration` of its last recorded result, and `PendingSince` while a check is in flight. `Services` SHALL be ordered by scope depth, then scope name, then service name.
 
 #### Scenario: Report entries after one round
 ```gherkin
@@ -110,7 +110,7 @@ Examples:
 <!-- cases: N/A 10 backward compatibility: new API -->
 
 ### Requirement: The overall state summarizes the covered services
-A report's `State` SHALL be `HealthUnhealthy` when any covered service is unhealthy. Otherwise it SHALL be `HealthHealthy` when at least one covered service is healthy, or when no service is covered and a check run or round has completed. Otherwise it SHALL be `HealthUnknown`. A closed container SHALL report `HealthUnknown`. `CheckedAt` SHALL be the latest `CheckedAt` of the covered services.
+A report's `State` SHALL be `HealthUnhealthy` when any covered service is unhealthy, else `HealthDegraded` when any is degraded, else `HealthHealthy` when any is healthy or no service is covered, else `HealthUnknown`. A closed container SHALL report `HealthUnknown`. `CheckedAt` SHALL be the latest `CheckedAt` of the covered services.
 
 #### Scenario: Overall state
 ```gherkin
@@ -125,8 +125,11 @@ Examples:
   | Unknown, Unhealthy                       | HealthUnhealthy |
   | Unknown, Healthy                         | HealthHealthy   |
   | Unknown, Unknown                         | HealthUnknown   |
+  | Healthy, Degraded                        | HealthDegraded  |
+  | Unknown, Degraded                        | HealthDegraded  |
+  | Degraded, Unhealthy                      | HealthUnhealthy |
   | none, after the first round completed    | HealthHealthy   |
-  | none, before any round or run completed  | HealthUnknown   |
+  | none, before any round or run completed  | HealthHealthy   |
   | none, container in PhaseClosed           | HealthUnknown   |
 ```
 
@@ -140,6 +143,7 @@ Examples:
   | value           | name               |
   | HealthUnknown   | unknown            |
   | HealthHealthy   | healthy            |
+  | HealthDegraded  | degraded           |
   | HealthUnhealthy | unhealthy          |
   | HealthState(9)  | HealthState(9)     |
 ```
@@ -147,7 +151,7 @@ Examples:
 <!-- cases: 1 default: HealthUnknown is the zero value -->
 <!-- cases: N/A 2 overrides: the rule has no option; consumers can derive their own from Services -->
 <!-- cases: 3 zero values: no covered service -->
-<!-- cases: 4 boundaries: every pair of states; an unknown enum value -->
+<!-- cases: 4 boundaries: every state against the others, including HealthDegraded; an unknown enum value -->
 <!-- cases: N/A 5 errors: none -->
 <!-- cases: N/A 6 not found/duplicate: not applicable -->
 <!-- cases: 7 lifecycle: before and after the first round -->

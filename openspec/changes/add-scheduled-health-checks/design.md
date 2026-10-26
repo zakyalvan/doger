@@ -34,6 +34,8 @@ The approach follows [alexliesenfeld/health](https://github.com/alexliesenfeld/h
 | Panics recovered unless `DisablePanicRecovery` | Always recovered, reported to `HookContainerPanic` | Consumers re-raise from the hook if they want to; a background crash is never a sensible default |
 | `NewChecker` autostarts unless `WithDisabledAutostart` | Starts at `PhaseReady`, stops at root Shutdown | A DI container already owns a lifecycle, and `DefaultRootScope` rules out starting at construction |
 | `Check()` holds one mutex for a whole run, so concurrent callers queue | Concurrent callers share one run, and each waits on its own context | Callers are not serialized behind a slow check |
+| (not in alexliesenfeld) | Tags via `WithHealthTags`, with predefined `HealthTagReadiness`/`HealthTagLiveness`, and `MatchHealthTags` report filters | Taken from .NET health-check tags (`HealthCheckRegistration.Tags` plus a predicate on the endpoint), so the Kubernetes probes work out of the box and consumers can add their own groups |
+| (not in alexliesenfeld) | `AsOptionalHealth()` turns a failure into `HealthDegraded` | Taken from .NET's `HealthStatus.Degraded` and the per-registration failure status. Chosen over go-health's `Fatal` flag, which hides a failing non-critical service from the overall state |
 | Global timeout 10s by default | Scheduled checks default to 10s; forced runs and on-demand reads stay unbounded unless configured | Forced paths keep today's semantics (user decision) |
 
 Other references checked: Kubernetes probes (period 10s, timeout 1s), .NET `HealthCheckPublisherOptions` (delay 5s, period 30s), and Spring Boot Actuator (on-request, cache TTL 0 by default). Spring's and Kubernetes' guidance that liveness must not check external dependencies applies to the follow-up HTTP handler.
@@ -51,7 +53,8 @@ Other references checked: Kubernetes probes (period 10s, timeout 1s), .NET `Heal
 - JSON marshalling of `HealthReport`. `Err` is an `error`, and the follow-up decides its wire shape.
 - Per-service intervals or a per-service timeout option.
 - Failure thresholds (`MaxContiguousFails` in alexliesenfeld). A consumer can derive them from the hooks.
-- Liveness/readiness groups.
+- Spring-style central group definitions (groups configured by service name in `InjectorOpts`). Tags are declared at registration instead (H15).
+- A startup probe tag. Consumers can define one as a custom tag; `PhaseReady` already says when start finished.
 
 ## Decisions
 
@@ -156,16 +159,29 @@ Other references checked: Kubernetes probes (period 10s, timeout 1s), .NET `Heal
 
 **H14. Doc correction (D8).** The `RootScope.HealthCheck` doc comment is corrected to say "root scope's services". Behavior is unchanged (user decision Q6).
 
+**H15. Classification is a registration option; filtering is a report option.**
+- **Declaration.** `WithHealthTags(tags...)` and `AsOptionalHealth()` are `ProvideOption` constructors. They write two fields of the registration's option struct: a tag set (nil means the default `{readiness}`; a non-nil empty set means no tag) and an `optional` flag.
+- **Validation** at registration, before the service is stored, like the existing `AsStarter()` checks: an empty tag panics, and so does either option on a transient registration.
+- **Propagation.** The fields follow the existing option rules: Clone copies them, Override replaces them, an alias has none of its own. `visibleCheckers` and `containerCheckers` carry them with each entry, an alias taking its target's.
+- **Severity.** It is applied when a result is recorded: a failing optional check is stored as `HealthDegraded`. Forced paths return the raw error and never look at severity.
+- **Filtering.** `HealthReportOption` is an opaque functional option. `MatchHealthTags(tags...)` adds tags to an any-match set, and an empty set means no filter. A report filters its covered entries before it computes the overall state and before it picks stale services for on-demand checks, so a liveness read on an idle container runs only liveness checks.
+- **Overall state.** Unhealthy, else Degraded, else Healthy when any service is healthy or none is covered, else Unknown; a closed container reports Unknown. An empty coverage counts as healthy so that a zero-config liveness report is healthy from Ready on, before the first round.
+- **Alternatives rejected** (user decisions):
+  - Fixed probe kinds only: consumers could not add groups.
+  - Spring-style groups in `InjectorOpts`: stringly-typed by service name, so a rename breaks them silently.
+  - An instance interface: it couples service types to doger and cannot classify third-party types.
+
 ## Risks / Trade-offs
 
 - [Checks now run every 60s by default; this costs money or has side effects for some consumers] → Flagged in the proposal and the release notes. `HealthCheckInterval: -1` opts out.
-- [Tests that call `Start` without `Shutdown` now leak the scheduler] → Flagged; the doc on `Start` says Shutdown stops the scheduler. Our own suite is audited in task group 2.
+- [Tests that call `Start` without `Shutdown` now leak the scheduler] → Flagged; the doc on `Start` says Shutdown stops the scheduler. Our own suite and `examples/*` are audited in task 16.3.
 - [A slow hook delays the check's result for every waiter] → Documented on both hook fields: a hook must be fast and must hand off slow work.
 - [A check that ignores its context stays in flight forever] → It stays at one goroutine. Readers see `PendingSince` and the last result. Forced callers get timeouts from their own bounds.
 - [Joining a check started by the scheduler gives a forced caller the scheduled 10s bound's result] → Documented: a caller that joins an in-flight check gets that check's result.
 - [goleak may briefly see a cancelled context-aware check exiting after Shutdown] → goleak retries by default. Scenarios release or cancel every check before the test ends.
 - [Fake-clock contexts block on `Err()`] → Keep using `contextDone`. Scheduled-check tests use checks that wait on `ctx.Done()`, as the `Clock` doc already requires.
-- [The monitor mutex is on the report path] → Reads copy records under the mutex and do no I/O. A benchmark guards it (task group 5).
+- [A report that covers no service is Healthy, so a mistyped tag in `MatchHealthTags` yields a healthy report] → Use the exported tag constants; the godoc of `MatchHealthTags` states the rule. The rule is what makes a zero-config liveness report healthy.
+- [The monitor mutex is on the report path] → Reads copy records under the mutex and do no I/O. A benchmark guards it (task 22.1).
 
 ## Public API & Defaults
 
@@ -178,15 +194,26 @@ HealthReportCacheTTL       time.Duration // 0: 1s; <0: no cache; >0: TTL (unmoni
 HookServiceHealthChanged   []func(scope *Scope, serviceName string, previous, current ServiceHealth)
 HookContainerHealthChanged []func(root *RootScope, previous, current HealthState)
 
+// options.go, ProvideOption constructors
+func WithHealthTags(tags ...string) ProvideOption // replaces the default tags; repeats accumulate
+func AsOptionalHealth() ProvideOption             // failures are HealthDegraded
+const HealthTagReadiness = "readiness"
+const HealthTagLiveness = "liveness"
+
+type HealthReportOption struct{ /* opaque */ }
+func MatchHealthTags(tags ...string) HealthReportOption
+
 const DefaultHealthCheckInterval = 60 * time.Second
 const DefaultScheduledHealthCheckTimeout = 10 * time.Second
 const DefaultHealthReportCacheTTL = time.Second
 
 var ErrHealthCheckPanic = errors.New("DI: health check panic")
 
-type HealthState int // HealthUnknown (zero) | HealthHealthy | HealthUnhealthy; String()
+type HealthState int // HealthUnknown (zero) | HealthHealthy | HealthDegraded | HealthUnhealthy; String()
 type ServiceHealth struct {
     Service      ServiceDescription
+    Tags         []string // sorted
+    Optional     bool
     State        HealthState
     Err          error
     CheckedAt    time.Time
@@ -200,10 +227,10 @@ type HealthReport struct {
     Services  []ServiceHealth
 }
 
-func (s *Scope) HealthReport() HealthReport
-func (s *Scope) HealthReportWithContext(ctx context.Context) HealthReport
-func (s *RootScope) HealthReport() HealthReport                            // whole container
-func (s *RootScope) HealthReportWithContext(ctx context.Context) HealthReport
+func (s *Scope) HealthReport(opts ...HealthReportOption) HealthReport
+func (s *Scope) HealthReportWithContext(ctx context.Context, opts ...HealthReportOption) HealthReport
+func (s *RootScope) HealthReport(opts ...HealthReportOption) HealthReport // whole container
+func (s *RootScope) HealthReportWithContext(ctx context.Context, opts ...HealthReportOption) HealthReport
 func (s *RootScope) AddServiceHealthChangedHook(hook func(*Scope, string, ServiceHealth, ServiceHealth))
 func (s *RootScope) AddContainerHealthChangedHook(hook func(*RootScope, HealthState, HealthState))
 // Injector interface gains HealthReport and HealthReportWithContext (H13).
@@ -238,6 +265,16 @@ New test files follow the new source files: `health_report.go` → `health_repor
 | health-check-scheduling | Hooks run one at a time, in order of addition | `health_monitor_test.go: TestHookServiceHealthChanged_Serialized` | race |
 | health-check-scheduling | Container hook calls follow the overall state | `health_monitor_test.go: TestHookContainerHealthChanged/<row>` | table, fake clock |
 | health-check-scheduling | Hook panic is contained | `health_monitor_test.go: TestHealthHooks_Panic/<row>` | table |
+| health-classification | Classification of a registration | `health_report_test.go: TestHealthClassification_Registration/<row>` | table |
+| health-classification | Predefined tag values | `health_report_test.go: TestHealthTags_Constants/<row>` | table |
+| health-classification | Invalid classification | `options_test.go: TestHealthOptions_InvalidPanics/<row>` | table |
+| health-classification | Classification across clone, override and alias | `health_report_test.go: TestHealthClassification_CloneOverrideAlias/<row>` | table |
+| health-classification | Filtered reports | `health_report_test.go: TestHealthReport_MatchTags/<row>` | table |
+| health-classification | A filtered on-demand read checks only the covered services | `health_report_test.go: TestHealthReport_MatchTagsOnDemand` | unit |
+| health-classification | Degraded entries | `health_report_test.go: TestHealthReport_Degraded/<row>` | table |
+| health-classification | Degraded transitions reach the hooks | `health_monitor_test.go: TestHealthHooks_Degraded` | fake clock |
+| health-classification | Zero-config liveness | `health_report_test.go: TestHealthReport_LivenessZeroConfig/<row>` | table |
+| health-classification | Forced results ignore classification | `health_run_test.go: TestHealthCheck_IgnoresClassification/<row>` | table |
 | health-reports | Report entries after one round | `health_report_test.go: TestHealthReport_Entries/<row>` | table, fake clock |
 | health-reports | Entries are ordered by scope then name | `health_report_test.go: TestHealthReport_Order` | unit |
 | health-reports | Each report is the caller's own copy | `health_report_test.go: TestHealthReport_Isolated` | unit |
@@ -289,10 +326,11 @@ New test files follow the new source files: `health_report.go` → `health_repor
 | Limiter | `TestHealthCheck_ParallelismCap`, `_SlotWaitHonorsContext`, `_SlotWaitDoesNotBlockProvide`, `_NoQueueLimit` |
 | Scheduler loop: start, tick, jump, stop | `TestHealthMonitor_*` |
 | Report read: monitored and on-demand | `TestHealthReport_*`, plus `BenchmarkHealthReport_Monitored` (1,000 services) to show a read does no I/O and stays allocation-bounded |
+| Classification and filtering | `TestHealthClassification_*`, `TestHealthReport_MatchTags*`, `TestHealthReport_Degraded`, `TestHealthReport_LivenessZeroConfig` |
 | Hooks | `TestHookServiceHealthChanged*`, `TestHookContainerHealthChanged`, `TestHealthHooks_Panic` |
 | Lifecycle edges: shutdown during start, clone | `TestHealthMonitor_StartsAtReady/shutdown during start`, `TestHealthMonitor_Clone*` |
 
-**Docs:** `ExampleRootScope_HealthReport` shows the default, opt-out and TTL behavior. `ExampleRootScope_AddServiceHealthChangedHook` shows a hook. The godoc on every new option states its default and override.
+**Docs:** `ExampleRootScope_HealthReport` shows the default, opt-out and TTL behavior. `ExampleMatchHealthTags` shows readiness and liveness reports with an optional service. `ExampleRootScope_AddServiceHealthChangedHook` shows a hook. The godoc on every new option states its default and override.
 
 ## Migration Plan
 

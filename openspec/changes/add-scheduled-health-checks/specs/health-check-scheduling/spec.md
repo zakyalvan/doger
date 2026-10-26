@@ -334,6 +334,7 @@ Examples:
   | round 1: a nil, b nil; round 2: a nil, b nil    | (Unknown, Healthy)                                |
   | round 1: a nil, b nil; round 2: a nil, b "down" | (Unknown, Healthy), (Healthy, Unhealthy)          |
   | round 1: a "x", b nil; round 2: a "y", b nil    | (Unknown, Unhealthy)                              |
+  | round 1: a nil, b nil; round 2: a nil, b "down", with b registered AsOptionalHealth() | (Unknown, Healthy), (Healthy, Degraded) |
 ```
 
 <!-- cases: 1 default: no hook registered -->

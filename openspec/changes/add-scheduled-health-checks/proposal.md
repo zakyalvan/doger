@@ -19,7 +19,7 @@ This change depends on `consolidate-pending-lifecycle-work` (PR #8): it uses the
 
 **Cached health reports.**
 - New `RootScope.HealthReport()` / `HealthReportWithContext(ctx)` cover the whole container. New `Scope.HealthReport()` / `HealthReportWithContext(ctx)` cover the services visible from that scope, with shadowed services left out.
-- A report gives, for each service, its state (`HealthUnknown`, `HealthHealthy`, `HealthUnhealthy`), its error, when it was checked, how long the check took and whether a check is in flight. It also gives an overall state and whether the container is monitored.
+- A report gives, for each service, its tags, whether it is optional, its state (`HealthUnknown`, `HealthHealthy`, `HealthDegraded`, `HealthUnhealthy`), its error, when it was checked, how long the check took and whether a check is in flight. It also gives an overall state and whether the container is monitored.
 - Services without a health check do not appear in the report: plain values, transient services, lazy services not yet built.
 - When the container is monitored, a read never runs a check.
 - When the container is Idle or Failed, a read runs the checks on demand. The on-demand result is cached for `HealthReportCacheTTL` (default 1s; a negative value turns the cache off), and concurrent readers share one run. That run is bounded only by the caller's context and the existing timeout options.
@@ -29,6 +29,14 @@ This change depends on `consolidate-pending-lifecycle-work` (PR #8): it uses the
 - **Behavior change (flagged):** concurrent calls on the same scope share one run. Each caller still waits only as long as its own context allows.
 - A service never has two checks in flight. A call that finds a check in flight waits for that check's result instead of starting another, which caps check goroutines at one per service. This holds for the scheduler, forced runs and the single-service functions.
 - Every completed check refreshes the cached report.
+
+**Health classification (readiness, liveness, severity).** One container must answer "is it ready?" and "is it alive?" separately. Kubernetes and Spring Boot both warn that liveness must not depend on external systems, or one dependency outage restarts every pod.
+- Tags follow .NET health-check tags: new `WithHealthTags(tags...)` registration option, with the predefined `HealthTagReadiness` ("readiness") and `HealthTagLiveness` ("liveness").
+- Severity follows .NET's `Degraded` status: new `AsOptionalHealth()` registration option. A failing optional service is reported as the new state `HealthDegraded`, not `HealthUnhealthy`.
+- An unclassified checker is tagged readiness and is critical. So with zero configuration every checker counts toward readiness, as every checker counts in `HealthCheck()` today, and a liveness report covers no service and is healthy.
+- New `MatchHealthTags(tags...)` report option. It limits a report, its overall state and its on-demand checks to the services carrying any of the tags.
+- Overall state: Unhealthy, else Degraded, else Healthy (when any service is healthy or none is covered), else Unknown.
+- `HealthCheck()` and the single-service functions ignore classification and return each error unchanged.
 
 **Status-change hooks.**
 - New `InjectorOpts.HookServiceHealthChanged` and `HookContainerHealthChanged`, with `AddServiceHealthChangedHook` and `AddContainerHealthChangedHook`.
@@ -46,7 +54,8 @@ This change depends on `consolidate-pending-lifecycle-work` (PR #8): it uses the
 **No exported API is removed or changed in signature.** New `InjectorOpts` fields break only unkeyed struct literals, which the Go 1 compatibility guidelines exclude.
 
 **Out of scope:**
-- An HTTP health handler in `http/*`. A follow-up change will add a readiness-style handler that serves the report.
+- An HTTP health handler in `http/*`. A follow-up change will add readiness and liveness handlers that serve tag-filtered reports.
+- The next roadmap items (a test helper package, then container validation) are tracked in `ROADMAP.md`.
 - Per-service intervals.
 
 ## Capabilities
@@ -55,6 +64,7 @@ This change depends on `consolidate-pending-lifecycle-work` (PR #8): it uses the
 
 - `health-check-scheduling`: the background scheduler: when it starts and stops, its interval, rounds, the timeout of scheduled checks, and the status-change hooks.
 - `health-reports`: `HealthReport` / `HealthReportWithContext`: the report's content and states, scope views, on-demand runs and their cache.
+- `health-classification`: health tags (readiness, liveness, custom), optional services and the Degraded state, tag-filtered reports, and how classification follows clones, overrides and aliases.
 - `health-check-execution`: how checks run on every path: coalesced forced runs, at most one check in flight per service, bounded concurrency, panic recovery, locks, shadowed and aliased services.
 
 ### Modified Capabilities
@@ -66,6 +76,7 @@ This change depends on `consolidate-pending-lifecycle-work` (PR #8): it uses the
 - **Code:**
   - `injector.go` (new options and hooks) and `root_scope.go` (scheduler lifecycle and hook adders).
   - `scope.go` (reports, coalescing, shadowing) and `utils.go` (the job pool is replaced by a context-aware limit).
+  - `options.go` (`WithHealthTags`, `AsOptionalHealth`).
   - `service_lazy.go` (the check runs outside the wrapper lock), `service_alias.go`, `di_lifecycle.go` (single-service functions) and `errors.go` (`ErrHealthCheckPanic`).
   - Tests across the root module.
 - **Dependencies:** none added. Coalescing is a small internal primitive; `golang.org/x/sync` is not added.
@@ -84,6 +95,8 @@ This change depends on `consolidate-pending-lifecycle-work` (PR #8): it uses the
 | At most one check in flight per service | Always | None. A second concurrent check of the same service only adds load and goroutines; the caller gets the in-flight check's result |
 | Concurrency limit | Unlimited (at most one goroutine per service) | `HealthCheckParallelism` |
 | Panic in a check | Recovered into an error matching `ErrHealthCheckPanic`, also passed to `HookContainerPanic` when it is set | `HookContainerPanic` to log or re-raise |
+| Health classification of a checker | Tag readiness, critical | `WithHealthTags(...)` replaces the tags; `AsOptionalHealth()` turns failures into `HealthDegraded` |
+| Report coverage | Every health checker | `MatchHealthTags(...)`, for example `MatchHealthTags(HealthTagLiveness)` for a liveness probe |
 | Status-change hooks | None registered | `HookServiceHealthChanged`, `HookContainerHealthChanged`, `Add*Hook` |
 | `RootScope.HealthCheck()` coverage | Root services only (unchanged); the doc comment is corrected | Use `RootScope.HealthReport()` for the whole tree |
 
