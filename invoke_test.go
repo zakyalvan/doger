@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestInvokeAnyByName(t *testing.T) {
@@ -1053,6 +1054,82 @@ func TestInvokeStruct_ImplicitAliasingDeterministic(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Equal(t, "b", value.G.Greet())
 	}
+}
+
+// greeterDecor is a Greeter decorating the Greeter its provider resolves.
+type greeterDecor struct{ inner Greeter }
+
+func (d *greeterDecor) Greet() string { return "decor(" + d.inner.Greet() + ")" }
+
+func TestInvokeAs_SkipsInvoker(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		before bool // register "base" before "decor"
+		base   bool // register "base" at all
+		want   string
+	}{
+		{name: "base registered after decor", base: true, want: "decor(base)"},
+		{name: "base registered before decor", base: true, before: true, want: "decor(base)"},
+		{name: "no other match"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+
+			root := New()
+			if tt.base && tt.before {
+				provideGreeter(root, "base")
+			}
+			ProvideNamed(root, "decor", func(i Injector) (*greeterDecor, error) {
+				inner, err := InvokeAs[Greeter](i)
+				if err != nil {
+					return nil, err
+				}
+				return &greeterDecor{inner: inner}, nil
+			})
+			if tt.base && !tt.before {
+				provideGreeter(root, "base")
+			}
+
+			decor, err := InvokeNamed[*greeterDecor](root, "decor")
+
+			if tt.want == "" {
+				assert.ErrorIs(t, err, ErrServiceNotMatch)
+				assert.NotErrorIs(t, err, ErrCircularDependency)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, decor.Greet())
+		})
+	}
+}
+
+func TestInvokeStruct_FallbackSkipsInvoker(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	type withGreeter struct {
+		G Greeter `do:""`
+	}
+
+	root := New()
+	ProvideNamed(root, "decor", func(i Injector) (*greeterDecor, error) {
+		value, err := InvokeStruct[withGreeter](i)
+		if err != nil {
+			return nil, err
+		}
+		return &greeterDecor{inner: value.G}, nil
+	})
+	provideGreeter(root, "base")
+
+	decor, err := InvokeNamed[*greeterDecor](root, "decor")
+
+	require.NoError(t, err)
+	assert.Equal(t, "decor(base)", decor.Greet())
 }
 
 type (

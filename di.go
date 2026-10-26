@@ -698,6 +698,9 @@ func MustInvokeAllMap[T any](i Injector) map[string]T {
 // earliest registration (an override keeps its position), then the smallest
 // service name. Aliases are candidates too. A service hidden by a service
 // of the same name in a nearer scope is not a candidate, as for InvokeAll.
+// Called from a provider, the service that provider builds is not a
+// candidate either, so a decorator can resolve the service it wraps; when it
+// is the only match, the error matches ErrServiceNotMatch.
 // Use InvokeNamed to pin a specific service.
 //
 // Parameters:

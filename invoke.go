@@ -425,18 +425,25 @@ type detachedInjector struct {
 // included, in the nearest scope (the invoking scope before its ancestors),
 // then with the earliest registration, then with the smallest name. A
 // service hidden by a same-name service in a nearer scope is skipped, as for
-// collections. This is nearest-first, the opposite of collection order, on
-// purpose: it keeps the "current scope first" behavior of InvokeAs.
+// collections, and so is the service whose provider invokes it, so that a
+// decorator resolves the service it wraps. This is nearest-first, the
+// opposite of collection order, on purpose: it keeps the "current scope
+// first" behavior of InvokeAs.
 func selectByType(injector Injector, target reflect.Type) (collectionCandidate, bool) {
 	var selected collectionCandidate
 	var found bool
 	from := injectorScope(injector)
+	invoker, fromProvider := invokingServiceName(injector)
 
 	injector.serviceForEachRec(func(name string, scope *Scope, s any) bool {
 		// scopes come nearest first, each one whole: once a scope had a match,
 		// a farther scope cannot win, so the walk stops there
 		if found && scope != selected.scope {
 			return false
+		}
+
+		if fromProvider && name == invoker {
+			return true
 		}
 
 		service, ok := s.(serviceWrapperAny)
