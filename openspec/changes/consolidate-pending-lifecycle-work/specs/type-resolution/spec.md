@@ -92,6 +92,15 @@ Examples:
   | alias "decor-alias" of "decor" as Logger, and no other service | an error matching ErrServiceNotMatch, not ErrCircularDependency |
 ```
 
+#### Scenario: MustInvokeAs from a provider
+```gherkin
+Given a root scope with lazy "decor" implementing "Greeter", whose provider wraps MustInvokeAs[Greeter](i)
+And lazy "base" implementing "Greeter", registered after "decor"
+When the consumer calls InvokeNamed for "decor"
+Then "decor" wraps "base"
+And ExplainNamedService(root, "decor") lists exactly the dependency base
+```
+
 <!-- cases: 1 default: the first row -->
 <!-- cases: N/A 2 overrides: InvokeNamed selects a specific service, including the provider's own -->
 <!-- cases: 3 zero values: no other match gives ErrServiceNotMatch -->
@@ -117,15 +126,6 @@ Then field G is service "b" every time
 <!-- cases: N/A 3 zero values: an empty tag is the subject -->
 <!-- cases: N/A 4 boundaries: covered by the InvokeAs requirement -->
 <!-- cases: N/A 5 errors: unchanged -->
-#### Scenario: MustInvokeAs from a provider
-```gherkin
-Given a root scope with lazy "decor" implementing "Greeter", whose provider wraps MustInvokeAs[Greeter](i)
-And lazy "base" implementing "Greeter", registered after "decor"
-When the consumer calls InvokeNamed for "decor"
-Then "decor" wraps "base"
-And ExplainNamedService(root, "decor") lists exactly the dependency base
-```
-
 #### Scenario: Struct fallback skips the invoking service
 ```gherkin
 Given a root scope with lazy "decor" implementing "Greeter", whose provider calls InvokeStruct for a struct with field `G Greeter \`do:""\``
