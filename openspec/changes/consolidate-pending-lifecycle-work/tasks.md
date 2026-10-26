@@ -385,7 +385,7 @@ Rules:
 
 ## 56. Missing incremental-start tests (container-start; design V7, V8)
 
-- [ ] 56.1 Add `TestStartError_Incremental` (3 rows), `TestScopeStart_AncestorsNotStarted` (to `root_refresh_test.go`) and `TestStart_ParallelIncremental` (2 rows, to `root_start_test.go`); verify they pass, record the pass on arrival, and show each fails under a temporary mutation of the code it covers (reverted)
+- [x] 56.1 Add `TestStartError_Incremental` (3 rows), `TestScopeStart_AncestorsNotStarted` (to `root_refresh_test.go`) and `TestStart_ParallelIncremental` (2 rows, to `root_start_test.go`); verify they pass, record the pass on arrival, and show each fails under a temporary mutation of the code it covers (reverted)
 
 ## 57. Build hooks run outside the wrapper lock (service-build-hooks; design V10)
 

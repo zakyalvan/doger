@@ -1607,6 +1607,56 @@ func TestStart_Parallel(t *testing.T) {
 	}
 }
 
+func TestStart_ParallelIncremental(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		scope func(root *RootScope) Injector
+		call  func(root *RootScope) error
+	}{
+		{
+			name:  "root.Refresh()",
+			scope: func(root *RootScope) Injector { return root },
+			call:  func(root *RootScope) error { return root.Refresh() },
+		},
+		{
+			name:  "tenant.Start()",
+			scope: func(root *RootScope) Injector { return root.Scope("tenant") },
+			call: func(root *RootScope) error {
+				tenant, _ := root.ChildByName("tenant")
+				return tenant.Start()
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			synctest.Test(t, func(t *testing.T) {
+				is := assert.New(t)
+
+				root := NewWithOpts(&InjectorOpts{StartParallelism: 3})
+				require.NoError(t, root.Start())
+				scope := tt.scope(root)
+				rec := &callRecorder{}
+				for _, name := range []string{"a", "b", "c"} {
+					ProvideNamed(scope, name, func(Injector) (*sleepingStarter, error) {
+						return &sleepingStarter{name: name, d: time.Second, rec: rec}, nil
+					})
+				}
+
+				begin := time.Now()
+				is.NoError(tt.call(root))
+
+				is.Equal(time.Second, time.Since(begin))
+				is.ElementsMatch([]string{"a start", "a returned", "b start", "b returned", "c start", "c returned"}, rec.list())
+			})
+		})
+	}
+}
+
 func TestStart_ParallelFailure(t *testing.T) {
 	t.Parallel()
 

@@ -2,6 +2,7 @@ package doger
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -322,4 +323,100 @@ func TestScopeShutdown_WaitBounded(t *testing.T) {
 		close(w.release)
 		is.NoError(<-runErr)
 	})
+}
+
+func TestStartError_Incremental(t *testing.T) {
+	t.Parallel()
+
+	errBuild := errors.New("build failed")
+	errBoom := errors.New("boom")
+
+	tests := []struct {
+		name    string
+		setup   func(root *RootScope, tenant *Scope)
+		call    func(root *RootScope, tenant *Scope) error
+		service string
+		kind    string
+		op      StartOp
+		cause   error
+	}{
+		{
+			name: "provider returns errBuild, root.Refresh()",
+			setup: func(_ *RootScope, tenant *Scope) {
+				ProvideNamed(tenant, "b", func(Injector) (*startWithErr, error) { return nil, errBuild })
+			},
+			call:    func(root *RootScope, _ *Scope) error { return root.Refresh() },
+			service: "b", op: StartOpBuild, cause: errBuild,
+		},
+		{
+			name: "Start returns errBoom, tenant.Start()",
+			setup: func(_ *RootScope, tenant *Scope) {
+				ProvideNamedValue(tenant, "b", &errorStarter{err: errBoom})
+			},
+			call:    func(_ *RootScope, tenant *Scope) error { return tenant.Start() },
+			service: "b", op: StartOpStart, cause: errBoom,
+		},
+		{
+			name: "kind handler returns errBoom, root.Refresh()",
+			setup: func(root *RootScope, tenant *Scope) {
+				k := NewKind[Job, Spec]("k")
+				ProvideNamed(tenant, "j", func(Injector) (*CleanupJob, error) { return &CleanupJob{}, nil }, k.With(Spec{}))
+				k.Handle(root, StageBeforeStart, func(context.Context, Component[Job, Spec]) error { return errBoom })
+			},
+			call:    func(root *RootScope, _ *Scope) error { return root.Refresh() },
+			service: "j", kind: "k", op: StartOpHandle, cause: errBoom,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+			is := assert.New(t)
+
+			root := New()
+			require.NoError(t, root.Start())
+			tenant := root.Scope("tenant")
+			tt.setup(root, tenant)
+
+			err := tt.call(root, tenant)
+
+			var startErr *StartError
+			require.ErrorAs(t, err, &startErr)
+			is.Equal(tt.service, startErr.Service)
+			is.Equal("tenant", startErr.Scope.Name())
+			is.Equal(tt.kind, startErr.Kind)
+			is.Equal(tt.op, startErr.Op)
+			is.ErrorIs(err, tt.cause)
+		})
+	}
+}
+
+func TestScopeStart_AncestorsNotStarted(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+	is := assert.New(t)
+
+	root := New()
+	require.NoError(t, root.Start())
+	starts := &countingStarters{}
+	var dbBuilds int
+	ProvideNamed(root, "db", func(Injector) (*countedStarter, error) {
+		dbBuilds++
+		return &countedStarter{name: "db", starts: starts}, nil
+	})
+	tenant := root.Scope("tenant")
+	ProvideNamed(tenant, "worker", func(i Injector) (*countedStarter, error) {
+		if _, err := InvokeNamed[*countedStarter](i, "db"); err != nil {
+			return nil, err
+		}
+		return &countedStarter{name: "worker", starts: starts}, nil
+	})
+
+	err := tenant.Start()
+
+	is.NoError(err)
+	is.Equal(1, starts.count("worker"))
+	is.Equal(1, dbBuilds)
+	is.Equal(0, starts.count("db"))
 }
