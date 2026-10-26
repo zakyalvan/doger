@@ -13,9 +13,9 @@ import (
 type (
 	// non-zero size, so that two instances never share an address and
 	// assert.Same can tell them apart
-	buildDB  struct{ id int }
-	buildReq struct{ id int }
-	buildCfg struct{ id int }
+	buildDB  struct{ _ int }
+	buildReq struct{ _ int }
+	buildCfg struct{ _ int }
 
 	buildDBIface interface{ isBuildDB() }
 )
