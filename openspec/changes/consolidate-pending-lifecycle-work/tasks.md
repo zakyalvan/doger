@@ -420,7 +420,7 @@ Rules:
 
 ## 62. Health-check timeout in one place (design V15)
 
-- [ ] 62.1 REFACTOR: *Replace Inline Code with Function Call* - `queueServiceHealthcheck` uses `perServiceHealthCheckContext`; verify `make test` (health-check suites unchanged) and `make lint` pass
+- [x] 62.1 REFACTOR: *Replace Inline Code with Function Call* - `queueServiceHealthcheck` uses `perServiceHealthCheckContext`; verify `make test` (health-check suites unchanged) and `make lint` pass
 
 ## 63. One veto loop and one observer loop for container and scope hooks (design V16)
 

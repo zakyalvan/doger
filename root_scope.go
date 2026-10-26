@@ -12,8 +12,6 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
-
-	"github.com/jonboulle/clockwork"
 )
 
 // DefaultRootScopeName is the default name for the root scope.
@@ -447,12 +445,8 @@ func (s *RootScope) serviceShutdown(ctx context.Context, name string) error {
 func (s *RootScope) onServiceInvoke(name string) { s.self.onServiceInvoke(name) }
 
 func (s *RootScope) queueServiceHealthcheck(ctx context.Context, scope *Scope, serviceName string) <-chan error {
-	cancel := func() {}
-	if s.opts.HealthCheckTimeout > 0 {
-		// `ctx` might already contain a timeout, but we add another one
-		ctx = withHealthCheckDeadline(ctx, s.opts.Clock.Now().Add(s.opts.HealthCheckTimeout))
-		ctx, cancel = clockwork.WithTimeout(ctx, s.opts.Clock, s.opts.HealthCheckTimeout)
-	}
+	// `ctx` might already contain a timeout, but we add another one
+	ctx, cancel := perServiceHealthCheckContext(ctx, s)
 
 	// when no pooling policy has been defined
 	if s.opts.HealthCheckParallelism == 0 || s.healthCheckPool == nil {
