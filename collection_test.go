@@ -481,26 +481,40 @@ func TestCollection_ReaderInjector(t *testing.T) {
 
 func TestCollection_ReadWithNilRecordsNoEdge(t *testing.T) {
 	t.Parallel()
-	testWithTimeout(t, time.Second)
 
-	root := New()
-	provideHandler(root, "console", newConsole)
-	provideBus(root)
-	ProvideNamed(root, "app", func(i Injector) (*Bus, error) {
-		bus, err := InvokeNamed[*busHandler](i, "bus")
-		if err != nil {
-			return nil, err
-		}
-		handlers, err := bus.peers.All(nil)
-		return &Bus{names: handlerNames(handlers)}, err
-	})
+	tests := []struct {
+		name   string
+		reader func(root *RootScope) Injector
+	}{
+		{name: "nil", reader: func(*RootScope) Injector { return nil }},
+		{name: "the root, not a provider's injector", reader: func(root *RootScope) Injector { return root }},
+	}
 
-	app, err := InvokeNamed[*Bus](root, "app")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
 
-	require.NoError(t, err)
-	assert.Equal(t, []string{"console"}, app.names)
-	assert.Equal(t, []string{"bus"}, explainedNames(t, root, "app", false))
-	assert.Empty(t, explainedNames(t, root, "bus", false), "the holder records no edge either")
+			root := New()
+			provideHandler(root, "console", newConsole)
+			provideBus(root)
+			ProvideNamed(root, "app", func(i Injector) (*Bus, error) {
+				bus, err := InvokeNamed[*busHandler](i, "bus")
+				if err != nil {
+					return nil, err
+				}
+				handlers, err := bus.peers.All(tt.reader(root))
+				return &Bus{names: handlerNames(handlers)}, err
+			})
+
+			app, err := InvokeNamed[*Bus](root, "app")
+
+			require.NoError(t, err)
+			assert.Equal(t, []string{"console"}, app.names)
+			assert.Equal(t, []string{"bus"}, explainedNames(t, root, "app", false))
+			assert.Empty(t, explainedNames(t, root, "bus", false), "the holder records no edge either")
+		})
+	}
 }
 
 func TestCollection_ReaderExcludedByName(t *testing.T) {
