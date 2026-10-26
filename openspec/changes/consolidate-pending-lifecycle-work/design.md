@@ -211,7 +211,7 @@ A second `/opsx:verify` found four defects, each reproduced by a probe test, plu
 
 **V18. Every Start failure after Shutdown began carries the abort cause.** `runStartingHooks`, `runScopeStartingHooks`, the deferred kind-binding check of `buildCandidates` and `checkCycles` wrap their errors with `withAbortCause`, like the other pipeline failures.
 
-**V19. Test-only fixes.** `TestRefresh_ShutdownCancels` waits for the Refresh goroutine (`synctest.Wait`) before its non-blocking check; vacuous `indexOf` comparisons first require the events; result checks assert non-nil; the observer-panic tests assert the phase reached afterwards; fixtures follow the spec's lazy wording; `TestScopeStart_RootScope` uses a provider's scope.
+**V19. Test-only fixes.** `TestRefresh_ShutdownCancels` waits for the Refresh goroutine (`synctest.Wait`) before its non-blocking check; vacuous `indexOf` comparisons first require the events; result checks assert non-nil; the observer-panic tests assert the phase reached afterwards; fixtures follow the spec's lazy wording; `TestScopeStart_RootScope` takes the root's own `*Scope` from a kind handler's `Component.Scope` (a provider receives an `Injector`, not a `*Scope`).
 
 **V20. Scope hooks get a non-nil context.** `Scope.ShutdownWithContext` and `Scope.StartWithContext` normalize a nil context before any hook runs.
 

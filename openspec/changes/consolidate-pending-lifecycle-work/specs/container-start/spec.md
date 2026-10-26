@@ -89,25 +89,27 @@ And "a" was started 1 time
 
 #### Scenario: A Starter that failed is tried again
 ```gherkin
-Given a started root container and lazy Starter "late", registered after Start in <scope>, whose Start returns errBoom on its first call and nil afterwards
+Given a started root container and lazy Starter "late", registered after Start in <scope>, whose <failing> returns errBoom on its first call and nil afterwards
 When the consumer calls <operation> twice
 Then the first call returns an error matching errBoom and the second returns nil
-And "late"'s Start was called 2 times
+And "late"'s provider was called <builds> times and its Start <starts> times
 When the consumer calls <operation> again
 Then it returns nil
-And "late"'s Start was called 2 times
+And "late"'s provider was called <builds> times and its Start <starts> times
 
 Examples:
-  | scope                                     | operation      |
-  | the root                                  | root.Refresh() |
-  | child scope "tenant", created after Start | tenant.Start() |
+  | scope                                     | operation      | failing  | builds | starts |
+  | the root                                  | root.Refresh() | Start    | 1      | 2      |
+  | child scope "tenant", created after Start | tenant.Start() | Start    | 1      | 2      |
+  | the root                                  | root.Refresh() | provider | 2      | 1      |
+  | child scope "tenant", created after Start | tenant.Start() | provider | 2      | 1      |
 ```
 
 <!-- cases: 1 default: Refresh after Start -->
 <!-- cases: N/A 2 overrides: StartParallelism and context apply as for Start -->
 <!-- cases: 3 zero values: nothing new; a nil context is treated as context.Background(), as for Start -->
 <!-- cases: 4 boundaries: zero, one and several new services; repeated Refresh -->
-<!-- cases: 5 errors: failures are wrapped as for Start ("Incremental start failures are StartError values"); a failed Starter is tried again ("A Starter that failed is tried again") -->
+<!-- cases: 5 errors: failures are wrapped as for Start ("Incremental start failures are StartError values"); a Starter whose Start or build failed is tried again ("A Starter that failed is tried again") -->
 <!-- cases: 6 duplicates: a second Refresh starts nothing again; only a successful Start counts -->
 <!-- cases: 7 lifecycle: before Start and after Shutdown are covered by "Incremental start needs a started container" -->
 <!-- cases: 8 concurrency: covered by "Concurrent Refresh calls are serialized" -->
@@ -142,7 +144,7 @@ And "db" is built and was started 0 times
 #### Scenario: Scope.Start on the root's own scope
 ```gherkin
 Given a started root container with lazy Starter "late" registered after Start
-And s is the *Scope a root service's provider received
+And s is the root's own *Scope, as a kind handler receives it in Component.Scope for a root service (a provider receives an Injector, not a *Scope)
 When the consumer calls s.Start()
 Then it returns nil
 And "late" was started 1 time
