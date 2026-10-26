@@ -743,8 +743,14 @@ func (s *Scope) serviceSet(name string, service any) {
 	s.RootScope().opts.onBeforeRegistration(s, name)
 
 	s.mu.Lock()
+	replaced, ok := s.services[name]
 	s.services[name] = service
 	s.mu.Unlock()
+
+	// an Override leaves the replaced wrapper behind for good
+	if ok && replaced != service {
+		s.RootScope().forget(replaced)
+	}
 
 	s.RootScope().opts.onAfterRegistration(s, name)
 }

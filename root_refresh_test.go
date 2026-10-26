@@ -420,3 +420,22 @@ func TestScopeStart_AncestorsNotStarted(t *testing.T) {
 	is.Equal(1, dbBuilds)
 	is.Equal(0, starts.count("db"))
 }
+
+func TestRootScope_ForgetsOverriddenServices(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	starts := &countingStarters{}
+	provideCountedStarter(root, starts, "s")
+	require.NoError(t, root.Start())
+	for range 5 {
+		OverrideNamed(root, "s", func(Injector) (*countedStarter, error) { return &countedStarter{name: "s", starts: starts}, nil })
+		require.NoError(t, root.Refresh())
+	}
+
+	root.startedMu.Lock()
+	defer root.startedMu.Unlock()
+	assert.Len(t, root.started, 1)
+	assert.Equal(t, 6, starts.count("s"))
+}

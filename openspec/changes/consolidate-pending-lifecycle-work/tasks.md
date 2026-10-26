@@ -401,9 +401,9 @@ Rules:
 
 ## 59. Override forgets the replaced wrapper (design V12)
 
-- [ ] 59.1 RED: add `TestRootScope_ForgetsOverriddenServices` (5 overrides plus Refresh) to `root_refresh_test.go`; verify `go test -race -run TestRootScope_ForgetsOverriddenServices .` fails with 6 started entries instead of 1
-- [ ] 59.2 GREEN: drop the replaced wrapper from `started` and `handled` where registration replaces it; verify the 59.1 command passes and `make test` is green
-- [ ] 59.3 REFACTOR: none needed if it reuses `forget`; verify `make test` and `make lint` pass
+- [x] 59.1 RED: add `TestRootScope_ForgetsOverriddenServices` (5 overrides plus Refresh) to `root_refresh_test.go`; verify `go test -race -run TestRootScope_ForgetsOverriddenServices .` fails with 6 started entries instead of 1
+- [x] 59.2 GREEN: drop the replaced wrapper from `started` and `handled` where registration replaces it; verify the 59.1 command passes and `make test` is green
+- [x] 59.3 REFACTOR: none needed if it reuses `forget`; verify `make test` and `make lint` pass
 
 ## 60. StartParallelism is clamped to the number of Starters (container-start; design V13)
 
