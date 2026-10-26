@@ -1057,6 +1057,27 @@ func TestMustInvokeAs_FromProvider(t *testing.T) {
 	assert.Equal(t, []string{"base"}, explainedNames(t, root, "decor", false))
 }
 
+func TestInvokeAs_StoredInjectorSkipsHolder(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	var stored Injector
+	ProvideNamed(root, "decor", func(i Injector) (*greeterDecor, error) {
+		stored = i
+		return &greeterDecor{inner: &greeterImpl{name: "none"}}, nil
+	})
+	provideGreeter(root, "base")
+	_, err := InvokeNamed[*greeterDecor](root, "decor")
+	require.NoError(t, err)
+
+	// "decor" registered first, so only the skip keeps it out
+	greeter, err := InvokeAs[Greeter](stored)
+
+	require.NoError(t, err)
+	assert.Equal(t, "base", greeter.Greet())
+}
+
 func TestInvokeAs_SingleAndMissing(t *testing.T) {
 	t.Parallel()
 
