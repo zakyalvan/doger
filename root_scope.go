@@ -240,7 +240,7 @@ func (s *RootScope) ShutdownWithContext(ctx context.Context) *ShutdownReport {
 	report := s.shutdownAsWinner(ctx, ticket, &first)
 
 	// pointClosed: closeDone is closed, so code here may call Shutdown().
-	runObserverHooksWith(s, "closed", s.opts.HookContainerClosed, &first, func(hook func(context.Context, *RootScope, *ShutdownReport)) {
+	runObserverHooksWith(s, "container", "closed", s.opts.HookContainerClosed, &first, func(hook func(context.Context, *RootScope, *ShutdownReport)) {
 		hook(ctx, s, report)
 	})
 

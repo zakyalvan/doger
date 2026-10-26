@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
-	"strings"
 )
 
 // startPhase is the start state of a root container.
@@ -128,7 +127,7 @@ func (s *RootScope) failAndRepanic(ctx context.Context, recovered any, err error
 // outcome: Started, then Ready, on success; Failed with err otherwise.
 func (s *RootScope) dispatchAfterStart(ctx context.Context, err error, first *hookPanic) {
 	if err != nil {
-		runObserverHooksWith(s, "failed", s.opts.HookContainerFailed, first, func(hook func(context.Context, *RootScope, error)) {
+		runObserverHooksWith(s, "container", "failed", s.opts.HookContainerFailed, first, func(hook func(context.Context, *RootScope, error)) {
 			hook(ctx, s, err)
 		})
 		return
@@ -141,16 +140,17 @@ func (s *RootScope) dispatchAfterStart(ctx context.Context, err error, first *ho
 
 // hookPanic is the first observer hook panic of one Start or Shutdown.
 type hookPanic struct {
-	point    string
+	subject  string // "container" or "scope"
+	point    string // as HookContainerPanic receives it
 	value    any
 	panicked bool
 }
 
-// callObserver calls an observer hook, recovering its panic: the first one
-// of the operation is kept in first, later ones are logged.
-func (s *RootScope) callObserver(first *hookPanic, point string, call func()) {
+// callObserver calls an observer hook of subject, recovering its panic: the
+// first one of the operation is kept in first, later ones are logged.
+func (s *RootScope) callObserver(first *hookPanic, subject, point string, call func()) {
 	if recovered, panicked := callHookSafely(call); panicked {
-		s.keepFirstPanic(first, hookPanic{point: point, value: recovered, panicked: true})
+		s.keepFirstPanic(first, hookPanic{subject: subject, point: point, value: recovered, panicked: true})
 	}
 }
 
@@ -170,7 +170,8 @@ func (s *RootScope) keepFirstPanic(first *hookPanic, p hookPanic) {
 
 // logHookPanic logs an observer hook panic that is not dispatched.
 func (s *RootScope) logHookPanic(p hookPanic) {
-	if strings.HasPrefix(p.point, "scope-") {
+	if p.subject == "scope" {
+		// scope points name their subject already: "scope-closing"
 		s.opts.Logf("DI: %s hook panicked: %v", p.point, p.value)
 		return
 	}
@@ -212,7 +213,7 @@ func (s *RootScope) dispatchHookPanic(point string, value any) {
 // runObserverHooks runs container hooks in order, on a copy of the list,
 // skipping nil entries.
 func (s *RootScope) runObserverHooks(ctx context.Context, point string, hooks []func(context.Context, *RootScope), first *hookPanic) {
-	runObserverHooksWith(s, point, hooks, first, func(hook func(context.Context, *RootScope)) { hook(ctx, s) })
+	runObserverHooksWith(s, "container", point, hooks, first, func(hook func(context.Context, *RootScope)) { hook(ctx, s) })
 }
 
 // observerHook is the type of an observer hook: a container or scope hook
@@ -224,13 +225,13 @@ type observerHook interface {
 		~func(context.Context, *RootScope, *ShutdownReport)
 }
 
-// runObserverHooksWith calls each non-nil observer hook through call, in
-// order, on a copy of the list, recovering their panics into first under
-// point.
-func runObserverHooksWith[H observerHook](root *RootScope, point string, hooks []H, first *hookPanic, call func(hook H)) {
+// runObserverHooksWith calls each non-nil observer hook of subject
+// ("container" or "scope") through call, in order, on a copy of the list,
+// recovering their panics into first under point.
+func runObserverHooksWith[H observerHook](root *RootScope, subject, point string, hooks []H, first *hookPanic, call func(hook H)) {
 	for _, hook := range slices.Clone(hooks) {
 		if hook != nil {
-			root.callObserver(first, point, func() { call(hook) })
+			root.callObserver(first, subject, point, func() { call(hook) })
 		}
 	}
 }

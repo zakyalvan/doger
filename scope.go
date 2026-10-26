@@ -461,7 +461,7 @@ func (s *Scope) endClosing() {
 // runScopeObserverHooks runs scope observer hooks for s in order, recovering
 // their panics into first.
 func (s *Scope) runScopeObserverHooks(ctx context.Context, point string, hooks []func(context.Context, *Scope), first *hookPanic) {
-	runObserverHooksWith(s.rootScope, point, hooks, first, func(hook func(context.Context, *Scope)) { hook(ctx, s) })
+	runObserverHooksWith(s.rootScope, "scope", point, hooks, first, func(hook func(context.Context, *Scope)) { hook(ctx, s) })
 }
 
 // shutdownChildrenInParallel runs a parallel shutdown of children scopes.
