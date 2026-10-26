@@ -414,6 +414,7 @@ func TestInvokeAll_OrderDoesNotAffectShutdown(t *testing.T) {
 	root.Shutdown()
 
 	events := rec.list()
+	require.Subset(t, events, []string{"shutdown bus", "shutdown a", "shutdown b"})
 	is.Less(indexOf(events, "shutdown bus"), indexOf(events, "shutdown a"))
 	is.Less(indexOf(events, "shutdown bus"), indexOf(events, "shutdown b"))
 	is.Equal([]string{"b", "a"}, seen)

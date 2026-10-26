@@ -593,6 +593,7 @@ func TestInvokeAll_EdgesOrderShutdown(t *testing.T) {
 	root.Shutdown()
 
 	events := rec.list()
+	require.Subset(t, events, []string{"shutdown bus", "shutdown console", "shutdown audit"})
 	is.Less(indexOf(events, "shutdown bus"), indexOf(events, "shutdown console"))
 	is.Less(indexOf(events, "shutdown bus"), indexOf(events, "shutdown audit"))
 }
@@ -703,6 +704,7 @@ func TestInvokeAll_AfterShutdown(t *testing.T) {
 	handlers, err := InvokeAll[EventHandler](root)
 
 	require.NoError(t, err)
+	assert.NotNil(t, handlers)
 	assert.Empty(t, handlers)
 }
 

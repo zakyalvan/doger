@@ -217,8 +217,8 @@ func TestCollection_ReadOutcomes(t *testing.T) {
 			testWithTimeout(t, time.Second)
 
 			root := New()
+			c := InvokeCollection[EventHandler](root) // live: the reads cross the setup
 			tt.setup(root)
-			c := InvokeCollection[EventHandler](root)
 
 			handlers, err := c.All()
 
