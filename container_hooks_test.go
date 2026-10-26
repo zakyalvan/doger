@@ -1337,3 +1337,70 @@ func TestContainerHooks_IncrementalStartFiresNone(t *testing.T) {
 		})
 	}
 }
+
+// TestContainerHooks_ShutdownCauseRace pins that a start whose pipeline
+// returns just as Shutdown begins still fails with ErrStartAfterShutdown.
+func TestContainerHooks_ShutdownCauseRace(t *testing.T) {
+	t.Parallel()
+
+	const runs = 20000
+
+	tests := []struct {
+		name      string
+		operation func(t *testing.T, root *RootScope, provideJob func()) error
+	}{
+		{
+			name: "Start()",
+			operation: func(_ *testing.T, root *RootScope, provideJob func()) error {
+				provideJob()
+				return root.Start()
+			},
+		},
+		{
+			name: "Refresh()",
+			operation: func(t *testing.T, root *RootScope, provideJob func()) error {
+				t.Helper()
+				require.NoError(t, root.Start())
+				provideJob()
+				return root.Refresh()
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Minute)
+
+			var bad int
+			var sample error
+			for range runs {
+				root := New()
+				scheduled := NewKind[Job, Spec]("k")
+				begin, done := make(chan struct{}), make(chan struct{})
+				go func() {
+					<-begin
+					root.Shutdown()
+					close(done)
+				}()
+				scheduled.Handle(root, StageAfterStart, func(context.Context, Component[Job, Spec]) error {
+					close(begin)
+					return nil
+				})
+				provideJob := func() {
+					ProvideNamed(root, "j", func(Injector) (*CleanupJob, error) { return &CleanupJob{name: "j"}, nil }, scheduled.With(Spec{}))
+				}
+
+				err := tt.operation(t, root, provideJob)
+				<-done
+
+				if err != nil && !errors.Is(err, ErrStartAfterShutdown) {
+					bad++
+					sample = err
+				}
+			}
+
+			assert.Zero(t, bad, "errors not matching ErrStartAfterShutdown, e.g. %v", sample)
+		})
+	}
+}

@@ -348,9 +348,9 @@ Rules:
 
 ## 50. Shutdown sets the cancel cause under the lifecycle lock (container-lifecycle-hooks; design V1)
 
-- [ ] 50.1 RED: add `TestContainerHooks_ShutdownCauseRace` (2 rows, 20000 fresh containers each) to `container_hooks_test.go`; verify `go test -race -run TestContainerHooks_ShutdownCauseRace .` fails with `DI: start aborted: %!w(<nil>)`
-- [ ] 50.2 GREEN: cancel the in-flight run with `ErrStartAfterShutdown` inside `beginClose` while holding `lifecycleMu`, leaving `waitForStart` to wait only; verify the 50.1 command passes, the Part H and Refresh suites pass unchanged, and `make test` is green
-- [ ] 50.3 REFACTOR: *Rename* `waitForStart`'s role in its godoc only if the name no longer fits; verify `make test` and `make lint` pass
+- [x] 50.1 RED: add `TestContainerHooks_ShutdownCauseRace` (2 rows, 20000 fresh containers each) to `container_hooks_test.go`; verify `go test -race -run TestContainerHooks_ShutdownCauseRace .` fails with `DI: start aborted: %!w(<nil>)`
+- [x] 50.2 GREEN: cancel the in-flight run with `ErrStartAfterShutdown` inside `beginClose` while holding `lifecycleMu`, leaving `waitForStart` to wait only; verify the 50.1 command passes, the Part H and Refresh suites pass unchanged, and `make test` is green
+- [x] 50.3 REFACTOR: *Rename* `waitForStart`'s role in its godoc only if the name no longer fits; verify `make test` and `make lint` pass
 
 ## 51. Parallel start re-raises hook panics on the caller (container-start; design V2)
 
