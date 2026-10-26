@@ -136,14 +136,18 @@ func TestInvokeAnyByName(t *testing.T) {
 	is.True(afterCalled, "AfterInvocationHook should be called")
 }
 
+// TestInvokeByName is not parallel: it replaces DefaultRootScope.
 func TestInvokeByName(t *testing.T) {
-	t.Parallel()
 	testWithTimeout(t, 100*time.Millisecond)
 	is := assert.New(t)
 
+	previous := DefaultRootScope
+	DefaultRootScope = New()
+	t.Cleanup(func() { DefaultRootScope = previous })
+
 	// test default injector vs scope
-	ProvideNamedValue(DefaultRootScope, "foo", "bar")
-	svc, err := invokeByName[string](nil, "foo")
+	ProvideNamedValue(DefaultRootScope, "invoke-by-name-default", "bar")
+	svc, err := invokeByName[string](nil, "invoke-by-name-default")
 	is.NoError(err)
 	is.Equal("bar", svc)
 
