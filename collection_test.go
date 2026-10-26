@@ -519,34 +519,47 @@ func TestCollection_ReadWithNilRecordsNoEdge(t *testing.T) {
 
 func TestCollection_ReaderExcludedByName(t *testing.T) {
 	t.Parallel()
-	testWithTimeout(t, time.Second)
-	is := assert.New(t)
 
-	root := New()
-	provideBus(root)
-	provideHandler(root, "app", newConsole)
-	provideHandler(root, "console", newConsole)
-	child := root.Scope("child")
-	// the child "app" shadows the root "app" and reads the root's collection
-	ProvideNamed(child, "app", func(i Injector) (*Bus, error) {
-		bus, err := InvokeNamed[*busHandler](i, "bus")
-		if err != nil {
-			return nil, err
-		}
-		handlers, err := bus.peers.Map(i)
-		return &Bus{names: slices.Sorted(maps.Keys(handlers))}, err
-	})
+	tests := []struct {
+		name    string
+		own     bool // the child "app" reads with its own injector, not nil
+		members []string
+	}{
+		{name: "own injector", own: true, members: []string{"console"}},
+		{name: "nil", members: []string{"app", "console"}},
+	}
 
-	app, err := InvokeNamed[*Bus](child, "app")
-	require.NoError(t, err)
-	bus, err := InvokeNamed[*busHandler](root, "bus")
-	require.NoError(t, err)
-	handlers, err := bus.peers.Map(nil)
-	require.NoError(t, err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
 
-	// the reader's name excludes the root "app" it shadows
-	is.Equal([]string{"console"}, app.names)
-	is.Equal([]string{"app", "console"}, slices.Sorted(maps.Keys(handlers)))
+			root := New()
+			provideBus(root)
+			provideHandler(root, "app", newConsole)
+			provideHandler(root, "console", newConsole)
+			child := root.Scope("child")
+			// the child "app" shadows the root "app" and reads the root's collection
+			ProvideNamed(child, "app", func(i Injector) (*Bus, error) {
+				bus, err := InvokeNamed[*busHandler](i, "bus")
+				if err != nil {
+					return nil, err
+				}
+				var reader Injector
+				if tt.own {
+					reader = i
+				}
+				handlers, err := bus.peers.Map(reader)
+				return &Bus{names: slices.Sorted(maps.Keys(handlers))}, err
+			})
+
+			app, err := InvokeNamed[*Bus](child, "app")
+
+			// the reader's name excludes the root "app" it shadows
+			require.NoError(t, err)
+			assert.Equal(t, tt.members, app.names)
+		})
+	}
 }
 
 func TestCollection_GoroutineReadDuringOuterProvider(t *testing.T) {

@@ -124,9 +124,9 @@ Examples:
 Given lazy "bus" implementing "EventHandler" in the root whose provider stores c := InvokeCollection[EventHandler](i)
 And lazy "app" and "console" implementing "EventHandler" in the root
 And child scope "child" with lazy "app", not an EventHandler, whose provider invokes "bus", then calls c.Map(<reader>) on bus's collection and keeps the member names
-When the consumer invokes "app" from "child", then reads c.Map(nil) from the root
-Then both invocations return a nil error
-And the read with <reader> has the members <members>
+When the consumer invokes "app" from "child"
+Then the invocation returns a nil error
+And the read had the members <members>
 
 Examples:
   | reader                   | members        |
