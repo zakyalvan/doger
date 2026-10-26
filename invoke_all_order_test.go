@@ -388,3 +388,46 @@ func TestInvokeAllMap_IgnoresOrdered(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, handlers, "bad")
 }
+
+func TestInvokeAll_OrderDoesNotAffectShutdown(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+	is := assert.New(t)
+
+	root := New()
+	rec := &callRecorder{}
+	ProvideNamed(root, "a", func(Injector) (*shutdownHandler, error) {
+		return &shutdownHandler{handlerBase: handlerBase{"a"}, rec: rec}, nil
+	}, WithOrder(10))
+	ProvideNamed(root, "b", func(Injector) (*shutdownHandler, error) {
+		return &shutdownHandler{handlerBase: handlerBase{"b"}, rec: rec}, nil
+	}, WithOrder(-10))
+	var seen []string
+	ProvideNamed(root, "bus", func(i Injector) (*shutdownBus, error) {
+		handlers, err := InvokeAll[EventHandler](i)
+		seen = handlerNames(handlers)
+		return &shutdownBus{rec: rec}, err
+	})
+
+	_, err := InvokeNamed[*shutdownBus](root, "bus")
+	require.NoError(t, err)
+	root.Shutdown()
+
+	events := rec.list()
+	is.Less(indexOf(events, "shutdown bus"), indexOf(events, "shutdown a"))
+	is.Less(indexOf(events, "shutdown bus"), indexOf(events, "shutdown b"))
+	is.Equal([]string{"b", "a"}, seen)
+}
+
+func TestInvokeAll_OrderDoesNotAffectStart(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	rec := &callRecorder{}
+	provideRecordingStarter(root, rec, "a", WithOrder(10))
+	provideRecordingStarter(root, rec, "b", WithOrder(-10))
+
+	require.NoError(t, root.Start())
+	assert.Equal(t, []string{"a", "b"}, rec.list())
+}

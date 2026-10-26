@@ -221,10 +221,10 @@ Rules:
 
 ## 32. Ordering never affects lifecycle order (Part K)
 
-- [ ] 32.1 RED: add `TestInvokeAll_OrderDoesNotAffectShutdown` and `TestInvokeAll_OrderDoesNotAffectStart` (scenarios "Shutdown ignores collection order" and "Start ignores collection order"); verify `go test -race -run 'TestInvokeAll_OrderDoesNotAffect' .`; they pass on arrival, so record that and show each can fail against a throwaway change that feeds `WithOrder` into start and shutdown ordering (not committed)
-- [ ] 32.2 GREEN: no production change expected, since `WithOrder` is read only by `orderValue`; verify the 32.1 command passes and `make test` is green
-- [ ] 32.3 REFACTOR: none needed; verify `make test` and `make lint` pass
-- [ ] 32.4 Add the "collection order vs lifecycle order" section to the docs page; verify `npm --prefix docs run build` succeeds
+- [x] 32.1 RED: add `TestInvokeAll_OrderDoesNotAffectShutdown` and `TestInvokeAll_OrderDoesNotAffectStart` (scenarios "Shutdown ignores collection order" and "Start ignores collection order"); verify `go test -race -run 'TestInvokeAll_OrderDoesNotAffect' .`; they pass on arrival, so record that and show each can fail against a throwaway change that feeds `WithOrder` into start and shutdown ordering (not committed)
+- [x] 32.2 GREEN: no production change expected, since `WithOrder` is read only by `orderValue`; verify the 32.1 command passes and `make test` is green
+- [x] 32.3 REFACTOR: none needed; verify `make test` and `make lint` pass
+- [x] 32.4 Add the "collection order vs lifecycle order" section to the docs page; verify `npm --prefix docs run build` succeeds
 
 ## 33. Refresh starts what is not started yet (container-start; design P1–P3)
 

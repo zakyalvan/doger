@@ -117,3 +117,13 @@ If `Order()` panics, `InvokeAll` returns no collection and an error naming the m
 ### Maps are unordered {#maps-are-unordered}
 
 `InvokeAllMap` never calls `Order()`: a map has no order.
+
+## Collection order vs lifecycle order {#collection-order-vs-lifecycle-order}
+
+`Ordered` and `WithOrder` only change the order of the slices `InvokeAll` returns. They never change the lifecycle:
+
+- **construction** follows invocations and [declared dependencies](../service-registration/declared-dependencies.md);
+- **start** follows the dependency graph, then scope depth and registration order (see [Starting the container](../service-lifecycle/starter.md#order));
+- **shutdown** follows the dependency graph: a provider that collected members is shut down **before** them, whatever their order.
+
+To order a lifecycle, declare dependencies instead.
