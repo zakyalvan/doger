@@ -355,3 +355,23 @@ While measuring, `TestStart_CallerCancelThenShutdown`'s parallel row failed 1 ti
 | Provide, HealthCheck, Shutdown, ListProvidedServices, Ancestors | ~ | ~ | ~ |
 
 Removing `virtualScope.returned` (V51) took the per-invocation bytes back to the base's, so the invoker link of V17 no longer costs memory; each invocation still allocates one object fewer (V36). The `New` bytes above the base are the larger public `InjectorOpts`. `NewFrameFromPC` (+8.7%, p=0.005) is in the untouched `stacktrace` package: noise.
+
+## Part V5: fifth verification (groups 105-111)
+
+`/opsx:verify` on `c40c60b`: 0 CRITICAL, 6 WARNING, 15 SUGGESTION. None of them needed a production change, so every test below is test-only: either it passed on arrival and its mutation (reverted after committing the test) fails it, or the task asked for no mutation.
+
+| Group | Passed on arrival; the mutation and what it fails |
+|---|---|
+| 105 | `return candidates, false` in `claimCandidates`: only the new row fails, `HookScopeStarted ran`, expected 0, actual 1 |
+| 106 | dropping the reader seed in `collectionCandidatesFor`: ``DI: could not invoke collection member `app`: DI: circular dependency detected: `app` -> `app` `` |
+| 107 | `buildCandidates` marking a failed build started: both build rows fail (builds 1, expected 2; starts 0, expected 1); the Start rows pass |
+| 109 | none (fixture and docs) |
+| 110.1 | scheduling after the first failure (`firstErr == nil` dropped from the dispatch loop): both rows fail, "c" started once |
+| 110.2 | claiming candidates of closing scopes: `w` started and the kind handler ran, expected 0, actual 1 |
+| 110.3 | a plain reader attributed to the holder (`newVirtualScope(r, holder)`): the root-reader row fails, "the holder records no edge either" |
+| 110.4 | `serviceLazy.clone` with `opts: nil`: the clone row fails; `override` keeping the previous options when called without any: the "without options" row fails |
+| 110.5 | members returned as copies of their pointee: the `*sql.DB` row fails, "the member is the registered instance" |
+| 110.6 | no nil skip in `runObserverHooksWith`: the Started, Closing and Closed rows fail; no nil skip in `runVetoHooks`: the Starting row fails |
+| 110.7 | `Phase()` reporting `PhaseFailed` once closed: the new test fails 3 of 3 runs (all 20 goroutines saw it); the previous buffered version passed 1 of 2 uncached runs |
+| 110.8 | confirmed first: `ErrServiceNotMatch`, as the brief expected. With the alias skip disabled, the error is ``DI: circular dependency detected: `svc` -> `g` -> `svc` ``: the cycle check is also by name, although `g` resolves to the parent's "svc" |
+| 111 | docs |

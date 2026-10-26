@@ -334,6 +334,37 @@ A fourth `/opsx:verify` reproduced four defects with probe tests (V37–V40) and
 - A single `-race -count=2000` process over all lifecycle and collection tests grew to 7.3 GB of RSS in 34 minutes. The live Go heap stayed at about 1 MB: the growth is the race runtime's state for goroutines ever created (about 280 bytes each, measured in isolation), and `TestContainerHooks_ShutdownCauseRace` creates 98% of them (80,009 per run). The stress therefore runs that test in its own process at `-count=50` (2 million Start/Shutdown races) and the other tests at `-count=2000`, in several processes.
 - `TestStart_CallerCancelThenShutdown`'s parallel row failed 2 times in 3000 runs: a cancel landing before the scheduler dispatched "b" made the scheduler's abort check the first failure, which is correct. The row now cancels only after both Starters run.
 
+### Part V5 — Fifth verification
+
+A fifth `/opsx:verify` on `c40c60b` found no CRITICAL issue, 6 WARNINGs and 15 SUGGESTIONs, with all 348 tasks done. The user asked to close every warning (Option A for the name-only reader exclusion), apply every suggestion, not archive, and keep PR #8. None of these items changed production behavior: they are tests, godoc, docs and planning artifacts.
+
+**V55. The claim's `closing` result is pinned.** V41 checks for a closing scope before the Starting hooks run, so the existing rows never reach the `closing` result of `claimCandidates`. A new row of `TestScopeStartedHook_SkippedWhileClosing` starts the scope's shutdown from its own Starting hook and waits until the shutdown is blocked in a Closing hook. Only the claim sees that shutdown, and the Started hooks must not run.
+
+**V56. A live-collection read excludes its reader by name (Option A, user decision).** `collectionCandidatesFor` adds the reader's service name to the names it has already seen. A child-scope reader that shadows a same-name member of the holder's scope therefore excludes that member as well. Including it would fail with `ErrCircularDependency`, because the name is already in the build chain (`virtual_scope.go`). `InvokeAs` skips its invoker by name in the same way. Kept and documented: in the `Collection.All` godoc, and in a live-collections scenario with two rows (the reader's own injector gives `{console}`, nil gives `{app, console}`).
+
+**V57. Retrying a Starter whose build failed is pinned.** `TestRefresh_RetriesFailedStarter` gains a failure dimension: Start fails, or the provider fails on its first call. Both Refresh and Scope.Start try the service again, and the counts of builds and Starts are asserted. The "A Starter that failed is tried again" scenario gains `failing`, `builds` and `starts` columns.
+
+**V58. Wording of the "Scope.Start on the root's own scope" scenario.** A provider receives an `Injector`, which has no `Start` method. The scenario and V19 now take the root's own `*Scope` from a kind handler's `Component.Scope`, as `TestScopeStart_RootScope` does.
+
+**V59. A fixture and a migration note.** The live-collections row "lazy attempt failing before its provider" registers the missing dependency with `ProvideNamed`, as its wording says. The upgrading page names `HealthCheckSingleTimeout: -1` as the opt-out for single-service bounds (V52).
+
+**V60. Suggestion tests.** Each is checked with a mutation (see notes.md):
+- `TestStart_ParallelFailure` is a table with a Refresh row.
+- A run during a scope shutdown handles none of that scope's components.
+- A read with a plain, non-provider injector records no edge.
+- `WithOrder` survives Clone and is replaced by an Override, with or without options.
+- The `*sql.DB` membership row asserts the instance with `assert.Same`.
+- All four scope hook lists skip nil entries.
+- `TestPhase_RaceFree` counts every observation instead of dropping some once a buffer is full.
+- The phase scenario's Given no longer names hooks it does not use.
+- `TestInvokeAs_SkipsAliasOfShadowedName` characterizes the name-only alias skip. A parent alias targeting the parent's "svc", which a child decorator named "svc" shadows, is skipped, so the decorator gets `ErrServiceNotMatch`. Without the skip it would get a name-based `` `svc` -> `g` -> `svc` `` cycle.
+
+**V61. Godoc, docs and planning artifacts.**
+- `ErrStartAfterShutdown` and `StartError` name Refresh and Scope.Start. `StartError` explains why the AsStarter-without-Start error has no prefix (Q2), and that a cycle met during a build is that service's build failure.
+- The InvokeAs page says that aliases resolving to the invoker are skipped (V40).
+- design.md: the row count and the Q3 source lookup.
+- proposal.md: one row for single-service health checks.
+
 ### Part H — Container lifecycle hooks (folded from `add-container-lifecycle-hooks`)
 
 #### H: Context

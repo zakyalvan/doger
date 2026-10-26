@@ -698,3 +698,44 @@ Each step runs `make test` and `make lint`, and uses gopls references to prove t
 - [x] 104.1 Full run: `make test`, `make lint`, per-module `go vet ./... && go test -race ./...` in every `go.work` module, the docs lint and build, and `openspec validate consolidate-pending-lifecycle-work --strict`
 - [x] 104.2 Stress (design V54): run the lifecycle and collection tests with `-race -count=2000 -timeout 110m` in several processes, and `TestContainerHooks_ShutdownCauseRace` alone with `-count=50`; verify no failure and record the peak RSS
 - [x] 104.3 Benchmarks: `benchstat` against `ed65bdc` (10 runs, alternating the two test binaries; the base built from a temporary worktree with `GOWORK=off`), recorded in notes.md
+
+## 105. The claim's closing result (scope-lifecycle-hooks; design V55; test-only)
+
+- [x] 105.1 Add the row "the scope itself, from its Starting hook" to `TestScopeStartedHook_SkippedWhileClosing` and the matching Examples row; verify it passes, and fails with the Started hook run once under the mutation `return candidates, false` in `claimCandidates` (reverted)
+
+## 106. A live-collection read excludes its reader by name (live-collections; design V56; Option A)
+
+- [x] 106.1 Add `TestCollection_ReaderExcludedByName` (child "app" reading the root's collection with its own injector and with nil); verify it passes, and fails with ``circular dependency detected: `app` -> `app` `` when the reader seed in `collectionCandidatesFor` is dropped (reverted)
+- [x] 106.2 Document it: the `Collection.All` godoc and the scenario "The reader is excluded by name"; verify `openspec validate --strict` passes
+
+## 107. Retrying a Starter whose build failed (container-start; design V57; test-only)
+
+- [x] 107.1 Make `TestRefresh_RetriesFailedStarter` a 4-row table (Refresh or Scope.Start × Start or build failure) asserting builds and Starts, and add the columns to "A Starter that failed is tried again"; verify the build rows fail when `buildCandidates` marks a failed build started (reverted)
+
+## 108. Scenario wording (container-start; design V58)
+
+- [x] 108.1 Reword "Scope.Start on the root's own scope" and V19 to take the `*Scope` from `Component.Scope`
+
+## 109. A fixture and a migration note (design V59)
+
+- [x] 109.1 Register "missing" with `ProvideNamed` in `TestCollection_InvocationsWithoutProvider`; verify it passes
+- [x] 109.2 Name `HealthCheckSingleTimeout: -1` as the opt-out on the upgrading page
+
+## 110. Suggestion tests (design V60; test-only)
+
+Each test that passes on arrival is checked with the named mutation (reverted), recorded in notes.md.
+
+- [x] 110.1 `TestStart_ParallelFailure` as a table with a Refresh row; mutation: schedule after the first failure
+- [x] 110.2 `TestScopeShutdown_LaterStartSkips` asserts that no kind handler ran; mutation: claim candidates of closing scopes
+- [x] 110.3 `TestCollection_ReadWithNilRecordsNoEdge` row with the root as reader; mutation: a plain reader attributed to the holder
+- [x] 110.4 `TestInvokeAll_WithOrderCloneAndOverride` (3 rows); mutations: `serviceLazy.clone` dropping options, and `override` keeping the previous options when called without any
+- [x] 110.5 `assert.Same` in the `*sql.DB` row of `TestInvokeAll_Membership`; mutation: members returned as copies of their pointee
+- [x] 110.6 `TestScopeHooks_RegistrationOrder` over the four scope hook lists; mutations: no nil skip in `runObserverHooksWith`, then in `runVetoHooks`
+- [x] 110.7 `TestPhase_RaceFree` counts every observation; drop the unused hooks from the phase scenario's Given; mutation: `Phase()` reporting `PhaseFailed` once closed
+- [x] 110.8 `TestInvokeAs_SkipsAliasOfShadowedName`, confirmed first as described; mutation: no alias skip in `selectByType`
+
+## 111. Godoc, docs and planning artifacts (design V61)
+
+- [x] 111.1 Godoc: `ErrStartAfterShutdown` and `StartError` (Refresh, Scope.Start, the unprefixed AsStarter error, cycles); the InvokeAs page (V40)
+- [x] 111.2 design.md (row count, Q3) and proposal.md (health-check defaults row); verify `openspec validate --strict` passes
+
