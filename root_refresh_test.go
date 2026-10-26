@@ -465,3 +465,33 @@ func TestScopeStartingHook_ShutdownCause(t *testing.T) {
 		assert.ErrorIs(t, err, ErrStartAfterShutdown)
 	})
 }
+
+func TestScopeShutdown_DescendantSkipped(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+	is := assert.New(t)
+
+	root := New()
+	require.NoError(t, root.Start())
+	tenant := root.Scope("tenant")
+	entered, release := make(chan struct{}), make(chan struct{})
+	root.AddScopeClosingHook(func(_ context.Context, scope *Scope) {
+		if scope == tenant {
+			close(entered)
+			<-release
+		}
+	})
+	shutdown := make(chan *ShutdownReport, 1)
+	go func() { shutdown <- tenant.Shutdown() }()
+	<-entered
+	jobs := tenant.Scope("jobs")
+	starts := &countingStarters{}
+	provideCountedStarter(jobs, starts, "w")
+
+	err := root.Refresh()
+
+	close(release)
+	is.NoError(err)
+	is.Equal(0, starts.count("w"))
+	is.True((<-shutdown).Succeed)
+}

@@ -459,9 +459,9 @@ Rules:
 
 ## 69. A scope's shutdown covers its descendants (container-start; design V22)
 
-- [ ] 69.1 RED: add `TestScopeShutdown_DescendantSkipped` to `root_refresh_test.go`; verify `go test -race -run TestScopeShutdown_DescendantSkipped .` fails because "w" was started
-- [ ] 69.2 GREEN: drop candidates whose scope or any ancestor is closing in `claimCandidates`; verify the 69.1 command passes, `TestScopeShutdown_*` pass unchanged, and `make test` is green
-- [ ] 69.3 REFACTOR: *Extract Function* `closingInLine(scope)`; update the `Scope.ShutdownWithContext` godoc and the starter page; verify `make test`, `make lint` and the docs lint and build pass
+- [x] 69.1 RED: add `TestScopeShutdown_DescendantSkipped` to `root_refresh_test.go`; verify `go test -race -run TestScopeShutdown_DescendantSkipped .` fails because "w" was started
+- [x] 69.2 GREEN: drop candidates whose scope or any ancestor is closing in `claimCandidates`; verify the 69.1 command passes, `TestScopeShutdown_*` pass unchanged, and `make test` is green
+- [x] 69.3 REFACTOR: *Extract Function* `closingInLine(scope)`; update the `Scope.ShutdownWithContext` godoc and the starter page; verify `make test`, `make lint` and the docs lint and build pass
 
 ## 70. Test corrections (design V19)
 
