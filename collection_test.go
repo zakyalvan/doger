@@ -503,6 +503,38 @@ func TestCollection_ReadWithNilRecordsNoEdge(t *testing.T) {
 	assert.Empty(t, explainedNames(t, root, "bus", false), "the holder records no edge either")
 }
 
+func TestCollection_ReaderExcludedByName(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+	is := assert.New(t)
+
+	root := New()
+	provideBus(root)
+	provideHandler(root, "app", newConsole)
+	provideHandler(root, "console", newConsole)
+	child := root.Scope("child")
+	// the child "app" shadows the root "app" and reads the root's collection
+	ProvideNamed(child, "app", func(i Injector) (*Bus, error) {
+		bus, err := InvokeNamed[*busHandler](i, "bus")
+		if err != nil {
+			return nil, err
+		}
+		handlers, err := bus.peers.Map(i)
+		return &Bus{names: slices.Sorted(maps.Keys(handlers))}, err
+	})
+
+	app, err := InvokeNamed[*Bus](child, "app")
+	require.NoError(t, err)
+	bus, err := InvokeNamed[*busHandler](root, "bus")
+	require.NoError(t, err)
+	handlers, err := bus.peers.Map(nil)
+	require.NoError(t, err)
+
+	// the reader's name excludes the root "app" it shadows
+	is.Equal([]string{"console"}, app.names)
+	is.Equal([]string{"app", "console"}, slices.Sorted(maps.Keys(handlers)))
+}
+
 func TestCollection_GoroutineReadDuringOuterProvider(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, time.Second)
