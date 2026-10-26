@@ -613,10 +613,14 @@ func TestExplain_EdgeSourceStrongest(t *testing.T) {
 	rec := &callRecorder{}
 	provideRecorded(root, rec, "db")
 	provideRecorded(root, rec, "cache")
+	provideRecorded(root, rec, "queue")
 	ProvideNamed(root, "worker", func(i Injector) (*depValue, error) {
+		if _, err := InvokeNamed[*depValue](i, "queue"); err != nil {
+			return nil, err
+		}
 		_, err := InvokeNamed[*depValue](i, "db")
 		return &depValue{name: "worker"}, err
-	}, DependsOnNamed("cache"))
+	}, DependsOnNamed("cache"), DependsOnNamed("queue"))
 	require.NoError(t, DeclareDependency(root, "worker", "db"))
 	require.NoError(t, DeclareDependency(root, "worker", "cache"))
 	_, err := InvokeNamed[*depValue](root, "worker")
@@ -632,6 +636,7 @@ func TestExplain_EdgeSourceStrongest(t *testing.T) {
 	assert.Equal(t, map[string]DependencySource{
 		"db":    DependencySourceInvoked,   // declared, then invoked
 		"cache": DependencySourceDependsOn, // declared, then depends-on
+		"queue": DependencySourceInvoked,   // depends-on, then invoked
 	}, sources)
 }
 

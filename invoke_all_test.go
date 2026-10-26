@@ -680,9 +680,10 @@ func TestInvokeAll_HooksPerMember(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, time.Second)
 
-	after := &callRecorder{}
+	before, after := &callRecorder{}, &callRecorder{}
 	root := NewWithOpts(&InjectorOpts{
-		HookAfterInvocation: []func(*Scope, string, error){func(_ *Scope, name string, _ error) { after.record(name) }},
+		HookBeforeInvocation: []func(*Scope, string){func(_ *Scope, name string) { before.record(name) }},
+		HookAfterInvocation:  []func(*Scope, string, error){func(_ *Scope, name string, _ error) { after.record(name) }},
 	})
 	provideHandler(root, "console", newConsole)
 	provideHandler(root, "audit", newAudit)
@@ -690,7 +691,8 @@ func TestInvokeAll_HooksPerMember(t *testing.T) {
 	_, err := InvokeAll[EventHandler](root)
 
 	require.NoError(t, err)
-	assert.ElementsMatch(t, []string{"console", "audit"}, after.list())
+	assert.Equal(t, []string{"console", "audit"}, before.list())
+	assert.Equal(t, []string{"console", "audit"}, after.list())
 }
 
 func TestInvokeAll_NoEdgesOutsideProvider(t *testing.T) {

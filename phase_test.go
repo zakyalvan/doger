@@ -166,6 +166,30 @@ func TestPhase_RaceFree(t *testing.T) {
 	}
 }
 
+func TestContainerPhase_String(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		phase ContainerPhase
+		text  string
+	}{
+		{phase: PhaseIdle, text: "idle"},
+		{phase: PhaseStarting, text: "starting"},
+		{phase: PhaseStarted, text: "started"},
+		{phase: PhaseReady, text: "ready"},
+		{phase: PhaseFailed, text: "failed"},
+		{phase: PhaseClosing, text: "closing"},
+		{phase: PhaseClosed, text: "closed"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.text, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.text, tt.phase.String())
+		})
+	}
+}
+
 func TestContainerPhase_StringUnknown(t *testing.T) {
 	t.Parallel()
 

@@ -1040,6 +1040,23 @@ func TestMustInvokeAs_Deterministic(t *testing.T) {
 	}
 }
 
+func TestMustInvokeAs_FromProvider(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	ProvideNamed(root, "decor", func(i Injector) (*greeterDecor, error) {
+		return &greeterDecor{inner: MustInvokeAs[Greeter](i)}, nil
+	})
+	provideGreeter(root, "base")
+
+	decor, err := InvokeNamed[*greeterDecor](root, "decor")
+
+	require.NoError(t, err)
+	assert.Equal(t, "decor(base)", decor.Greet())
+	assert.Equal(t, []string{"base"}, explainedNames(t, root, "decor", false))
+}
+
 func TestInvokeAs_SingleAndMissing(t *testing.T) {
 	t.Parallel()
 

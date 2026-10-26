@@ -118,6 +118,7 @@ func TestScopeHooks_LaterPanicLogged(t *testing.T) {
 	})
 	root.AddScopeClosingHook(func(context.Context, *Scope) { panic("first") })
 	root.AddScopeClosingHook(func(context.Context, *Scope) { panic("second") })
+	require.NoError(t, root.Start())
 	tenant := root.Scope("tenant")
 
 	tenant.Shutdown()
