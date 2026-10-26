@@ -74,10 +74,14 @@ func (s *RootScope) Start() error {
 // context has a deadline. Return an error instead. Calling Start from such
 // code returns [ErrAlreadyStarted] immediately.
 //
-// Only [RootScope] methods are container-level: the root's *Scope (the
-// injector a provider receives, or [Component.Scope] of a root service) and
-// child scopes have no Start, and a Shutdown reached through them bypasses
-// this coordination.
+// Only [RootScope] methods are container-level: they fire the container
+// hooks and own the one-shot Start. [Scope.Start] starts a scope subtree
+// incrementally, as [RootScope.Refresh] does, once Start succeeded; on the
+// root's own *Scope (the injector a provider receives, or [Component.Scope]
+// of a root service) it is Refresh. A child scope's Shutdown waits for a run
+// that is starting its services (see [Scope.ShutdownWithContext]); a
+// Shutdown reached through the root's own *Scope bypasses this
+// coordination.
 func (s *RootScope) StartWithContext(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()

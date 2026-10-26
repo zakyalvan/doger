@@ -14,7 +14,15 @@ type Collection[T any] struct {
 // exclude that provider's service. Reads made while that provider runs
 // record its dependency on each member, as InvokeAll does; once it has
 // returned, reads resolve from its scope without its invoker chain and
-// record no dependency.
+// record no dependency. Providers of that chain still running keep their
+// cycle detection.
+//
+// A read cannot tell which goroutine or build chain it runs in. So a
+// goroutine outside the build chain that reads while an outer provider of
+// the holder still runs gets ErrCircularDependency for that provider's
+// service, and a read from inside a member's provider, by code not on the
+// holder's build chain, waits for that member's own build and never returns:
+// inside a provider, use [InvokeAll] on its own injector instead.
 func InvokeCollection[T any](i Injector) Collection[T] {
 	return Collection[T]{injector: getInjectorOrDefault(i)}
 }

@@ -112,7 +112,7 @@ doger.ProvideValue(injector, vendor.NewRateLimiter(), doger.WithOrder(-1))
 
 ### Order() panics {#order-panics}
 
-If `Order()` panics, `InvokeAll` returns no collection and an error naming the member, wrapping the panic value when it is an error. `MustInvokeAll` panics with that error.
+If `Order()` panics, `InvokeAll` returns no collection and an error naming the member, such as ``DI: Order() of collection member `audit` panicked: boom``, wrapping the panic value when it is an error. `MustInvokeAll` panics with that error.
 
 ### Maps are unordered {#maps-are-unordered}
 
@@ -147,4 +147,13 @@ doger.Provide(injector, func(i doger.Injector) (*Bus, error) {
 handlers, err := bus.handlers.All() // includes them
 ```
 
-When the collection was created from a provider's injector, every read excludes that provider's service. A read made while the provider runs follows `InvokeAll` exactly: it detects cycles and records the provider's dependency on each member. Once the provider has returned, reads resolve from the provider's scope without its build-time invocation chain and record no dependency, because a member may itself depend on the holder: recording the reverse edge would create a cycle, and the stale chain would report a false circular dependency. Resolve with `InvokeAll` inside the provider if shutdown order must follow the members. A `Collection` is safe to copy and to read concurrently.
+When the collection was created from a provider's injector, every read excludes that provider's service. A read made while the provider runs follows `InvokeAll` exactly: it detects cycles and records the provider's dependency on each member. Once the provider has returned, reads resolve from the provider's scope without its build-time invocation chain and record no dependency, because a member may itself depend on the holder: recording the reverse edge would create a cycle, and the stale chain would report a false circular dependency. Resolve with `InvokeAll` inside the provider if shutdown order must follow the members. Providers of the build chain that are still running keep their cycle detection: a read made from an outer provider, while it runs, reports a circular dependency on that provider's service instead of waiting for it. A `Collection` is safe to copy and to read concurrently.
+
+:::warning
+
+A read cannot tell which goroutine or build chain it runs in, which leaves two hazards:
+
+- A goroutine **outside** the build chain that reads while an outer provider of the holder is still running gets `ErrCircularDependency` for that provider's service, although it is not part of a cycle. Read once the whole build has returned.
+- A read made from **inside a member's provider**, by code that is not on the holder's build chain, waits for that member's own build and never returns. Inside a provider, use `InvokeAll` on the provider's own injector: it excludes the provider's service.
+
+:::

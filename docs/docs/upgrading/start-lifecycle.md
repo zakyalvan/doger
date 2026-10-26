@@ -98,3 +98,21 @@ Migration: none, unless a Failed hook assumed that `Start` had returned. Recover
 `Scope.Shutdown()` and `Scope.ShutdownWithContext(ctx)` on a child scope now wait for a `Start`, `Refresh` or `Scope.Start` that is starting services of that scope before shutting it down, bounded by `ctx`. They used to run concurrently with it, so a service could start after its scope had been shut down and keep running. A run that begins while the scope shuts down now skips it.
 
 Migration: none for shutdowns that happen after start. Code running during a start (a starter, kind handler, provider or hook) must not synchronously shut down a scope that this start is starting: it would wait for itself. Shut the scope down after the start returned, or bound the wait with `ShutdownWithContext`.
+
+## New exported struct fields {#new-struct-fields}
+
+**BREAKING (unkeyed literals only).** These exported structs gain fields:
+
+- `InjectorOpts`: `StartParallelism`, `HookAfterBuild`, the `HookContainer*` and `HookScope*` hook lists, and `HookContainerPanic`;
+- `ExplainServiceDependencyOutput`: `Source`.
+
+Keyed literals (`doger.InjectorOpts{Logf: ...}`) and zero values compile unchanged. An **unkeyed** composite literal of one of these structs no longer compiles. Migration: name the fields.
+
+## Explained dependencies report their source {#explain-source}
+
+Each dependency edge in `ExplainServiceDependencyOutput` now says how it was recorded: `invoked` by a provider, from a `DependsOn` registration option, or `declared` with `DeclareDependency`.
+
+- `String()` prints invoked edges exactly as before, and adds the source to the others: `* cache (depends-on) from scope [root]`, `* job (declared) from scope [root]`.
+- The JSON encoding gains a `"source"` field (`"invoked"`, `"depends-on"` or `"declared"`), which decodes back.
+
+Migration: code that parses the text output must accept the ` (depends-on)` and ` (declared)` suffixes; JSON consumers that reject unknown fields must accept `source`.

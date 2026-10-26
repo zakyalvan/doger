@@ -546,11 +546,16 @@ func (s *RootScope) AddAfterStartHook(hook func(*Scope, string, error)) {
 // AddContainerStartingHook adds a hook that will be called by the first
 // Start, after its one-shot guard and before its context check or any
 // instantiation. A non-nil error vetoes Start: later Starting hooks do not
-// run, nothing is built, and Start returns an error wrapping it.
+// run, nothing is built, and Start returns an error wrapping it. A nil hook
+// is ignored.
 //
 // The hook must not call root Shutdown synchronously without a deadline: it
 // would wait for the running Start, which waits for the hook. See
 // [InjectorOpts.HookContainerStarting].
+//
+// Add hooks at configuration time: an adder is not safe to call
+// concurrently with Start or Shutdown. A running list is a copy, so a hook
+// added meanwhile applies from the next run of that list.
 func (s *RootScope) AddContainerStartingHook(hook func(context.Context, *RootScope) error) {
 	if hook == nil {
 		return
@@ -559,7 +564,12 @@ func (s *RootScope) AddContainerStartingHook(hook func(context.Context, *RootSco
 }
 
 // AddContainerStartedHook adds a hook that will be called by the first Start
-// once its pipeline succeeded. See [InjectorOpts.HookContainerStarted].
+// once its pipeline succeeded. A nil hook is ignored. See
+// [InjectorOpts.HookContainerStarted].
+//
+// Add hooks at configuration time: an adder is not safe to call
+// concurrently with Start or Shutdown. A running list is a copy, so a hook
+// added meanwhile applies from the next run of that list.
 func (s *RootScope) AddContainerStartedHook(hook func(context.Context, *RootScope)) {
 	if hook == nil {
 		return
@@ -568,7 +578,12 @@ func (s *RootScope) AddContainerStartedHook(hook func(context.Context, *RootScop
 }
 
 // AddContainerReadyHook adds a hook that will be called by the first Start
-// after every Started hook returned. See [InjectorOpts.HookContainerReady].
+// after every Started hook returned. A nil hook is ignored. See
+// [InjectorOpts.HookContainerReady].
+//
+// Add hooks at configuration time: an adder is not safe to call
+// concurrently with Start or Shutdown. A running list is a copy, so a hook
+// added meanwhile applies from the next run of that list.
 func (s *RootScope) AddContainerReadyHook(hook func(context.Context, *RootScope)) {
 	if hook == nil {
 		return
@@ -577,8 +592,12 @@ func (s *RootScope) AddContainerReadyHook(hook func(context.Context, *RootScope)
 }
 
 // AddContainerFailedHook adds a hook that will be called by the first Start
-// when it fails, with the error Start returns. See
+// when it fails, with the error Start returns. A nil hook is ignored. See
 // [InjectorOpts.HookContainerFailed].
+//
+// Add hooks at configuration time: an adder is not safe to call
+// concurrently with Start or Shutdown. A running list is a copy, so a hook
+// added meanwhile applies from the next run of that list.
 func (s *RootScope) AddContainerFailedHook(hook func(context.Context, *RootScope, error)) {
 	if hook == nil {
 		return
@@ -587,11 +606,15 @@ func (s *RootScope) AddContainerFailedHook(hook func(context.Context, *RootScope
 }
 
 // AddContainerClosingHook adds a hook that will be called by the first root
-// Shutdown before any service is shut down.
+// Shutdown before any service is shut down. A nil hook is ignored.
 //
 // The hook must not call root Shutdown synchronously without a deadline: it
 // would wait for the running Shutdown, which waits for the hook. See
 // [InjectorOpts.HookContainerClosing].
+//
+// Add hooks at configuration time: an adder is not safe to call
+// concurrently with Start or Shutdown. A running list is a copy, so a hook
+// added meanwhile applies from the next run of that list.
 func (s *RootScope) AddContainerClosingHook(hook func(context.Context, *RootScope)) {
 	if hook == nil {
 		return
@@ -600,8 +623,12 @@ func (s *RootScope) AddContainerClosingHook(hook func(context.Context, *RootScop
 }
 
 // AddContainerClosedHook adds a hook that will be called by the first root
-// Shutdown once every service is shut down, with its report. See
-// [InjectorOpts.HookContainerClosed].
+// Shutdown once every service is shut down, with its report. A nil hook is
+// ignored. See [InjectorOpts.HookContainerClosed].
+//
+// Add hooks at configuration time: an adder is not safe to call
+// concurrently with Start or Shutdown. A running list is a copy, so a hook
+// added meanwhile applies from the next run of that list.
 func (s *RootScope) AddContainerClosedHook(hook func(context.Context, *RootScope, *ShutdownReport)) {
 	if hook == nil {
 		return
@@ -612,6 +639,10 @@ func (s *RootScope) AddContainerClosedHook(hook func(context.Context, *RootScope
 // AddScopeStartingHook adds a hook that will be called by Scope.Start on a
 // child scope before anything starts; a non-nil error vetoes it. A nil hook
 // is ignored. See [InjectorOpts.HookScopeStarting].
+//
+// Add hooks at configuration time: an adder is not safe to call
+// concurrently with Start or Shutdown. A running list is a copy, so a hook
+// added meanwhile applies from the next run of that list.
 func (s *RootScope) AddScopeStartingHook(hook func(context.Context, *Scope) error) {
 	if hook == nil {
 		return
@@ -622,6 +653,10 @@ func (s *RootScope) AddScopeStartingHook(hook func(context.Context, *Scope) erro
 // AddScopeStartedHook adds a hook that will be called by Scope.Start on a
 // child scope once its services started. A nil hook is ignored. See
 // [InjectorOpts.HookScopeStarted].
+//
+// Add hooks at configuration time: an adder is not safe to call
+// concurrently with Start or Shutdown. A running list is a copy, so a hook
+// added meanwhile applies from the next run of that list.
 func (s *RootScope) AddScopeStartedHook(hook func(context.Context, *Scope)) {
 	if hook == nil {
 		return
@@ -632,6 +667,10 @@ func (s *RootScope) AddScopeStartedHook(hook func(context.Context, *Scope)) {
 // AddScopeClosingHook adds a hook that will be called when a child scope
 // shuts down, before its services. A nil hook is ignored. See
 // [InjectorOpts.HookScopeClosing].
+//
+// Add hooks at configuration time: an adder is not safe to call
+// concurrently with Start or Shutdown. A running list is a copy, so a hook
+// added meanwhile applies from the next run of that list.
 func (s *RootScope) AddScopeClosingHook(hook func(context.Context, *Scope)) {
 	if hook == nil {
 		return
@@ -641,6 +680,10 @@ func (s *RootScope) AddScopeClosingHook(hook func(context.Context, *Scope)) {
 
 // AddScopeClosedHook adds a hook that will be called when a child scope shut
 // down. A nil hook is ignored. See [InjectorOpts.HookScopeClosed].
+//
+// Add hooks at configuration time: an adder is not safe to call
+// concurrently with Start or Shutdown. A running list is a copy, so a hook
+// added meanwhile applies from the next run of that list.
 func (s *RootScope) AddScopeClosedHook(hook func(context.Context, *Scope)) {
 	if hook == nil {
 		return

@@ -220,17 +220,20 @@ type InjectorOpts struct {
 	// HookScopeStarted is called by Scope.Start on a child scope once its
 	// services started successfully. It is not called when the scope, or one
 	// of its ancestors, was shutting down, so that Scope.Start started
-	// nothing.
+	// nothing. A panic is recovered and dispatched like a container observer
+	// hook panic, with the point "scope-started" (see HookContainerPanic).
 	HookScopeStarted []func(ctx context.Context, scope *Scope)
 
 	// HookScopeClosing is called when a child scope shuts down, directly or
 	// as part of its parent's shutdown, after its children shut down and
 	// before its own services. Sibling scopes shut down in parallel, so their
-	// hooks may run concurrently.
+	// hooks may run concurrently. A panic is dispatched with the point
+	// "scope-closing" (see HookContainerPanic).
 	HookScopeClosing []func(ctx context.Context, scope *Scope)
 
 	// HookScopeClosed is called when a child scope shut down, after its
-	// services.
+	// services. A panic is dispatched with the point "scope-closed" (see
+	// HookContainerPanic).
 	HookScopeClosed []func(ctx context.Context, scope *Scope)
 
 	// HookContainerPanic receives the first panic recovered from a Started,
@@ -238,9 +241,11 @@ type InjectorOpts struct {
 	// every hook of the list has run, and so has the rest of Start or
 	// Shutdown. hook names the point ("started", "ready", "failed",
 	// "closing" or "closed"); later panics of the same operation are logged
-	// with Logf. Start or Shutdown then returns its normal result.
-	// Default (nil): re-panic with the recovered value. Panics in Starting
-	// hooks are vetoes and never reach it.
+	// with Logf. Start or Shutdown then returns its normal result. Scope
+	// observer hooks follow the same policy for Scope.Start and a child
+	// scope shutdown, with the points "scope-started", "scope-closing" and
+	// "scope-closed". Default (nil): re-panic with the recovered value.
+	// Panics in Starting hooks are vetoes and never reach it.
 	HookContainerPanic func(scope *RootScope, hook string, recovered any)
 
 	// Logf is the logging function used by the DI container for internal logging.
