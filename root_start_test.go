@@ -2100,9 +2100,18 @@ func TestStart_CallerCancelThenShutdown(t *testing.T) {
 					<-release
 					return tt.outcome
 				}})
+				bEntered := make(chan struct{})
 				if tt.parallelism > 1 {
-					// a second Starter, so the parallel scheduler runs
-					provideLazy(root, "b", &ctxStarter{fn: func(context.Context) error { return nil }})
+					// a second Starter, so the parallel scheduler runs; it is
+					// running before the cancel, so the scheduler's own abort
+					// check cannot become the first failure
+					provideLazy(root, "b", &ctxStarter{fn: func(context.Context) error {
+						close(bEntered)
+						<-release
+						return nil
+					}})
+				} else {
+					close(bEntered)
 				}
 				ctx, cancel := context.WithCancel(context.Background())
 				runErr := make(chan error, 1)
@@ -2114,6 +2123,7 @@ func TestStart_CallerCancelThenShutdown(t *testing.T) {
 					}
 				}()
 				<-entered
+				<-bEntered
 
 				cancel()
 				shutdownDone := make(chan struct{})

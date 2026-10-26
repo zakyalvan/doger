@@ -555,8 +555,9 @@ When the caller's context was cancelled before root Shutdown began, a Start, Ref
 ```gherkin
 Given a root container inside synctest.Test created with StartParallelism <n>
 And lazy Starter "a" whose Start blocks until released, then returns <outcome>, registered <when>
-And <operation> is running with a cancellable context ctx and "a" has entered Start
-When the consumer cancels ctx, then calls Shutdown() in another goroutine, waits until it is blocked, and releases "a"
+And with n = 4, lazy Starter "b", without dependencies, whose Start blocks until released, then returns nil
+And <operation> is running with a cancellable context ctx and "a" (and "b" with n = 4) has entered Start
+When the consumer cancels ctx, then calls Shutdown() in another goroutine, waits until it is blocked, and releases the Starters
 Then <operation> returns an error matching ErrStartAfterShutdown and context.Canceled
 And <check>
 
