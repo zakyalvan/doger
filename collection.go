@@ -45,5 +45,13 @@ func (c Collection[T]) reader() Injector {
 		return vScope.self
 	}
 
-	return detachedInjector{Injector: vScope.self, holder: holder}
+	// providers above the holder that still run keep their cycle detection
+	running := runningChain(vScope)
+	if len(running) == 0 {
+		return detachedInjector{Injector: vScope.self, holder: holder}
+	}
+
+	read := newChildVirtualScope(vScope.parent, vScope.self, running)
+	read.detached = true
+	return detachedInjector{Injector: read, holder: holder}
 }

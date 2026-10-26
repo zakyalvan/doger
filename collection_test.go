@@ -139,6 +139,31 @@ func TestCollection_AfterProviderReturned(t *testing.T) {
 	}
 }
 
+func TestCollection_ReadDuringOuterProvider(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	ProvideNamed(root, "app", func(i Injector) (*ConsoleHandler, error) {
+		bus, err := InvokeNamed[*busHandler](i, "bus")
+		if err != nil {
+			return nil, err
+		}
+		if _, err := bus.peers.All(); err != nil {
+			return nil, err
+		}
+		return newConsole("app"), nil
+	})
+	ProvideNamed(root, "bus", func(i Injector) (*busHandler, error) {
+		return &busHandler{handlerBase: handlerBase{"bus"}, peers: InvokeCollection[EventHandler](i)}, nil
+	})
+
+	_, err := InvokeNamed[*ConsoleHandler](root, "app")
+
+	assert.ErrorIs(t, err, ErrCircularDependency)
+	assert.ErrorContains(t, err, "app")
+}
+
 func TestCollection_ReadOutcomes(t *testing.T) {
 	t.Parallel()
 

@@ -61,7 +61,7 @@ func invokeAnyByNameAs(i Injector, name string, source DependencySource) (any, e
 	}
 
 	injector.RootScope().opts.onBeforeInvocation(serviceScope, name)
-	instance, err := service.getInstanceAny(newVirtualScope(serviceScope, invokerChain))
+	instance, err := service.getInstanceAny(newChildVirtualScope(vScope, serviceScope, invokerChain))
 	injector.RootScope().opts.onAfterInvocation(serviceScope, name, err)
 	if err != nil {
 		return nil, err
@@ -117,7 +117,7 @@ func invokeByName[T any](i Injector, name string) (T, error) {
 	}
 
 	injector.RootScope().opts.onBeforeInvocation(serviceScope, name)
-	instance, err := service.getInstance(newVirtualScope(serviceScope, invokerChain))
+	instance, err := service.getInstance(newChildVirtualScope(vScope, serviceScope, invokerChain))
 	injector.RootScope().opts.onAfterInvocation(serviceScope, name, err)
 
 	if err != nil {
@@ -182,7 +182,7 @@ func invokeServiceInstance(injector Injector, vScope *virtualScope, hookName, re
 
 	injector.RootScope().opts.onBeforeInvocation(scope, hookName)
 	instance, err := service.(serviceWrapperGetInstanceAny).getInstanceAny( //nolint:errcheck,forcetypeassert
-		newVirtualScope(scope, append(slices.Clip(invokerChain), realName)),
+		newChildVirtualScope(vScope, scope, append(slices.Clip(invokerChain), realName)),
 	)
 	injector.RootScope().opts.onAfterInvocation(scope, hookName, err)
 	if err != nil {
@@ -307,6 +307,9 @@ func invokeAllMapByGenericType[T any](i Injector) (map[string]T, error) {
 // add. It stops at the first failure, naming the member.
 func buildMembers(injector Injector, candidates []collectionCandidate, add func(candidate collectionCandidate, instance any)) error {
 	vScope, _ := injector.(*virtualScope)
+	if detached, ok := injector.(detachedInjector); ok {
+		vScope, _ = detached.Injector.(*virtualScope)
+	}
 
 	for _, candidate := range candidates {
 		instance, err := invokeServiceInstance(injector, vScope, candidate.name, candidate.name, candidate.scope, candidate.service)

@@ -435,9 +435,9 @@ Rules:
 
 ## 65. Live-collection reads keep the still-running chain (live-collections; design V17)
 
-- [ ] 65.1 RED: add `TestCollection_ReadDuringOuterProvider` to `collection_test.go`; verify `go test -race -run TestCollection_ReadDuringOuterProvider .` times out on the deadlock
-- [ ] 65.2 GREEN: link each provider's virtual scope to its invoker's, and resolve a read on a returned scope through a detached virtual scope that keeps the still-running providers, records no edge and excludes only the holder; verify the 65.1 command passes, `TestCollection_*` pass unchanged, and `make test` is green
-- [ ] 65.3 REFACTOR: *Extract Function* `runningChain(vScope)`; verify `make test` and `make lint` pass
+- [x] 65.1 RED: add `TestCollection_ReadDuringOuterProvider` to `collection_test.go`; verify `go test -race -run TestCollection_ReadDuringOuterProvider .` times out on the deadlock
+- [x] 65.2 GREEN: link each provider's virtual scope to its invoker's, and resolve a read on a returned scope through a detached virtual scope that keeps the still-running providers, records no edge and excludes only the holder; verify the 65.1 command passes, `TestCollection_*` pass unchanged, and `make test` is green
+- [x] 65.3 REFACTOR: *Extract Function* `runningChain(vScope)`; verify `make test` and `make lint` pass
 
 ## 66. Start failures after Shutdown began carry the abort cause (container-lifecycle-hooks, container-start; design V18)
 

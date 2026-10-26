@@ -3,6 +3,7 @@ package doger
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync/atomic"
 )
 
@@ -38,7 +39,34 @@ func newVirtualScope(predecessor Injector, invokerChain []string) *virtualScope 
 type virtualScope struct {
 	self         Injector
 	invokerChain []string
-	returned     atomic.Bool // the provider that received it has returned
+	returned     atomic.Bool   // the provider that received it has returned
+	parent       *virtualScope // the virtual scope of the invoking provider, if any
+	detached     bool          // a live-collection read after its provider returned: records no edge
+}
+
+// newChildVirtualScope is newVirtualScope for an invocation made through
+// parent (nil outside a provider), which it links to.
+func newChildVirtualScope(parent *virtualScope, predecessor Injector, invokerChain []string) *virtualScope {
+	child := newVirtualScope(predecessor, invokerChain)
+	child.parent = parent
+	return child
+}
+
+// runningChain returns, outermost first, the names of the providers above
+// vScope that are still running. Detached scopes only pass through.
+func runningChain(vScope *virtualScope) []string {
+	var names []string
+	for p := vScope.parent; p != nil; p = p.parent {
+		if p.detached || p.returned.Load() {
+			continue
+		}
+		if name, ok := p.getLastInvokerName(); ok {
+			names = append(names, name)
+		}
+	}
+	slices.Reverse(names)
+
+	return names
 }
 
 // pass through
@@ -135,6 +163,10 @@ func (s *virtualScope) detectCircularDependency(name string) error {
 // This ensures that during shutdown, dependencies are shut down before the services
 // that depend on them.
 func (s *virtualScope) addDependency(injector Injector, name string, serviceScope *Scope, source DependencySource) {
+	if s.detached {
+		return
+	}
+
 	last, ok := s.getLastInvokerName()
 	if !ok {
 		// This should never happen, but we'll handle it gracefully
