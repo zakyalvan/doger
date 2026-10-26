@@ -661,6 +661,42 @@ func ExampleInvokeStruct_collection() {
 	// 2
 }
 
+// exampleDispatcher holds a live collection of every exampleNotifier.
+type exampleDispatcher struct {
+	notifiers Collection[exampleNotifier]
+}
+
+func ExampleCollection_All() {
+	injector := New()
+	ProvideNamed(injector, "dispatcher", func(i Injector) (*exampleDispatcher, error) {
+		return &exampleDispatcher{notifiers: InvokeCollection[exampleNotifier](i)}, nil
+	})
+	ProvideNamed(injector, "email", func(Injector) (*exampleEmailNotifier, error) { return &exampleEmailNotifier{}, nil })
+
+	// Inside a provider, read with the provider's own injector: its
+	// dependency on each member is recorded, as InvokeAll records it.
+	ProvideNamed(injector, "report", func(i Injector) (string, error) {
+		dispatcher, err := InvokeNamed[*exampleDispatcher](i, "dispatcher")
+		if err != nil {
+			return "", err
+		}
+		notifiers, err := dispatcher.notifiers.All(i)
+		return fmt.Sprintf("%d notifier(s)", len(notifiers)), err
+	})
+
+	report, err := InvokeNamed[string](injector, "report")
+	fmt.Println(report, err)
+
+	explained, _ := ExplainNamedService(injector, "report")
+	for _, dependency := range explained.Dependencies {
+		fmt.Println("report depends on", dependency.Service)
+	}
+	// Output:
+	// 1 notifier(s) <nil>
+	// report depends on dispatcher
+	// report depends on email
+}
+
 func ExampleInvokeCollection() {
 	injector := New()
 	ProvideNamed(injector, "email", func(Injector) (*exampleEmailNotifier, error) { return &exampleEmailNotifier{}, nil })

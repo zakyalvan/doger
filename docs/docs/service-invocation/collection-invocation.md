@@ -132,7 +132,7 @@ To order a lifecycle, declare dependencies instead.
 
 `InvokeAll` and `InvokeAllMap` return a **snapshot**: services registered after the call are not added to it, and changing the result does not affect later calls. Resolve once and keep the result outside hot loops.
 
-`doger.InvokeCollection[T]` returns a **live** `doger.Collection[T]` instead. Creating it builds nothing; each `All()` or `Map()` call resolves the members again, with the same rules as `InvokeAll` and `InvokeAllMap`:
+`doger.InvokeCollection[T]` returns a **live** `doger.Collection[T]` instead. Creating it builds nothing; each `All(r)` or `Map(r)` call resolves the members again, with the same rules as `InvokeAll` and `InvokeAllMap`:
 
 ```go
 type Bus struct {
@@ -143,17 +143,26 @@ doger.Provide(injector, func(i doger.Injector) (*Bus, error) {
     return &Bus{handlers: doger.InvokeCollection[EventHandler](i)}, nil
 })
 
-// later, after more handlers were registered:
+// later, after more handlers were registered, outside any provider:
 handlers, err := bus.handlers.All(nil) // includes them
 ```
 
-When the collection was created from a provider's injector, every read excludes that provider's service. A read made while the provider runs follows `InvokeAll` exactly: it detects cycles and records the provider's dependency on each member. Once the provider has returned, reads resolve from the provider's scope without its build-time invocation chain and record no dependency, because a member may itself depend on the holder: recording the reverse edge would create a cycle, and the stale chain would report a false circular dependency. Resolve with `InvokeAll` inside the provider if shutdown order must follow the members. Providers of the build chain that are still running keep their cycle detection: a read made from an outer provider, while it runs, reports a circular dependency on that provider's service instead of waiting for it. A `Collection` is safe to copy and to read concurrently.
+**The holder.** When the collection was created from a provider's injector, every read excludes that provider's service, whoever reads and whenever. The collection keeps only the holder's scope and name, not the provider's build chain.
 
-:::warning
+**The reader's injector.** `r` is the injector of the code that reads:
 
-A read cannot tell which goroutine or build chain it runs in, which leaves two hazards:
+- **Inside a provider**, pass the provider's own injector. The read then behaves exactly like `InvokeAll` called from it: the provider's own service is excluded, its dependency on each member is recorded (so shutdown order follows the members), and a cycle through its build chain is reported as `ErrCircularDependency`.
+- **Outside any provider**, pass `nil`. The read uses no build chain and records no dependency. If a member is being built by another goroutine, the read waits for that build.
 
-- A goroutine **outside** the build chain that reads while an outer provider of the holder is still running gets `ErrCircularDependency` for that provider's service, although it is not part of a cycle. Read once the whole build has returned.
-- A read made from **inside a member's provider**, by code that is not on the holder's build chain, waits for that member's own build and never returns. Inside a provider, use `InvokeAll` on the provider's own injector: it excludes the provider's service.
+```go
+doger.Provide(injector, func(i doger.Injector) (*Router, error) {
+    bus := doger.MustInvoke[*Bus](i)
+    handlers, err := bus.handlers.All(i) // inside a provider: its own injector
+    if err != nil {
+        return nil, err
+    }
+    return NewRouter(handlers), nil
+})
+```
 
-:::
+Passing `nil` from inside a provider skips that provider's exclusion and cycle detection: a member whose build is running on the same goroutine, such as the provider's own service, waits for itself and the read never returns. A `Collection` is safe to copy and to read concurrently.

@@ -142,8 +142,8 @@ Facts verified for the new parts (scratch probes on a copy of the repo at `e116a
 - The Part K pipeline is generalized to a `reflect.Type` target: `collectionCandidatesFor(injector, target reflect.Type)`, with the generic `InvokeAll[T]` calling it with `reflect.TypeFor[T]()`. The result is built with `reflect.MakeSlice`/`reflect.MakeMap`.
 
 **S4. Live collections.**
-- `type Collection[T any] struct{ injector Injector }`, created by `InvokeCollection[T](i)` with `getInjectorOrDefault(i)`, so creation builds nothing.
-- `All()`/`Map()` run the Part K pipeline on the captured injector at read time. While `i`, a provider's virtual scope, belongs to a provider that is still running, its invoker chain gives self-exclusion and edge recording, as in `InvokeAll`. Once that provider has returned, reads drop the chain (V5).
+- `type Collection[T any] struct{ scope *Scope; holder string }`, created by `InvokeCollection[T](i)` from `getInjectorOrDefault(i)`: the holder's scope and, when `i` is a provider's injector, the holder's name. Creation builds nothing.
+- `All(r)`/`Map(r)` run the Part K pipeline at read time from a `collectionSource`: members are enumerated from the holder's scope, the holder is excluded, and they are built through the reader's injector `r`, whose build chain, self-exclusion and edges apply as in `InvokeAll` from `r`; nil uses none (V51, which replaced the stale-chain rules of V5 and V17).
 - The value is safe to copy and to read concurrently, because the pipeline shares no new state (Part K D8).
 
 **S5. Deterministic `InvokeAs`.**
@@ -183,7 +183,7 @@ Found by `/opsx:verify` and a code review, each reproduced by a failing test bef
 - Only runs with candidates in the scope are waited for, so a scope created and shut down by a provider during Start does not deadlock. Shutting a scope down synchronously from code of a run that is starting it deadlocks, as for root; documented.
 - The root's own scope keeps root Shutdown's model (start-lifecycle D6).
 
-**V5. Live-collection reads drop a returned provider's chain (user decision).** `virtualScope` gets a `returned atomic.Bool`, set by `handleProviderPanic` once the provider returned (and, since V24, by the invoking site once `getInstance` returned). A read on a returned virtual scope resolves from its underlying `*Scope`, excludes only the holder (the chain's last name), and records no edge. Reads while the provider runs keep the chain.
+**V5. Live-collection reads drop a returned provider's chain (user decision).** *(Superseded by V51: reads follow the reader's injector, and this machinery was removed.)* `virtualScope` gets a `returned atomic.Bool`, set by `handleProviderPanic` once the provider returned (and, since V24, by the invoking site once `getInstance` returned). A read on a returned virtual scope resolves from its underlying `*Scope`, excludes only the holder (the chain's last name), and records no edge. Reads while the provider runs keep the chain.
 
 **V6. The `*` tag requires `map[string]E` exactly (user decision).** The key check compares the key type with `reflect.TypeFor[string]()`, matching the spec and S3.
 
@@ -207,7 +207,7 @@ Found by `/opsx:verify` and a code review, each reproduced by a failing test bef
 
 A second `/opsx:verify` found four defects, each reproduced by a probe test, plus test gaps. The user asked to fix every warning and apply every suggestion.
 
-**V17. Live-collection reads keep the still-running part of the chain (fixes a V5 regression).** Each virtual scope a provider receives links to the virtual scope of its invoker (`parent`). A read on a returned scope keeps, root first, the names of the providers on that parent chain that have not returned. When some are still running, the read resolves through a detached virtual scope holding those names, so `detectCircularDependency` still rejects a member whose provider is running (as before V5) instead of deadlocking on its lock. A detached virtual scope never records edges, and the holder stays the only excluded service.
+**V17. Live-collection reads keep the still-running part of the chain (fixes a V5 regression).** *(Superseded by V51: reads follow the reader's injector, and this machinery was removed.)* Each virtual scope a provider receives links to the virtual scope of its invoker (`parent`). A read on a returned scope keeps, root first, the names of the providers on that parent chain that have not returned. When some are still running, the read resolves through a detached virtual scope holding those names, so `detectCircularDependency` still rejects a member whose provider is running (as before V5) instead of deadlocking on its lock. A detached virtual scope never records edges, and the holder stays the only excluded service.
 
 **V18. Every Start failure after Shutdown began carries the abort cause.** `runStartingHooks`, `runScopeStartingHooks`, the deferred kind-binding check of `buildCandidates` and `checkCycles` wrap their errors with `withAbortCause`, like the other pipeline failures.
 
@@ -225,7 +225,7 @@ A third `/opsx:verify` and a `/code-review` reproduced five defects with probe t
 
 **V23. Each invocation has its own invoker chain (user decision: fix in this round).** A plain `append` of the chain reused spare capacity, so a sibling invocation overwrote the last name of a stored injector's chain. A live collection then took the sibling for its holder, and cycle detection and edges recorded through a stored injector used the wrong name. The first fix copied the chain per invocation (`append(slices.Clip(chain), name)`); V36 replaced it: each virtual scope now stores only its own name and a link to its invoker's virtual scope, so no chain is shared or copied.
 
-**V24. An invocation is over once it returned.** The three sites that create a provider's virtual scope mark it `returned` once `getInstance` returns, whether or not a provider ran: an eager value resolving its `DependsOn`, or an attempt that failed before its provider ran. `handleProviderPanic` still marks it as soon as the provider returns, so reads from the holder's own `HookAfterBuild` are already detached, as before.
+**V24. An invocation is over once it returned.** *(Superseded by V51: reads follow the reader's injector, and this machinery was removed.)* The three sites that create a provider's virtual scope mark it `returned` once `getInstance` returns, whether or not a provider ran: an eager value resolving its `DependsOn`, or an attempt that failed before its provider ran. `handleProviderPanic` still marks it as soon as the provider returns, so reads from the holder's own `HookAfterBuild` are already detached, as before.
 
 **V25. A failure returned after Shutdown began carries the abort cause (user decision).** `finishStart` and `finishIncremental` run under `lifecycleMu` after V1 set the cause. When the close phase is no longer open and the error does not already match the cause, they wrap it with `withAbortCause`. This covers the wait of a parallel start after its first failure, and the short window after a sequential failure. An error that already carries the cause is not wrapped twice, so existing messages are unchanged.
 
@@ -309,7 +309,7 @@ A fourth `/opsx:verify` reproduced four defects with probe tests (V37–V40) and
 
 **V46. Spec wording.** A nil context passed to a scope operation reaches scope hooks as "a non-nil context derived from `context.Background()`" (the Starting hooks receive the run's derived context).
 
-**V47. The cycle message of a live-collection read names the holder.** A read during an outer provider fails with `app -> app`. The detached read's virtual scope keeps the holder for messages only: `invokerChain` appends it after the running chain, so the message reads `app -> bus -> app`. Cycle detection (`chainContains`) and edges are unchanged, so existing assertions hold.
+**V47. The cycle message of a live-collection read names the holder.** *(Superseded by V51: reads follow the reader's injector, and this machinery was removed.)* A read during an outer provider fails with `app -> app`. The detached read's virtual scope keeps the holder for messages only: `invokerChain` appends it after the running chain, so the message reads `app -> bus -> app`. Cycle detection (`chainContains`) and edges are unchanged, so existing assertions hold.
 
 **V48. Observer hook panics carry their subject.** `hookPanic` stores its subject ("container" or "scope") set by the loop that recovered it, and `logHookPanic` formats from it instead of parsing the `scope-` prefix of the point. Messages and the points passed to `HookContainerPanic` are unchanged (refactor).
 
@@ -678,7 +678,7 @@ All tests run under `go test -race` with goleak (`TestMain`). Tests that could h
 | collection-struct-injection | Struct collections inside a provider exclude the invoking service | `invoke_all_struct_test.go: TestInvokeStruct_CollectionExcludesSelf` | unit |
 | live-collections | Later registrations are visible (2 rows) | `collection_test.go: TestCollection_LaterRegistrations/<read>` | table |
 | live-collections | Creating a live collection builds nothing | `collection_test.go: TestCollection_CreationBuildsNothing` | unit |
-| live-collections | A live collection held by a provider | `collection_test.go: TestCollection_HeldByProvider` | unit |
+| live-collections | The holder is excluded from every read (later registrations, nil reader) | `collection_test.go: TestCollection_HeldByProvider` | unit |
 | live-collections | Reads after shutdown and failures (3 rows) | `collection_test.go: TestCollection_ReadOutcomes/<row>` | table |
 | live-collections | Concurrent reads are race-free | `collection_test.go: TestCollection_ConcurrentReads` | race |
 | container-start | Dependency-ordered build and start; Child scopes are started after their ancestors; Start on an empty container; Late registration | unchanged: `TestStart_DependencyOrder`, `TestStart_ScopeTraversal`, `TestStart_Empty`, `TestStart_LateRegistrationNotStarted` | unit |
@@ -716,12 +716,11 @@ All tests run under `go test -race` with goleak (`TestMain`). Tests that could h
 | container-start | A start that begins during a child shutdown skips the scope | `root_refresh_test.go: TestScopeShutdown_LaterStartSkips` | unit (V4) |
 | container-start | A scope created during a running start does not wait | `root_refresh_test.go: TestScopeShutdown_CreatedDuringStart` | unit (V4) |
 | container-start | A child shutdown bounded by its context | `root_refresh_test.go: TestScopeShutdown_WaitBounded` | synctest (V4) |
-| live-collections | Reads after the holder's provider returned (2 rows) | `collection_test.go: TestCollection_AfterProviderReturned/<read>` | table (regression, V5) |
+| live-collections | The holder stays excluded (2 rows) | `collection_test.go: TestCollection_AfterProviderReturned/<read>` | table (regression, V5; V51) |
 | collection-struct-injection | Invalid collection fields (new string-kinded key row) | `invoke_all_struct_test.go: TestInvokeStruct_CollectionInvalidField/map_with_string-kinded_keys` | table (regression, V6) |
 | service-build-hooks | A build hook can use its own service (3 rows) | `build_hooks_test.go: TestAfterBuildHook_ReentersService/<row>` | table (regression, V10) |
 | dependency-declaration | Explained output round-trips through JSON (4 rows) | `dependency_test.go: TestDependencySource_UnmarshalText/<text>` | table (regression, V11) |
 | type-resolution | A shadowed service is not a candidate (3 rows) | `invoke_test.go: TestInvokeAs_Shadowing/<row>` | table (regression, V14) |
-| live-collections | A read while an outer provider still runs | `collection_test.go: TestCollection_ReadDuringOuterProvider` | unit (regression, V17) |
 | live-collections | A read while the holder's provider runs | `collection_test.go: TestCollection_ReadDuringHolderProvider` | unit (V19) |
 | container-lifecycle-hooks | Starting or Closing hook calls Shutdown with a deadline (new errVeto row) | `container_hooks_test.go: TestContainerHooks_HookCallsShutdownWithDeadline/<row>` | synctest (regression, V18) |
 | container-lifecycle-hooks | Shutdown interrupts a Starting hook or a late pipeline step (3 rows) | `container_hooks_test.go: TestContainerHooks_ShutdownInterruptsLateStep/<row>` | synctest (regression, V18) |
@@ -730,7 +729,7 @@ All tests run under `go test -race` with goleak (`TestMain`). Tests that could h
 | container-start | A child shutdown bounded by its context (new bookkeeping line) | `root_refresh_test.go: TestScopeShutdown_WaitBounded` | synctest (regression, V21) |
 | scope-lifecycle-hooks | Nil context reaches scope hooks as non-nil (2 rows) | `scope_hooks_test.go: TestScopeHooks_NilContext/<operation>` | table (regression, V20) |
 | live-collections | The holder stays excluded after its invoker builds siblings (2 invocation paths) | `collection_test.go: TestCollection_HolderAfterSiblings/<path>` | table (regression, V23) |
-| live-collections | Invocations that ran no provider are not running (2 rows) | `collection_test.go: TestCollection_InvocationsWithoutProvider/<row>` | table (regression, V24) |
+| live-collections | Reads outside providers ignore finished invocations (4 rows) | `collection_test.go: TestCollection_InvocationsWithoutProvider/<row>` | table (regression, V24, V42; V51) |
 | container-start | A failure followed by Shutdown under parallel start (2 rows) | `root_start_test.go: TestStart_FailureThenShutdown/<operation>` | synctest (regression, V25) |
 | container-start | StartError values built by the consumer (4 rows) | `errors_test.go: TestStartError_ConsumerBuilt/<row>` | table (regression, V26) |
 | type-resolution | The invoking service is not a candidate (3 rows) | `invoke_test.go: TestInvokeAs_SkipsInvoker/<row>` | table (regression, V27) |
@@ -756,12 +755,12 @@ All tests run under `go test -race` with goleak (`TestMain`). Tests that could h
 | type-resolution | Selection among several matches (alias and clone rows) | `invoke_test.go: TestInvokeAs_Deterministic/<row>` | table (V42) |
 | scope-lifecycle-hooks | Scope.Start during the scope's shutdown fires no scope hook (2 rows) | `scope_hooks_test.go: TestScopeStartingHook_SkippedWhileClosing/<row>` | table (regression, V41) |
 | container-start | The caller's context reaches the run (6 rows) | `root_refresh_test.go: TestIncrementalStart_CallerContext/<row>` | table (V42) |
-| live-collections | A read while an outer provider still runs (holder in the message) | `collection_test.go: TestCollection_ReadDuringOuterProvider` | unit (regression, V47) |
 | collection-ordering | Scope depth decides before registration order | `invoke_all_order_test.go: TestInvokeAll_DefaultOrder/child_registered_first` | table (V42) |
 | collection-ordering | Equal values keep the default order among many members | `invoke_all_order_test.go: TestInvokeAll_OrderedStableBeyondTwelve` | unit (V42) |
-| live-collections | Invocations that ran no provider are not running (struct-tag and by-type rows) | `collection_test.go: TestCollection_InvocationsWithoutProvider/<row>` | table (V42) |
-| live-collections | A read while an outer provider runs records no edge | `collection_test.go: TestCollection_DetachedReadRecordsNoEdge` | unit (V42) |
-| live-collections | A member built by such a read keeps the running chain | `collection_test.go: TestCollection_DetachedReadKeepsRunningChain` | unit (V42) |
+| live-collections | A provider reads with its own injector (2 rows) | `collection_test.go: TestCollection_ReaderInjector/<row>` | table (V51) |
+| live-collections | A read with nil records no edge | `collection_test.go: TestCollection_ReadWithNilRecordsNoEdge` | unit (V51) |
+| live-collections | A goroutine reads while an outer provider runs (former hazard 1) | `collection_test.go: TestCollection_GoroutineReadDuringOuterProvider` | unit (regression, V51) |
+| live-collections | A member's provider reads the collection (former hazard 2, 2 rows) | `collection_test.go: TestCollection_MemberProviderReads/<row>` | table (regression, V51) |
 | container-lifecycle-hooks | Observer hooks receive the operation's context (identity rows) | `container_hooks_test.go: TestContainerHooks_ObserverContexts/<hook>` | table (V42) |
 | container-start | A panicking start hook under parallel start ("b" returns at once) | `root_start_test.go: TestStart_ParallelHookPanic/<row>` | synctest (V45) |
 | container-start | Parallel incremental start keeps dependency order (2 rows) | `root_start_test.go: TestStart_ParallelIncrementalDependencyOrder/<row>` | synctest (V45) |
@@ -781,7 +780,7 @@ Finding tests without a spec scenario (F2, F4, F5, V12):
 Documentation tests:
 - `ExampleRootScope_Refresh`, `ExampleScope_Start`, `ExampleInjectorOpts_startParallelism`, `ExampleRootScope_AddAfterBuildHook`;
 - `ExampleRootScope_Phase`, `ExampleRootScope_AddScopeClosingHook`;
-- `ExampleInvokeCollection`, `ExampleInvokeStruct_collection`;
+- `ExampleInvokeCollection`, `ExampleCollection_All` (V51), `ExampleInvokeStruct_collection`;
 - `ExampleStartError`, `ExampleExplainNamedService_source`;
 - V44: `ExampleInvokeAs_decorator`, `ExampleMustInvokeAll`, `ExampleRootScope_AddContainerStartedHook`, `ExampleRootScope_AddContainerClosingHook`, `ExampleRootScope_AddContainerClosedHook`, `ExampleRootScope_AddScopeClosedHook`, `ExampleRootScope_RefreshWithContext`, `ExampleScope_StartWithContext`.
 
