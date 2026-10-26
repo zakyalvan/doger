@@ -182,3 +182,19 @@ Interleaved against `ed65bdc` (20 alternating runs) with shadowing in place: `In
 | Shutdown | ~ (p=0.841) | ~ | ~ |
 
 These match the 48.1 decision: `InvokeAs` stays within the accepted cost of deterministic selection, `New` meets the 11 allocs/op target, and the fixes add no measurable cost elsewhere.
+
+## Part V2: second verification (groups 65-71)
+
+The second `/opsx:verify` reproduced four defects with probe tests (the scratch copies of the repo), re-run before acting. The user asked to clear every warning and apply every suggestion; for suggestion 10 (descendants of a shutting-down scope) the recommended reading was taken: descendants are covered (V22).
+
+| Group | RED (seen before GREEN) | Notes |
+|---|---|---|
+| 65 | `TestCollection_ReadDuringOuterProvider` timed out (deadlock) | A regression from V5 (`7ce61bd`): before it, the same read failed with `ErrCircularDependency`. `runningChain` was written as its own function in GREEN, so 65.3 needed no further step. |
+| 66 | 5 rows failed: errors without `ErrStartAfterShutdown` (`container start aborted: context canceled`, `... veto`, the binding error, `cannot start: ... circular dependency ...`, `scope "tenant" start aborted: context canceled`) | The cycle row uses the existing "cycle closed by a dynamic edge" setup; its spec row text was aligned. |
+| 67 | `TestScopeHooks_NilContext/ShutdownWithContext(nil)`: nil contexts recorded | The `StartWithContext(nil)` row passed on arrival (it already normalized nil). |
+| 68 | `TestScopeShutdown_WaitBounded`: the shut-down wrapper was re-added to `started` | `stillRegistered` was written as its own function in GREEN. |
+| 69 | `TestScopeShutdown_DescendantSkipped`: "w" started 1 time | |
+| 70 | test-only | 70.1: 20000 runs pass after `synctest.Wait()`. 70.2: a mutation that skips bus's Shutdown passes the old order checks and fails the new ones; a mutation returning nil instead of an empty slice fails `TestInvokeAll_AfterShutdown`. 70.5: reads always detached fails `TestCollection_ReadDuringHolderProvider`; removing the default-root fallback on the collection path fails `TestCollection_NilInjector` (removing it only in `InvokeCollection` changes nothing, because `All()` falls back too). |
+| 71 | integration | `make test`, `make lint`, all 25 `go.work` modules, docs lint and build, strict validation: pass. The Part V and V2 lifecycle tests ran 2000 times each under `-race` with no failure. |
+
+Unrelated, pre-existing: `TestInvokeByName` panics when run with `-count` > 1 (it registers on `DefaultRootScope`); it passes with the default count, as `make test` runs it.

@@ -473,5 +473,5 @@ Rules:
 
 ## 71. Integration checks after the second verification
 
-- [ ] 71.1 Full run: `make test`, `make lint`, per-module `go vet ./... && go test -race ./...` in every `go.work` module, the docs lint and build, and `openspec validate consolidate-pending-lifecycle-work --strict`
-- [ ] 71.2 Stress: run the Part V and V2 lifecycle tests with `-race -count=2000`; verify no failure
+- [x] 71.1 Full run: `make test`, `make lint`, per-module `go vet ./... && go test -race ./...` in every `go.work` module, the docs lint and build, and `openspec validate consolidate-pending-lifecycle-work --strict`
+- [x] 71.2 Stress: run the Part V and V2 lifecycle tests with `-race -count=2000`; verify no failure
