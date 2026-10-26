@@ -1525,17 +1525,22 @@ func TestRefresh_ShutdownCancels(t *testing.T) {
 		root := New()
 		require.NoError(t, root.Start())
 		entered := make(chan struct{})
-		ProvideNamedValue(root, "late", &ctxStarter{fn: func(ctx context.Context) error {
-			close(entered)
-			<-ctx.Done()
-			return ctx.Err()
-		}})
+		ProvideNamed(root, "late", func(Injector) (*ctxStarter, error) {
+			return &ctxStarter{fn: func(ctx context.Context) error {
+				close(entered)
+				<-ctx.Done()
+				return ctx.Err()
+			}}, nil
+		})
 
 		refreshErr := make(chan error, 1)
 		go func() { refreshErr <- root.Refresh() }()
 		<-entered
 
 		report := root.Shutdown()
+		// Shutdown is released when Refresh's run ends; let the goroutine
+		// deliver its result before the non-blocking check
+		synctest.Wait()
 
 		select {
 		case err := <-refreshErr:

@@ -465,7 +465,7 @@ Rules:
 
 ## 70. Test corrections (design V19)
 
-- [ ] 70.1 Fix the `TestRefresh_ShutdownCancels` flake with `synctest.Wait()`; verify `go test -race -count=20000 -run '^TestRefresh_ShutdownCancels$' .` passes
+- [x] 70.1 Fix the `TestRefresh_ShutdownCancels` flake with `synctest.Wait()`; verify `go test -race -count=20000 -run '^TestRefresh_ShutdownCancels$' .` passes
 - [ ] 70.2 Require the events before the `indexOf` comparisons in `invoke_all_test.go` and `invoke_all_order_test.go`, assert non-nil in `TestInvokeAll_AfterShutdown`, and create the collection before the shutdown in `TestCollection_ReadOutcomes`; verify the tests pass and each strengthened check fails under a temporary mutation (reverted)
 - [ ] 70.3 Assert the phase reached after each row of `TestContainerHooks_ObserverPanicDefault`; verify it passes
 - [ ] 70.4 Switch the eager fixtures to lazy where the spec says lazy (`TestPhase_Lifecycle`, `TestPhase_RaceFree`, `TestScopeHooks_ObserverPanic`, `TestStartError_Fields`, `TestStartError_Incremental`, `TestStart_ParallelFailure`, `TestRefresh_ShutdownCancels`) and assert the failed row's error in `TestPhase_Lifecycle`; verify they pass
