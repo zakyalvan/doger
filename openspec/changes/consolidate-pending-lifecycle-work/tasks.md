@@ -416,7 +416,7 @@ Rules:
 - [x] 61.1 RED: add `TestInvokeAs_Shadowing` (3 rows) to `invoke_test.go`; verify `go test -race -run TestInvokeAs_Shadowing .` fails on the two shadowed rows
 - [x] 61.2 GREEN: skip a candidate whose name is registered in a scope between the invoking scope and its own; verify the 61.1 command passes, `TestInvokeAs_*` and `TestInvokeStruct_*` pass unchanged, and `make test` is green
 - [x] 61.3 REFACTOR: *Extract Function* `shadowedBetween(from, to *Scope, name string) bool`; verify `make test` and `make lint` pass
-- [ ] 61.4 Document shadowing in the `InvokeAs`/`InvokeStruct` godoc, the invocation docs and the upgrading-page entry (flagged); re-measure `BenchmarkInvokeAs` against `ed65bdc` and record it in notes.md; verify the docs lint and build pass
+- [x] 61.4 Document shadowing in the `InvokeAs`/`InvokeStruct` godoc, the invocation docs and the upgrading-page entry (flagged); re-measure `BenchmarkInvokeAs` against `ed65bdc` and record it in notes.md; verify the docs lint and build pass
 
 ## 62. Health-check timeout in one place (design V15)
 

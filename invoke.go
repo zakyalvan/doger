@@ -411,9 +411,10 @@ type detachedInjector struct {
 
 // selectByType returns the visible service assignable to target, aliases
 // included, in the nearest scope (the invoking scope before its ancestors),
-// then with the earliest registration, then with the smallest name. This
-// is nearest-first, the opposite of collection order, on purpose: it keeps
-// the "current scope first" behavior of InvokeAs.
+// then with the earliest registration, then with the smallest name. A
+// service hidden by a same-name service in a nearer scope is skipped, as for
+// collections. This is nearest-first, the opposite of collection order, on
+// purpose: it keeps the "current scope first" behavior of InvokeAs.
 func selectByType(injector Injector, target reflect.Type) (collectionCandidate, bool) {
 	var selected collectionCandidate
 	var found bool

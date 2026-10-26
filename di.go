@@ -696,8 +696,9 @@ func MustInvokeAllMap[T any](i Injector) map[string]T {
 // When several visible services are assignable to T, it selects the one in
 // the nearest scope (the invoking scope before its ancestors), then the
 // earliest registration (an override keeps its position), then the smallest
-// service name. Aliases are candidates too. Use InvokeNamed to pin a
-// specific service.
+// service name. Aliases are candidates too. A service hidden by a service
+// of the same name in a nearer scope is not a candidate, as for InvokeAll.
+// Use InvokeNamed to pin a specific service.
 //
 // Parameters:
 //   - i: The injector to search for the service

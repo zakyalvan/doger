@@ -59,7 +59,7 @@ metric.Inc()    // <- r.counter will be incremented
 
 :::info
 
-When several services match, the selection is deterministic: the service in the **nearest** scope (the invoking scope before its ancestors), then the **earliest registration** (an `Override` keeps the position of the registration it replaces), then the smallest service name. Aliases are candidates too. Use `doger.InvokeNamed` to pin a specific service.
+When several services match, the selection is deterministic: the service in the **nearest** scope (the invoking scope before its ancestors), then the **earliest registration** (an `Override` keeps the position of the registration it replaces), then the smallest service name. Aliases are candidates too. A service hidden by a service of the same name in a nearer scope is not a candidate, even when the nearer one does not match: this is the visibility rule of named resolution and of `doger.InvokeAll`. Use `doger.InvokeNamed` to pin a specific service.
 
 :::
 

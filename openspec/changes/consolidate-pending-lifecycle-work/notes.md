@@ -141,3 +141,9 @@ The design's Risks section required the `started`/`handled` entries of a scope's
 - GREEN: `serviceShutdown`, the one place a wrapper leaves its scope, now calls `RootScope.forget`. This covers child-scope shutdown, root shutdown and `ShutdownNamed`. The design sentence was updated to say so.
 - Residual: a pipeline that already collected a wrapper as a candidate and starts it after a concurrent `ShutdownNamed` can re-add its entry. Starting a service that is being shut down concurrently is outside the container-start spec.
 - `BenchmarkShutdown` against `ed65bdc` (15 interleaved runs): `~` on time (p=0.935), B/op and allocs/op.
+
+## Part V: verification fixes (groups 50-64)
+
+### 61.4 InvokeAs after shadowing
+
+Interleaved against `ed65bdc` (20 alternating runs) with shadowing in place: `InvokeAs` +6.9% (p=0.001, 1.229µs → 1.314µs), 937 → 961 B/op, 11 → 9 allocs/op; `InvokeAlias` -5.8%. The shadow check runs only for matching candidates and walks parent pointers, so it adds no allocation and no measurable time over the +9.2% accepted in 48.1.
