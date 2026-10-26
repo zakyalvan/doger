@@ -3,6 +3,7 @@ package doger
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -549,6 +550,99 @@ func TestRefresh_RetriesFailedStarter(t *testing.T) {
 
 			is.NoError(tt.run(root, scope))
 			is.Equal(int32(2), late.calls.Load())
+		})
+	}
+}
+
+// callerCtxKey keys the value TestIncrementalStart_CallerContext puts in
+// the caller's context.
+type callerCtxKey struct{}
+
+func TestIncrementalStart_CallerContext(t *testing.T) {
+	t.Parallel()
+
+	withValue := func() context.Context { return context.WithValue(context.Background(), callerCtxKey{}, "v") }
+	cancelled := func() context.Context {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		return ctx
+	}
+	none := func() context.Context { return nil }
+
+	tests := []struct {
+		name     string
+		scope    bool // the run is tenant.StartWithContext, not root.RefreshWithContext
+		ctx      func() context.Context
+		wantErr  error
+		starts   int
+		hasValue bool // the recorded contexts hold "v" for callerCtxKey
+	}{
+		{name: "Refresh, value", ctx: withValue, starts: 1, hasValue: true},
+		{name: "Scope.Start, value", scope: true, ctx: withValue, starts: 1, hasValue: true},
+		{name: "Refresh, cancelled", ctx: cancelled, wantErr: context.Canceled},
+		{name: "Scope.Start, cancelled", scope: true, ctx: cancelled, wantErr: context.Canceled},
+		{name: "Refresh, nil", ctx: none, starts: 1},
+		{name: "Scope.Start, nil", scope: true, ctx: none, starts: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+			is := assert.New(t)
+
+			var mu sync.Mutex
+			var recorded []context.Context
+			record := func(ctx context.Context) {
+				mu.Lock()
+				defer mu.Unlock()
+				recorded = append(recorded, ctx)
+			}
+			root := New()
+			root.AddScopeStartingHook(func(ctx context.Context, _ *Scope) error {
+				record(ctx)
+				return nil
+			})
+			require.NoError(t, root.Start())
+			target := root.Scope("tenant")
+			if !tt.scope {
+				target = root.self
+			}
+			var starts atomic.Int32
+			provideLazy(target, "a", &ctxStarter{fn: func(ctx context.Context) error {
+				starts.Add(1)
+				record(ctx)
+				return nil
+			}})
+
+			var err error
+			if tt.scope {
+				err = target.StartWithContext(tt.ctx())
+			} else {
+				err = root.RefreshWithContext(tt.ctx())
+			}
+
+			if tt.wantErr != nil {
+				is.ErrorIs(err, tt.wantErr)
+			} else {
+				is.NoError(err)
+			}
+			is.Equal(int32(tt.starts), starts.Load())
+			wantRecorded := tt.starts
+			if tt.scope {
+				wantRecorded++ // the Starting hook, which runs before the abort check
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			is.Len(recorded, wantRecorded)
+			for _, ctx := range recorded {
+				if !is.NotNil(ctx) {
+					continue
+				}
+				if tt.hasValue {
+					is.Equal("v", ctx.Value(callerCtxKey{}))
+				}
+			}
 		})
 	}
 }
