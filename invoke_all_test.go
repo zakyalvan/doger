@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -703,4 +704,102 @@ func TestInvokeAll_AfterShutdown(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Empty(t, handlers)
+}
+
+func TestInvokeAll_ConcurrentSingleBuild(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, 5*time.Second)
+	is := assert.New(t)
+
+	root := New()
+	var consoleCalls, auditCalls atomic.Int32
+	ProvideNamed(root, "console", func(Injector) (*ConsoleHandler, error) { consoleCalls.Add(1); return newConsole("console"), nil })
+	ProvideNamed(root, "audit", func(Injector) (*AuditHandler, error) { auditCalls.Add(1); return newAudit("audit"), nil })
+
+	const callers = 100
+	lengths := make(chan int, callers)
+	var wg sync.WaitGroup
+	for range callers {
+		wg.Go(func() {
+			handlers, err := InvokeAll[EventHandler](root)
+			if err != nil {
+				lengths <- -1
+				return
+			}
+			lengths <- len(handlers)
+		})
+	}
+	wg.Wait()
+	close(lengths)
+
+	for length := range lengths {
+		is.Equal(2, length)
+	}
+	is.Equal(int32(1), consoleCalls.Load())
+	is.Equal(int32(1), auditCalls.Load())
+}
+
+func TestInvokeAll_ConcurrentRegistration(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, 5*time.Second)
+	is := assert.New(t)
+
+	root := New()
+	provideHandler(root, "console", newConsole)
+
+	const n = 50
+	results := make(chan []string, n)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Go(func() { provideHandler(root, fmt.Sprintf("h-%d", i), newAudit) })
+		wg.Go(func() {
+			handlers, err := InvokeAll[EventHandler](root)
+			if err != nil {
+				results <- nil
+				return
+			}
+			results <- handlerNames(handlers)
+		})
+	}
+	wg.Wait()
+	close(results)
+
+	for names := range results {
+		is.Contains(names, "console")
+		is.GreaterOrEqual(len(names), 1)
+		is.LessOrEqual(len(names), n+1)
+	}
+}
+
+func TestInvokeAll_ConcurrentShutdown(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, 5*time.Second)
+	is := assert.New(t)
+
+	root := New()
+	ProvideNamed(root, "console", func(Injector) (*ConsoleHandler, error) { return newConsole("console"), nil })
+	ProvideNamed(root, "audit", func(Injector) (*AuditHandler, error) { return newAudit("audit"), nil })
+
+	const collectors = 50
+	type outcome struct {
+		length int
+		err    error
+	}
+	outcomes := make(chan outcome, collectors)
+	var wg sync.WaitGroup
+	for range collectors {
+		wg.Go(func() {
+			handlers, err := InvokeAll[EventHandler](root)
+			outcomes <- outcome{length: len(handlers), err: err}
+		})
+	}
+	wg.Go(func() { root.Shutdown() })
+	wg.Wait()
+	close(outcomes)
+
+	for o := range outcomes {
+		is.NoError(o.err)
+		is.GreaterOrEqual(o.length, 0)
+		is.LessOrEqual(o.length, 2)
+	}
 }

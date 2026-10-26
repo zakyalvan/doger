@@ -188,9 +188,9 @@ Rules:
 
 ## 27. Concurrent collection callers (Part K)
 
-- [ ] 27.1 RED: add `TestInvokeAll_ConcurrentSingleBuild` (100 goroutines), `TestInvokeAll_ConcurrentRegistration` (50 + 50 goroutines) and `TestInvokeAll_ConcurrentShutdown` (50 collectors + 1 shutdown), all with `testWithTimeout`, for scenarios "Concurrent callers build each member once", "Concurrent registration and collection" and "Concurrent collection and shutdown"; verify `go test -race -count=5 -run 'TestInvokeAll_Concurrent' .`; they pass on arrival because the wrappers serialize builds, so record that and show the counter assertion can fail with a deliberately unsynchronized fake provider in a throwaway experiment (not committed)
-- [ ] 27.2 GREEN: no production change expected; fix any race, leak or double build reported; verify the 27.1 command passes with `-race` and goleak reports no leak
-- [ ] 27.3 REFACTOR: none needed: no new shared state (design D8); verify `make test` and `make lint` pass
+- [x] 27.1 RED: add `TestInvokeAll_ConcurrentSingleBuild` (100 goroutines), `TestInvokeAll_ConcurrentRegistration` (50 + 50 goroutines) and `TestInvokeAll_ConcurrentShutdown` (50 collectors + 1 shutdown), all with `testWithTimeout`, for scenarios "Concurrent callers build each member once", "Concurrent registration and collection" and "Concurrent collection and shutdown"; verify `go test -race -count=5 -run 'TestInvokeAll_Concurrent' .`; they pass on arrival because the wrappers serialize builds, so record that and show the counter assertion can fail with a deliberately unsynchronized fake provider in a throwaway experiment (not committed)
+- [x] 27.2 GREEN: no production change expected; fix any race, leak or double build reported; verify the 27.1 command passes with `-race` and goleak reports no leak
+- [x] 27.3 REFACTOR: none needed: no new shared state (design D8); verify `make test` and `make lint` pass
 
 ## 28. Default collection order (Part K)
 
