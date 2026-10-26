@@ -960,6 +960,7 @@ func TestContainerHooks_ObserverPanicDefault(t *testing.T) {
 		// recorded before the panic reached the caller.
 		register   func(root *RootScope, rec *callRecorder) []string
 		operation  func(root *RootScope)
+		phase      ContainerPhase // reached although the hook panicked
 		laterError error
 	}{
 		{
@@ -971,6 +972,7 @@ func TestContainerHooks_ObserverPanicDefault(t *testing.T) {
 				return []string{"next-started", "ready"}
 			},
 			operation:  func(root *RootScope) { _ = root.Start() },
+			phase:      PhaseReady,
 			laterError: ErrAlreadyStarted,
 		},
 		{
@@ -981,6 +983,7 @@ func TestContainerHooks_ObserverPanicDefault(t *testing.T) {
 				return []string{"next-ready"}
 			},
 			operation:  func(root *RootScope) { _ = root.Start() },
+			phase:      PhaseReady,
 			laterError: ErrAlreadyStarted,
 		},
 		{
@@ -992,6 +995,7 @@ func TestContainerHooks_ObserverPanicDefault(t *testing.T) {
 				return []string{"next-failed"}
 			},
 			operation:  func(root *RootScope) { _ = root.Start() },
+			phase:      PhaseFailed,
 			laterError: ErrAlreadyStarted,
 		},
 		{
@@ -1003,6 +1007,7 @@ func TestContainerHooks_ObserverPanicDefault(t *testing.T) {
 				return []string{"next-closing", "db.Shutdown", "closed"}
 			},
 			operation:  func(root *RootScope) { root.Shutdown() },
+			phase:      PhaseClosed,
 			laterError: ErrStartAfterShutdown,
 		},
 		{
@@ -1013,6 +1018,7 @@ func TestContainerHooks_ObserverPanicDefault(t *testing.T) {
 				return []string{"db.Shutdown", "next-closed"}
 			},
 			operation:  func(root *RootScope) { root.Shutdown() },
+			phase:      PhaseClosed,
 			laterError: ErrStartAfterShutdown,
 		},
 	}
@@ -1036,6 +1042,7 @@ func TestContainerHooks_ObserverPanicDefault(t *testing.T) {
 
 			is.Equal("kaboom", recovered)
 			is.Equal(completed, rec.list())
+			is.Equal(tt.phase, root.Phase())
 			is.ErrorIs(root.Start(), tt.laterError)
 		})
 	}
