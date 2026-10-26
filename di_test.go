@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNameOf(t *testing.T) {
@@ -1065,6 +1066,53 @@ func TestAsNamed(t *testing.T) {
 	i = New()
 	Provide(i, func(i Injector) (iTestHeathchecker, error) { return &lazyTestHeathcheckerOK{}, nil })
 	is.NoError(AsNamed[iTestHeathchecker, Healthchecker](i, "github.com/kartaladev/doger.iTestHeathchecker", "github.com/kartaladev/doger.Healthchecker"))
+}
+
+func TestAsNamed_NilInjector(t *testing.T) {
+	tests := []struct {
+		name string
+		use  func(t *testing.T)
+	}{
+		{
+			name: "InvokeAs from a provider",
+			use: func(t *testing.T) {
+				t.Helper()
+				ProvideNamed(nil, "nil-alias-decor", func(i Injector) (*greeterDecor, error) {
+					inner, err := InvokeAs[Greeter](i)
+					if err != nil {
+						return nil, err
+					}
+					return &greeterDecor{inner: inner}, nil
+				})
+				decor, err := InvokeNamed[*greeterDecor](nil, "nil-alias-decor")
+				require.NoError(t, err)
+				assert.Equal(t, "decor(nil-alias-base)", decor.Greet())
+			},
+		},
+		{
+			name: "health check of the alias",
+			use: func(t *testing.T) {
+				t.Helper()
+				_, err := InvokeNamed[Greeter](nil, "nil-alias")
+				require.NoError(t, err)
+				assert.NotPanics(t, func() { assert.NoError(t, HealthCheckNamed(nil, "nil-alias")) })
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testWithTimeout(t, time.Second)
+
+			previous := DefaultRootScope
+			DefaultRootScope = New()
+			t.Cleanup(func() { DefaultRootScope = previous })
+			provideGreeter(nil, "nil-alias-base")
+			require.NoError(t, AsNamed[*greeterImpl, Greeter](nil, "nil-alias-base", "nil-alias"))
+
+			tt.use(t)
+		})
+	}
 }
 
 func TestMustAsNamed(t *testing.T) {
