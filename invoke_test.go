@@ -1301,6 +1301,32 @@ func TestAliasResolvesTo_Loop(t *testing.T) {
 	assert.True(t, aliasResolvesTo(x, "x"))
 }
 
+// TestInvokeAs_SkipsAliasOfShadowedName characterizes the name-only rule of
+// aliasResolvesTo: a parent alias whose target has the invoker's name is
+// skipped although it resolves to the parent's service, which the invoker
+// shadows, so the decorator finds no match instead of a cycle.
+func TestInvokeAs_SkipsAliasOfShadowedName(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	provideGreeter(root, "svc")
+	require.NoError(t, AsNamed[*greeterImpl, Greeter](root, "svc", "g"))
+	child := root.Scope("child")
+	ProvideNamed(child, "svc", func(i Injector) (*greeterDecor, error) {
+		inner, err := InvokeAs[Greeter](i)
+		if err != nil {
+			return nil, err
+		}
+		return &greeterDecor{inner: inner}, nil
+	})
+
+	_, err := InvokeNamed[*greeterDecor](child, "svc")
+
+	assert.ErrorIs(t, err, ErrServiceNotMatch)
+	assert.NotErrorIs(t, err, ErrCircularDependency)
+}
+
 func TestInvokeStruct_FallbackSkipsInvokerAlias(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, time.Second)
