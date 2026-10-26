@@ -133,7 +133,7 @@ func TestIncrementalStart_DuringStart(t *testing.T) {
 			starts := &countingStarters{}
 			provideCountedStarter(tenant, starts, "w")
 			var recorded error
-			ProvideNamedValue(root, "a", &ctxStarter{fn: func(context.Context) error {
+			provideLazy(root, "a", &ctxStarter{fn: func(context.Context) error {
 				recorded = tt.call(root, tenant)
 				return nil
 			}})
@@ -354,7 +354,7 @@ func TestStartError_Incremental(t *testing.T) {
 		{
 			name: "Start returns errBoom, tenant.Start()",
 			setup: func(_ *RootScope, tenant *Scope) {
-				ProvideNamedValue(tenant, "b", &errorStarter{err: errBoom})
+				provideLazy(tenant, "b", &errorStarter{err: errBoom})
 			},
 			call:    func(_ *RootScope, tenant *Scope) error { return tenant.Start() },
 			service: "b", op: StartOpStart, cause: errBoom,

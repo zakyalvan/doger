@@ -1177,7 +1177,7 @@ func TestStartError_Fields(t *testing.T) {
 		{
 			name: "Start returns errBoom",
 			setup: func(root *RootScope) {
-				ProvideNamedValue(root, "b", &errorStarter{err: errBoom})
+				provideLazy(root, "b", &errorStarter{err: errBoom})
 			},
 			service: "b", op: StartOpStart, cause: errBoom,
 			message: "DI: failed to start service `b` in scope `[root]`: boom",
@@ -1664,6 +1664,12 @@ func TestStart_ParallelIncremental(t *testing.T) {
 	}
 }
 
+// provideLazy registers value lazily under name, through a provider that
+// returns it, where a scenario says "lazy".
+func provideLazy[T any](scope Injector, name string, value T) {
+	ProvideNamed(scope, name, func(Injector) (T, error) { return value, nil })
+}
+
 func TestStart_ParallelFailure(t *testing.T) {
 	t.Parallel()
 
@@ -1673,9 +1679,9 @@ func TestStart_ParallelFailure(t *testing.T) {
 		errBoom := errors.New("boom")
 		root := NewWithOpts(&InjectorOpts{StartParallelism: 2})
 		rec := &callRecorder{}
-		ProvideNamedValue(root, "a", &sleepingStarter{name: "a", d: time.Second, err: errBoom, rec: rec})
-		ProvideNamedValue(root, "b", &sleepingStarter{name: "b", d: 2 * time.Second, rec: rec})
-		ProvideNamedValue(root, "c", &sleepingStarter{name: "c", d: time.Second, rec: rec})
+		provideLazy(root, "a", &sleepingStarter{name: "a", d: time.Second, err: errBoom, rec: rec})
+		provideLazy(root, "b", &sleepingStarter{name: "b", d: 2 * time.Second, rec: rec})
+		provideLazy(root, "c", &sleepingStarter{name: "c", d: time.Second, rec: rec})
 
 		begin := time.Now()
 		err := root.Start()

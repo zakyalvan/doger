@@ -239,7 +239,7 @@ func TestScopeHooks_ObserverPanic(t *testing.T) {
 			require.NoError(t, root.Start())
 			tenant := root.Scope("tenant")
 			svc := &countingShutdowner{}
-			ProvideNamedValue(tenant, "svc", svc)
+			provideLazy(tenant, "svc", svc)
 			_, err := InvokeNamed[*countingShutdowner](tenant, "svc")
 			require.NoError(t, err)
 			tt.register(root)
@@ -267,7 +267,7 @@ func TestScopeHooks_ObserverPanicThroughParent(t *testing.T) {
 	root := New()
 	tenant := root.Scope("tenant")
 	svc := &countingShutdowner{}
-	ProvideNamedValue(tenant, "svc", svc)
+	provideLazy(tenant, "svc", svc)
 	_, err := InvokeNamed[*countingShutdowner](tenant, "svc")
 	require.NoError(t, err)
 	root.AddScopeClosingHook(func(context.Context, *Scope) { panic("scope-boom") })

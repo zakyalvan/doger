@@ -45,8 +45,9 @@ func TestPhase_Lifecycle(t *testing.T) {
 		{
 			name:  "Start failed",
 			failA: true,
-			previous: func(_ *testing.T, root *RootScope, _, _ chan struct{}) func() {
-				_ = root.Start()
+			previous: func(t *testing.T, root *RootScope, _, _ chan struct{}) func() {
+				t.Helper()
+				assert.ErrorIs(t, root.Start(), errBuild)
 				return func() {}
 			},
 			phase: PhaseFailed, text: "failed",
@@ -93,7 +94,7 @@ func TestPhase_Lifecycle(t *testing.T) {
 			if tt.failA {
 				ProvideNamed(root, "a", func(Injector) (*ctxStarter, error) { return nil, errBuild })
 			} else {
-				ProvideNamedValue(root, "a", &ctxStarter{fn: func(context.Context) error {
+				provideLazy(root, "a", &ctxStarter{fn: func(context.Context) error {
 					close(entered)
 					<-release
 					return nil
@@ -131,7 +132,7 @@ func TestPhase_RaceFree(t *testing.T) {
 	testWithTimeout(t, 5*time.Second)
 
 	root := New()
-	ProvideNamedValue(root, "a", &startWithErr{})
+	provideLazy(root, "a", &startWithErr{})
 	allowed := []ContainerPhase{PhaseIdle, PhaseStarting, PhaseStarted, PhaseReady, PhaseClosing, PhaseClosed}
 
 	stop := make(chan struct{})
