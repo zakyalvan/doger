@@ -1296,3 +1296,44 @@ func TestContainerHooks_NoHooksUnchanged(t *testing.T) {
 		})
 	}
 }
+
+func TestContainerHooks_IncrementalStartFiresNone(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		inTenant  bool
+		operation func(root *RootScope, tenant *Scope) error
+	}{
+		{name: "root.Refresh()", operation: func(root *RootScope, _ *Scope) error { return root.Refresh() }},
+		{name: "tenant.Start()", inTenant: true, operation: func(_ *RootScope, tenant *Scope) error { return tenant.Start() }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+			is := assert.New(t)
+
+			root := New()
+			var starting, started, ready, failed atomic.Int32
+			root.AddContainerStartingHook(func(context.Context, *RootScope) error { starting.Add(1); return nil })
+			root.AddContainerStartedHook(func(context.Context, *RootScope) { started.Add(1) })
+			root.AddContainerReadyHook(func(context.Context, *RootScope) { ready.Add(1) })
+			root.AddContainerFailedHook(func(context.Context, *RootScope, error) { failed.Add(1) })
+			tenant := root.Scope("tenant")
+			require.NoError(t, root.Start())
+
+			starts := &countingStarters{}
+			target := Injector(root)
+			if tt.inTenant {
+				target = tenant
+			}
+			provideCountedStarter(target, starts, "late")
+
+			is.NoError(tt.operation(root, tenant))
+			is.Equal(1, starts.count("late"))
+			is.Equal([]int32{1, 1, 1, 0}, []int32{starting.Load(), started.Load(), ready.Load(), failed.Load()})
+		})
+	}
+}

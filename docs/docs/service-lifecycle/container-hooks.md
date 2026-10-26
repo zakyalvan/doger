@@ -173,3 +173,7 @@ Container hooks fire only for the `*doger.RootScope` methods `Start`, `StartWith
 - a shutdown reached through the root's own `*doger.Scope`, for example the injector a provider receives, or `Component.Scope` of a root service.
 
 With no container hooks registered, `Start` and `Shutdown` behave as they did before container hooks existed.
+
+## Refresh and Scope.Start {#refresh-and-scope-start}
+
+Container hooks fire at most once per container, for its first `Start` and its first root `Shutdown`. [`Refresh` and `Scope.Start`](./starter.md#refresh) fire **no** container hook: no Starting, Started, Ready or Failed hook runs for an incremental start, even when it fails. Per-service start hooks (`HookBeforeStart`, `HookAfterStart`) and kind handlers still run for the services they start.

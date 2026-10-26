@@ -254,10 +254,10 @@ Rules:
 
 ## 37. Incremental start fires no container hooks (container-lifecycle-hooks; design X2)
 
-- [ ] 37.1 RED: add `TestContainerHooks_IncrementalStartFiresNone` (scenario "Refresh after Start fires no container hook", 2 rows); verify `go test -race -run TestContainerHooks_IncrementalStartFiresNone .`; it likely passes on arrival because `runPipeline` never reaches `pointStarting`/`pointAfterStart` for incremental runs, so record that and show it fails when the Starting hooks are temporarily run in `runPipeline` (not committed)
-- [ ] 37.2 GREEN: no production change expected; if 37.1 failed, guard the container-hook points with `!incremental`; verify the 37.1 command passes and `make test` is green
-- [ ] 37.3 REFACTOR: none needed; verify `make test` and `make lint` pass
-- [ ] 37.4 Note in the container-hooks page that Refresh and Scope.Start fire no container hooks; verify the docs lint and build pass
+- [x] 37.1 RED: add `TestContainerHooks_IncrementalStartFiresNone` (scenario "Refresh after Start fires no container hook", 2 rows); verify `go test -race -run TestContainerHooks_IncrementalStartFiresNone .`; it likely passes on arrival because `runPipeline` never reaches `pointStarting`/`pointAfterStart` for incremental runs, so record that and show it fails when the Starting hooks are temporarily run in `runPipeline` (not committed)
+- [x] 37.2 GREEN: no production change expected; if 37.1 failed, guard the container-hook points with `!incremental`; verify the 37.1 command passes and `make test` is green
+- [x] 37.3 REFACTOR: none needed; verify `make test` and `make lint` pass
+- [x] 37.4 Note in the container-hooks page that Refresh and Scope.Start fire no container hooks; verify the docs lint and build pass
 
 ## 38. Parallel start (container-start; design P4)
 
