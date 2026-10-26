@@ -1082,6 +1082,51 @@ func TestInvokeAs_StoredInjectorSkipsHolder(t *testing.T) {
 	assert.Equal(t, "base", greeter.Greet())
 }
 
+func TestInvokeAs_SeesRegistryChanges(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		change func(t *testing.T, root *RootScope) // made after a first InvokeAs
+		want   string
+	}{
+		{name: "a registration", change: func(_ *testing.T, root *RootScope) {
+			provideGreeter(root, "late")
+		}, want: "late"},
+		{name: "an override", change: func(_ *testing.T, root *RootScope) {
+			OverrideNamed(root, "a", func(Injector) (*greeterImpl, error) { return &greeterImpl{name: "a-v2"}, nil })
+		}, want: "a-v2"},
+		{name: "a shutdown", change: func(t *testing.T, root *RootScope) {
+			t.Helper()
+			require.NoError(t, ShutdownNamed(root, "a"))
+		}, want: "b"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+
+			root := New()
+			_, err := InvokeAs[Greeter](root) // no match yet
+			require.ErrorIs(t, err, ErrServiceNotMatch)
+			if tt.name != "a registration" {
+				provideGreeter(root, "a")
+				provideGreeter(root, "b")
+				greeter, err := InvokeAs[Greeter](root)
+				require.NoError(t, err)
+				require.Equal(t, "a", greeter.Greet())
+			}
+
+			tt.change(t, root)
+			greeter, err := InvokeAs[Greeter](root)
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, greeter.Greet())
+		})
+	}
+}
+
 func TestInvokeAs_SingleAndMissing(t *testing.T) {
 	t.Parallel()
 
