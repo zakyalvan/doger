@@ -25,6 +25,14 @@ Examples:
   | "a"             | "a2"        | "a", "a2"                    |
 ```
 
+#### Scenario: Scope depth decides before registration order
+```gherkin
+Given a root scope and a child scope "child"
+And lazy "z" is registered in "child", then lazy "a" in the root, both implementing "EventHandler"
+When the consumer calls InvokeAll for type "EventHandler" from scope "child"
+Then the result order is "a", "z"
+```
+
 #### Scenario: Order is stable across repeated calls
 ```gherkin
 Given a root scope with 50 lazy services "h-01" to "h-50" registered in that order, all implementing "EventHandler"
@@ -73,6 +81,14 @@ Examples:
   | 5, 5, 5, 5                    | "a", "b", "c", "d"   |
   | -2147483648, 2147483647, 0, - | "a", "c", "d", "b"   |
   | 0, -, 0, -                    | "a", "b", "c", "d"   |
+```
+
+#### Scenario: Equal values keep the default order among many members
+```gherkin
+Given a root scope with 26 lazy services "h-00" to "h-25" registered in that order, all implementing "Ordered"
+And the even-numbered ones return 0 and the odd-numbered ones return 1
+When the consumer calls InvokeAll for type "EventHandler"
+Then the result order is "h-00", "h-02", … "h-24", then "h-01", "h-03", … "h-25"
 ```
 
 #### Scenario: Order is read from each transient instance
