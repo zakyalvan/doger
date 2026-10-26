@@ -109,6 +109,48 @@ func TestInvokeAll_DefaultOrderClone(t *testing.T) {
 	}
 }
 
+func TestInvokeAll_WithOrderCloneAndOverride(t *testing.T) {
+	t.Parallel()
+
+	overrideB := func(opts ...ProvideOption) func(Injector) {
+		return func(i Injector) {
+			OverrideNamed(i, "b", func(Injector) (*ConsoleHandler, error) { return newConsole("b"), nil }, opts...)
+		}
+	}
+
+	tests := []struct {
+		name  string
+		bOpts []ProvideOption
+		clone bool
+		then  func(Injector) // applied to the injector read from
+		order []string
+	}{
+		{name: "clone keeps WithOrder", bOpts: []ProvideOption{WithOrder(-1)}, clone: true, order: []string{"b", "a"}},
+		{name: "override without options drops it", bOpts: []ProvideOption{WithOrder(-1)}, then: overrideB(), order: []string{"a", "b"}},
+		{name: "override with WithOrder sets it", then: overrideB(WithOrder(-1)), order: []string{"b", "a"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+
+			root := New()
+			provideHandler(root, "a", newConsole)
+			provideHandler(root, "b", newConsole, tt.bOpts...)
+			var from Injector = root
+			if tt.clone {
+				from = root.Clone()
+			}
+			if tt.then != nil {
+				tt.then(from)
+			}
+
+			assert.Equal(t, tt.order, collectNames(t, from))
+		})
+	}
+}
+
 // orderedHandler is an EventHandler implementing Ordered.
 type orderedHandler struct {
 	handlerBase
