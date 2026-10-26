@@ -1486,3 +1486,62 @@ func TestScopeStart_RootScope(t *testing.T) {
 	assert.NoError(t, scope.Start())
 	assert.Equal(t, 1, starts.count("late"))
 }
+
+func TestRefresh_Concurrent(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, 5*time.Second)
+	is := assert.New(t)
+
+	root := New()
+	require.NoError(t, root.Start())
+	starts := &countingStarters{}
+	for i := range 10 {
+		provideCountedStarter(root, starts, fmt.Sprintf("s%d", i))
+	}
+
+	errs := make(chan error, 10)
+	var wg sync.WaitGroup
+	for range 10 {
+		wg.Go(func() { errs <- root.Refresh() })
+	}
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		is.NoError(err)
+	}
+	for i := range 10 {
+		is.Equal(1, starts.count(fmt.Sprintf("s%d", i)))
+	}
+}
+
+func TestRefresh_ShutdownCancels(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		is := assert.New(t)
+
+		root := New()
+		require.NoError(t, root.Start())
+		entered := make(chan struct{})
+		ProvideNamedValue(root, "late", &ctxStarter{fn: func(ctx context.Context) error {
+			close(entered)
+			<-ctx.Done()
+			return ctx.Err()
+		}})
+
+		refreshErr := make(chan error, 1)
+		go func() { refreshErr <- root.Refresh() }()
+		<-entered
+
+		report := root.Shutdown()
+
+		select {
+		case err := <-refreshErr:
+			is.ErrorIs(err, ErrStartAfterShutdown)
+		default:
+			is.Fail("Shutdown returned before Refresh returned")
+		}
+		is.True(report.Succeed, report.Error())
+	})
+}

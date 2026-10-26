@@ -289,9 +289,9 @@ func (s *RootScope) shutdownAsWinner(ctx context.Context, ticket closeTicket, fi
 	return report
 }
 
-// waitForStart cancels a Start that was running when the close phase began,
-// with cause ErrStartAfterShutdown, and waits for it to return, bounded by
-// ctx. It returns an error when ctx ended first.
+// waitForStart cancels a Start, Refresh or Scope.Start that was running when
+// the close phase began, with cause ErrStartAfterShutdown, and waits for it
+// to return, bounded by ctx. It returns an error when ctx ended first.
 func waitForStart(ctx context.Context, ticket closeTicket) error {
 	if !ticket.inFlight {
 		return nil
@@ -310,7 +310,8 @@ type closeTicket struct {
 	done   chan struct{} // closed when the winner finished
 	winner bool          // this caller runs the shutdown
 
-	// winner only: a Start running when the close phase began
+	// winner only: a Start, Refresh or Scope.Start running when the close
+	// phase began
 	inFlight    bool
 	startCancel context.CancelCauseFunc
 	startDone   chan struct{}
@@ -329,12 +330,22 @@ func (s *RootScope) beginClose() closeTicket {
 	s.closePhase = closeClosing
 	s.closeDone = make(chan struct{})
 
-	return closeTicket{
-		done:        s.closeDone,
-		winner:      true,
-		inFlight:    s.startPhase == startStarting,
-		startCancel: s.startCancel,
-		startDone:   s.startDone,
+	ticket := closeTicket{done: s.closeDone, winner: true}
+	ticket.startCancel, ticket.startDone, ticket.inFlight = s.inFlightRun()
+
+	return ticket
+}
+
+// inFlightRun returns the cancel function and done channel of the Start,
+// Refresh or Scope.Start running now, if any. lifecycleMu must be held.
+func (s *RootScope) inFlightRun() (context.CancelCauseFunc, chan struct{}, bool) {
+	switch {
+	case s.startPhase == startStarting:
+		return s.startCancel, s.startDone, true
+	case s.incDone != nil:
+		return s.incCancel, s.incDone, true
+	default:
+		return nil, nil, false
 	}
 }
 

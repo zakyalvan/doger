@@ -242,9 +242,9 @@ Rules:
 
 ## 35. Incremental starts are serialized and cancelled by Shutdown (container-start; design P1, P2)
 
-- [ ] 35.1 RED: add `TestRefresh_Concurrent` (scenario "Concurrent incremental starts") and `TestRefresh_ShutdownCancels` (scenario "Shutdown cancels a running Refresh", `synctest.Test`); verify `go test -race -count=10 -run 'TestRefresh_(Concurrent|ShutdownCancels)' .` fails on ShutdownCancels (Refresh not cancelled, deadlock) and record whether Concurrent passes on arrival through `pipelineMu`, showing it can fail by temporarily dropping the lock (not committed)
-- [ ] 35.2 GREEN: record `incCancel`/`incDone` in `beginIncremental`, capture them in `beginClose`, and cancel and await them in `waitForStart` (design P2); verify the 35.1 command passes, goleak is clean, and `make test` is green
-- [ ] 35.3 REFACTOR: *Extract Function* `inFlightRun()` returning the running Start or Refresh cancel/done pair for `beginClose`; then a gopls call-hierarchy review that `pipelineMu` is never taken under `lifecycleMu` or by Shutdown (design X3); verify `make test` and `make lint` pass
+- [x] 35.1 RED: add `TestRefresh_Concurrent` (scenario "Concurrent incremental starts") and `TestRefresh_ShutdownCancels` (scenario "Shutdown cancels a running Refresh", `synctest.Test`); verify `go test -race -count=10 -run 'TestRefresh_(Concurrent|ShutdownCancels)' .` fails on ShutdownCancels (Refresh not cancelled, deadlock) and record whether Concurrent passes on arrival through `pipelineMu`, showing it can fail by temporarily dropping the lock (not committed)
+- [x] 35.2 GREEN: record `incCancel`/`incDone` in `beginIncremental`, capture them in `beginClose`, and cancel and await them in `waitForStart` (design P2); verify the 35.1 command passes, goleak is clean, and `make test` is green
+- [x] 35.3 REFACTOR: *Extract Function* `inFlightRun()` returning the running Start or Refresh cancel/done pair for `beginClose`; then a gopls call-hierarchy review that `pipelineMu` is never taken under `lifecycleMu` or by Shutdown (design X3); verify `make test` and `make lint` pass
 
 ## 36. Kind handlers and runners on incremental start (component-kinds; design P1)
 
