@@ -818,6 +818,11 @@ func TestIncrementalStart_CallerContext(t *testing.T) {
 				record(ctx)
 				return nil
 			})
+			k := NewKind[Job, Spec]("k")
+			k.Handle(root, StageBeforeStart, func(ctx context.Context, _ Component[Job, Spec]) error {
+				record(ctx)
+				return nil
+			})
 			require.NoError(t, root.Start())
 			target := root.Scope("tenant")
 			if !tt.scope {
@@ -829,6 +834,7 @@ func TestIncrementalStart_CallerContext(t *testing.T) {
 				record(ctx)
 				return nil
 			}})
+			ProvideNamed(target, "j", func(Injector) (*CleanupJob, error) { return &CleanupJob{name: "j"}, nil }, k.With(Spec{}))
 
 			var err error
 			if tt.scope {
@@ -843,7 +849,7 @@ func TestIncrementalStart_CallerContext(t *testing.T) {
 				is.NoError(err)
 			}
 			is.Equal(int32(tt.starts), starts.Load())
-			wantRecorded := tt.starts
+			wantRecorded := 2 * tt.starts // the Starter and the kind handler
 			if tt.scope {
 				wantRecorded++ // the Starting hook, which runs before the abort check
 			}
