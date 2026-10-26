@@ -111,15 +111,14 @@ func (s *RootScope) beginIncremental(ctx context.Context) (context.Context, erro
 	return incCtx, nil
 }
 
-// finishIncremental ends the context of the run and releases its waiters. A
-// run that succeeded although Shutdown began after its last abort check is
-// reported as aborted.
+// finishIncremental ends the context of the run and releases its waiters.
+// Once Shutdown began, the outcome is abortOutcome's.
 func (s *RootScope) finishIncremental(incCtx context.Context, err *error) {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
 
-	if *err == nil && s.closePhase != closeOpen {
-		*err = fmt.Errorf("DI: start aborted: %w", context.Cause(incCtx))
+	if s.closePhase != closeOpen {
+		*err = abortOutcome(incCtx, *err)
 	}
 
 	s.incCancel(nil)

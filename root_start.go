@@ -3,6 +3,7 @@ package doger
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"slices"
@@ -235,14 +236,13 @@ func (s *RootScope) runStart(startCtx context.Context) (err error) {
 }
 
 // finishStart records the outcome of Start, ends the Start-time context and
-// releases its waiters. A Start that succeeded although Shutdown began after
-// its last abort check is reported as aborted.
+// releases its waiters. Once Shutdown began, the outcome is abortOutcome's.
 func (s *RootScope) finishStart(startCtx context.Context, err *error, panicked bool) {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
 
-	if *err == nil && !panicked && s.closePhase != closeOpen {
-		*err = fmt.Errorf("DI: start aborted: %w", context.Cause(startCtx))
+	if !panicked && s.closePhase != closeOpen {
+		*err = abortOutcome(startCtx, *err)
 	}
 
 	if *err != nil || panicked {
@@ -253,6 +253,22 @@ func (s *RootScope) finishStart(startCtx context.Context, err *error, panicked b
 	s.startCancel(nil)
 	close(s.startDone)
 	s.runScopes = nil
+}
+
+// abortOutcome is the outcome of a run that Shutdown began during: a run
+// that succeeded after its last abort check is reported as aborted, and a
+// failure also carries the abort cause unless it already does. lifecycleMu
+// must be held, so that beginClose has set the cause.
+func abortOutcome(ctx context.Context, err error) error {
+	cause := context.Cause(ctx)
+	switch {
+	case err == nil:
+		return fmt.Errorf("DI: start aborted: %w", cause)
+	case errors.Is(err, cause):
+		return err
+	default:
+		return withAbortCause(ctx, err)
+	}
 }
 
 // startCandidate is a service discovered by Start.

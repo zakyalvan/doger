@@ -1700,6 +1700,70 @@ func TestStart_ParallelFailure(t *testing.T) {
 	})
 }
 
+func TestStart_FailureThenShutdown(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		incremental bool
+	}{
+		{name: "Start", incremental: false},
+		{name: "Refresh", incremental: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			synctest.Test(t, func(t *testing.T) {
+				is := assert.New(t)
+
+				errBoom := errors.New("boom")
+				root := NewWithOpts(&InjectorOpts{StartParallelism: 2})
+				if tt.incremental {
+					require.NoError(t, root.Start())
+				}
+				bCancelled := make(chan struct{})
+				provideLazy(root, "a", &ctxStarter{fn: func(context.Context) error {
+					time.Sleep(time.Second)
+					return errBoom
+				}})
+				provideLazy(root, "b", &ctxStarter{fn: func(ctx context.Context) error {
+					select {
+					case <-ctx.Done():
+						close(bCancelled)
+						return ctx.Err()
+					case <-time.After(10 * time.Second):
+						return nil
+					}
+				}})
+				shutdownDone := make(chan struct{})
+				go func() {
+					defer close(shutdownDone)
+					time.Sleep(1500 * time.Millisecond)
+					root.Shutdown()
+				}()
+
+				var err error
+				if tt.incremental {
+					err = root.Refresh()
+				} else {
+					err = root.Start()
+				}
+				<-shutdownDone
+
+				is.ErrorIs(err, errBoom)
+				is.ErrorIs(err, ErrStartAfterShutdown)
+				select {
+				case <-bCancelled:
+				default:
+					is.Fail("Shutdown did not cancel b")
+				}
+			})
+		})
+	}
+}
+
 func TestStart_ParallelHooks(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, 5*time.Second)
