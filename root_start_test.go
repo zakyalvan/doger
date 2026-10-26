@@ -1850,12 +1850,17 @@ func TestStart_ParallelHooks(t *testing.T) {
 }
 
 // sleepyStarter sleeps 1s in Start, counting how many are inside Start.
-type sleepyStarter struct{ running *atomic.Int32 }
+type sleepyStarter struct {
+	running *atomic.Int32
+	instant bool // return at once instead of sleeping 1s
+}
 
 func (s *sleepyStarter) Start() error {
 	s.running.Add(1)
 	defer s.running.Add(-1)
-	time.Sleep(time.Second)
+	if !s.instant {
+		time.Sleep(time.Second)
+	}
 	return nil
 }
 
@@ -1891,8 +1896,11 @@ func TestStart_ParallelHookPanic(t *testing.T) {
 				}
 				root := NewWithOpts(opts)
 				var running atomic.Int32
+				// "b" returns at once, so its hooks fire while "a" and "c" still run
 				for _, name := range []string{"a", "b", "c"} {
-					ProvideNamed(root, name, func(Injector) (*sleepyStarter, error) { return &sleepyStarter{running: &running}, nil })
+					ProvideNamed(root, name, func(Injector) (*sleepyStarter, error) {
+						return &sleepyStarter{running: &running, instant: name == "b"}, nil
+					})
 				}
 
 				var recovered any

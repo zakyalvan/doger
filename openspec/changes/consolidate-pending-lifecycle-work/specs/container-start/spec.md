@@ -344,7 +344,7 @@ With `StartParallelism` n > 1, a panic in a per-service start hook (`HookBeforeS
 #### Scenario: A panicking start hook under parallel start
 ```gherkin
 Given a root scope created with StartParallelism <n> and a <hook> hook that panics with "hook-boom" for "b"
-And lazy Starters "a", "b" and "c" without dependencies
+And lazy Starters "a", "b" and "c" without dependencies, where "a" and "c" take 1s to start and "b" returns at once
 When the consumer calls Start()
 Then Start panics on the calling goroutine with "hook-boom"
 And no Starter's Start is still running when the panic is raised
