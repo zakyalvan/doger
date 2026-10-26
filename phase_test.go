@@ -142,12 +142,13 @@ func TestPhase_RaceFree(t *testing.T) {
 	for g := range seen {
 		seen[g] = map[ContainerPhase]int{}
 		wg.Go(func() {
+			// observe before checking stop, so every goroutine observes once
 			for {
+				seen[g][root.Phase()]++
 				select {
 				case <-stop:
 					return
 				default:
-					seen[g][root.Phase()]++
 				}
 			}
 		})
@@ -165,7 +166,7 @@ func TestPhase_RaceFree(t *testing.T) {
 			total += n
 		}
 	}
-	assert.Positive(t, total)
+	assert.GreaterOrEqual(t, total, len(seen))
 }
 
 func TestContainerPhase_String(t *testing.T) {
