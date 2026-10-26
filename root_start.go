@@ -511,7 +511,7 @@ func (s *RootScope) claimCandidates(roots []*Scope, candidates []*startCandidate
 // down. lifecycleMu must be held.
 func closingInLine(scope *Scope) bool {
 	for ; scope != nil; scope = scope.parentScope {
-		if scope.closing > 0 {
+		if scope.closing != nil && scope.closing.count > 0 {
 			return true
 		}
 	}

@@ -73,10 +73,17 @@ type Scope struct {
 	orderedInvocation      map[string]int // Map tracking service invocation order (faster than slice)
 	orderedInvocationIndex int            // Counter for tracking invocation order
 
-	closing int // shutdowns of this scope in progress; guarded by rootScope.lifecycleMu
-	// closeRun is the shutdown of this child scope that others join while it
-	// runs, or nil; guarded by rootScope.lifecycleMu
-	closeRun *scopeCloseRun
+	// closing tracks the shutdowns of this child scope; nil until the first
+	// one. Guarded by rootScope.lifecycleMu. It is a pointer so that the
+	// scope, which the root container embeds, keeps its size: parallel
+	// invocations are sensitive to the container's allocation layout.
+	closing *scopeClosing
+}
+
+// scopeClosing is the shutdown state of a child scope.
+type scopeClosing struct {
+	count int            // shutdowns of the scope in progress
+	run   *scopeCloseRun // the running shutdown that others join, or nil
 }
 
 // ID returns the unique identifier of the scope.
@@ -476,13 +483,16 @@ func (s *Scope) joinClose() (run *scopeCloseRun, winner bool) {
 	root.lifecycleMu.Lock()
 	defer root.lifecycleMu.Unlock()
 
-	s.closing++
-	if s.closeRun != nil {
-		return s.closeRun, false
+	if s.closing == nil {
+		s.closing = &scopeClosing{}
 	}
-	s.closeRun = &scopeCloseRun{done: make(chan struct{})}
+	s.closing.count++
+	if s.closing.run != nil {
+		return s.closing.run, false
+	}
+	s.closing.run = &scopeCloseRun{done: make(chan struct{})}
 
-	return s.closeRun, true
+	return s.closing.run, true
 }
 
 // finishScopeClose publishes the report of the winning shutdown and releases
@@ -498,7 +508,7 @@ func (s *Scope) finishScopeClose(run *scopeCloseRun, report *ShutdownReport) {
 	defer root.lifecycleMu.Unlock()
 
 	run.report = report
-	s.closeRun = nil
+	s.closing.run = nil
 	close(run.done)
 }
 
@@ -547,7 +557,7 @@ func (s *Scope) endClosing() {
 	s.rootScope.lifecycleMu.Lock()
 	defer s.rootScope.lifecycleMu.Unlock()
 
-	s.closing--
+	s.closing.count--
 }
 
 // runScopeObserverHooks runs scope observer hooks for s in order, recovering
