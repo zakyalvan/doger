@@ -27,7 +27,9 @@ func InvokeCollection[T any](i Injector) Collection[T] {
 // own, so that its service is excluded, its dependency on each member is
 // recorded and cycles through its build chain are reported, as [InvokeAll]
 // called from r does. Code outside a provider passes nil: the read then uses
-// no build chain and records no dependency.
+// no build chain and records no dependency. The reader is excluded by name,
+// as [InvokeAs] skips its invoker: a reader in a child scope that shadows a
+// member of the holder's scope with its own name excludes that member too.
 func (c Collection[T]) All(r Injector) ([]T, error) {
 	return invokeAllByGenericType[T](c.source(r))
 }

@@ -119,6 +119,23 @@ Examples:
   | implementing "EventHandler"  |
 ```
 
+#### Scenario: The reader is excluded by name
+```gherkin
+Given lazy "bus" implementing "EventHandler" in the root whose provider stores c := InvokeCollection[EventHandler](i)
+And lazy "app" and "console" implementing "EventHandler" in the root
+And child scope "child" with lazy "app", not an EventHandler, whose provider invokes "bus", then calls c.Map(<reader>) on bus's collection and keeps the member names
+When the consumer invokes "app" from "child", then reads c.Map(nil) from the root
+Then both invocations return a nil error
+And the read with <reader> has the members <members>
+
+Examples:
+  | reader                   | members        |
+  | i, the child app's own   | [console]      |
+  | nil                      | [app, console] |
+```
+
+The child's "app" shares its name with the root's "app", so a read with its own injector excludes the root's "app" as well. Including it would fail with `ErrCircularDependency` (the name `app` is already in the build chain), and `InvokeAs` skips its invoker by name in the same way.
+
 #### Scenario: A read with nil records no edge
 ```gherkin
 Given lazy "console" implementing "EventHandler"
@@ -182,7 +199,7 @@ Examples:
 <!-- cases: 3 zero values: nil reader -->
 <!-- cases: N/A 4 boundaries: covered by the main requirement -->
 <!-- cases: 5 errors: a cycle through the reader's own chain -->
-<!-- cases: 6 duplicates: the reader's own service is excluded, as for InvokeAll -->
+<!-- cases: 6 duplicates: the reader's own service is excluded, as for InvokeAll; by name, so a same-named member of the holder's scope it shadows is excluded too -->
 <!-- cases: 7 lifecycle: reads during and after providers; finished invocations never count -->
 <!-- cases: 8 concurrency: a goroutine outside the build chain waits for the outer provider instead of failing (former hazard 1) -->
 <!-- cases: N/A 9 panics: as for InvokeAll -->
