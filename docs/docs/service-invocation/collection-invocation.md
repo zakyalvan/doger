@@ -147,4 +147,4 @@ doger.Provide(injector, func(i doger.Injector) (*Bus, error) {
 handlers, err := bus.handlers.All() // includes them
 ```
 
-When the collection was created from a provider's injector, every read excludes that provider's service and records its dependency on each member, so shutdown order stays correct. A `Collection` is safe to copy and to read concurrently.
+When the collection was created from a provider's injector, every read excludes that provider's service. A read made while the provider runs follows `InvokeAll` exactly: it detects cycles and records the provider's dependency on each member. Once the provider has returned, reads resolve from the provider's scope without its build-time invocation chain and record no dependency, because a member may itself depend on the holder: recording the reverse edge would create a cycle, and the stale chain would report a false circular dependency. Resolve with `InvokeAll` inside the provider if shutdown order must follow the members. A `Collection` is safe to copy and to read concurrently.

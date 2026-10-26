@@ -373,9 +373,9 @@ Rules:
 
 ## 54. Live-collection reads after the provider returned (live-collections; design V5)
 
-- [ ] 54.1 RED: add `TestCollection_AfterProviderReturned` (2 rows) to `collection_test.go` and change `TestCollection_HeldByProvider`'s explain assertion to the updated scenario (no edges recorded by reads after the provider returned); verify `go test -race -run TestCollection_ .` fails with a circular-dependency error and with the recorded edges
-- [ ] 54.2 GREEN: mark a provider's virtual scope returned once `getInstance` returned, and resolve reads on a returned scope from its underlying scope, excluding only the holder, without recording edges; verify the 54.1 command passes, the Part K tables pass unchanged, and `make test` is green
-- [ ] 54.3 REFACTOR: *Introduce Parameter Object* for the collection pipeline's exclusion and edge options if it takes more than three parameters; update the `InvokeCollection` godoc and the collection page; verify `make test`, `make lint` and the docs lint and build pass
+- [x] 54.1 RED: add `TestCollection_AfterProviderReturned` (2 rows) to `collection_test.go` and change `TestCollection_HeldByProvider`'s explain assertion to the updated scenario (no edges recorded by reads after the provider returned); verify `go test -race -run TestCollection_ .` fails with a circular-dependency error and with the recorded edges
+- [x] 54.2 GREEN: mark a provider's virtual scope returned once `getInstance` returned, and resolve reads on a returned scope from its underlying scope, excluding only the holder, without recording edges; verify the 54.1 command passes, the Part K tables pass unchanged, and `make test` is green
+- [x] 54.3 REFACTOR: *Introduce Parameter Object* for the collection pipeline's exclusion and edge options if it takes more than three parameters; update the `InvokeCollection` godoc and the collection page; verify `make test`, `make lint` and the docs lint and build pass
 
 ## 55. The `*` tag requires exactly map[string] (collection-struct-injection; design V6)
 

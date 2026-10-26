@@ -3,6 +3,7 @@ package doger
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 )
 
 var _ Injector = (*virtualScope)(nil)
@@ -37,6 +38,7 @@ func newVirtualScope(predecessor Injector, invokerChain []string) *virtualScope 
 type virtualScope struct {
 	self         Injector
 	invokerChain []string
+	returned     atomic.Bool // the provider that received it has returned
 }
 
 // pass through

@@ -89,7 +89,54 @@ func TestCollection_HeldByProvider(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, []string{"console", "audit"}, handlerNames(peers))
-	assert.Equal(t, []string{"audit", "console"}, explainedNames(t, root, "bus", false))
+	assert.Empty(t, explainedNames(t, root, "bus", false))
+}
+
+func TestCollection_AfterProviderReturned(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		read func(c Collection[EventHandler]) ([]string, error)
+	}{
+		{name: "All", read: func(c Collection[EventHandler]) ([]string, error) {
+			handlers, err := c.All()
+			return handlerNames(handlers), err
+		}},
+		{name: "Map", read: func(c Collection[EventHandler]) ([]string, error) {
+			handlers, err := c.Map()
+			return slices.Collect(maps.Keys(handlers)), err
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+			is := assert.New(t)
+
+			root := New()
+			ProvideNamed(root, "app", func(i Injector) (*ConsoleHandler, error) {
+				if _, err := InvokeNamed[*busHandler](i, "bus"); err != nil {
+					return nil, err
+				}
+				return newConsole("app"), nil
+			})
+			ProvideNamed(root, "bus", func(i Injector) (*busHandler, error) {
+				return &busHandler{handlerBase: handlerBase{"bus"}, peers: InvokeCollection[EventHandler](i)}, nil
+			})
+			_, err := InvokeNamed[*ConsoleHandler](root, "app")
+			require.NoError(t, err)
+			bus, err := InvokeNamed[*busHandler](root, "bus")
+			require.NoError(t, err)
+
+			names, err := tt.read(bus.peers)
+
+			is.NoError(err)
+			is.Equal([]string{"app"}, names)
+			is.NotContains(explainedNames(t, root, "bus", false), "app")
+		})
+	}
 }
 
 func TestCollection_ReadOutcomes(t *testing.T) {

@@ -388,14 +388,25 @@ func collectionCandidatesFor(injector Injector, target reflect.Type) []collectio
 }
 
 // invokingServiceName returns the name of the service whose provider is
-// running, when injector is a provider's virtual scope.
+// running, when injector is a provider's virtual scope, or the holder of a
+// live collection read after that provider returned.
 func invokingServiceName(injector Injector) (string, bool) {
-	vScope, ok := injector.(*virtualScope)
-	if !ok {
+	switch injector := injector.(type) {
+	case *virtualScope:
+		return injector.getLastInvokerName()
+	case detachedInjector:
+		return injector.holder, true
+	default:
 		return "", false
 	}
+}
 
-	return vScope.getLastInvokerName()
+// detachedInjector is the injector of a provider that has returned, as a
+// live collection it created reads it: members resolve from the provider's
+// scope and exclude holder, with no invoker chain and no dependency edge.
+type detachedInjector struct {
+	Injector
+	holder string
 }
 
 // selectByType returns the visible service assignable to target, aliases
@@ -644,6 +655,11 @@ func humanReadableInvokerChain(invokerChain []string) string {
 }
 
 func handleProviderPanic[T any](provider Provider[T], i Injector) (svc T, err error) {
+	if vScope, ok := i.(*virtualScope); ok {
+		// live collections created by the provider read without its chain
+		defer vScope.returned.Store(true)
+	}
+
 	defer func() {
 		if r := recover(); r != nil {
 			if e, ok := r.(error); ok {
