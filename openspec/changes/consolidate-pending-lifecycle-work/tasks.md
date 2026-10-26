@@ -322,10 +322,10 @@ Rules:
 
 ## 47. Per-service health checks honor HealthCheckTimeout (health-check-timeouts; design S6)
 
-- [ ] 47.1 RED: add `TestHealthCheck_PerServiceTimeout` (6 rows, fake clock in `synctest.Test`) and `TestHealthCheck_PerServiceErrorInTime` to `healthcheck_timeout_test.go`; verify `go test -race -run 'TestHealthCheck_PerService' .` fails on the timeout rows (nil instead of the timeout error)
-- [ ] 47.2 GREEN: wrap the per-service functions' context with `clockwork.WithTimeout(ctx, clock, HealthCheckTimeout)` when the option is positive (design S6); verify the 47.1 command passes, the existing health-check suites pass unchanged, and `make test` is green
-- [ ] 47.3 REFACTOR: *Extract Function* `perServiceHealthCheckContext(injector, ctx)`; verify `make test` and `make lint` pass
-- [ ] 47.4 Document it on the healthchecker page and the options page, plus an upgrading-page entry (flagged); verify the docs lint and build pass
+- [x] 47.1 RED: add `TestHealthCheck_PerServiceTimeout` (6 rows, fake clock in `synctest.Test`) and `TestHealthCheck_PerServiceErrorInTime` to `healthcheck_timeout_test.go`; verify `go test -race -run 'TestHealthCheck_PerService' .` fails on the timeout rows (nil instead of the timeout error)
+- [x] 47.2 GREEN: wrap the per-service functions' context with `clockwork.WithTimeout(ctx, clock, HealthCheckTimeout)` when the option is positive (design S6); verify the 47.1 command passes, the existing health-check suites pass unchanged, and `make test` is green
+- [x] 47.3 REFACTOR: *Extract Function* `perServiceHealthCheckContext(injector, ctx)`; verify `make test` and `make lint` pass
+- [x] 47.4 Document it on the healthchecker page and the options page, plus an upgrading-page entry (flagged); verify the docs lint and build pass
 
 ## 48. Integration checks
 

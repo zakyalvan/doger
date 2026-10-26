@@ -74,3 +74,9 @@ Since the previous pick was random, no code could rely on a specific one, but a 
 **BREAKING (edge case).** In `InvokeStruct`, the tag value `*` now means "every service assignable to the element type": a `[]E` field receives `InvokeAll[E]`, and a `map[string]E` field receives `InvokeAllMap[E]`. A service literally named `*` can no longer be injected through a struct tag, and `*` on any other field kind is an error.
 
 Migration: rename a service called `*`, or inject it by type.
+
+## Single-service health checks honor HealthCheckTimeout {#per-service-health-check-timeout}
+
+`HealthCheck[T]`, `HealthCheckWithContext[T]`, `HealthCheckNamed` and `HealthCheckNamedWithContext` are now bounded by `InjectorOpts.HealthCheckTimeout` when it is greater than zero, like each check of `injector.HealthCheck()`. They used to run unbounded. `HealthCheckGlobalTimeout` still does not apply to them.
+
+Migration: none if `HealthCheckTimeout` is `0`. Otherwise, a single-service check that runs longer than the timeout now returns an error matching `ErrHealthCheckTimeout`.

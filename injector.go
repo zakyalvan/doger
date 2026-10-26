@@ -251,7 +251,10 @@ type InjectorOpts struct {
 	HealthCheckGlobalTimeout time.Duration
 
 	// HealthCheckTimeout sets a timeout for individual service health checks.
-	// This timeout applies to each service's health check method.
+	// This timeout applies to each service's health check method, both in
+	// HealthCheck() and in the single-service HealthCheck[T],
+	// HealthCheckWithContext[T], HealthCheckNamed and
+	// HealthCheckNamedWithContext functions.
 	// Default: no timeout (individual health checks can run indefinitely).
 	HealthCheckTimeout time.Duration
 

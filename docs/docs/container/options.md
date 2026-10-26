@@ -79,7 +79,7 @@ injector := doger.NewWithOpts(&doger.InjectorOpts{
 
     HealthCheckParallelism:   100,
     HealthCheckGlobalTimeout: 1 * time.Second,
-    HealthCheckTimeout:       100 * time.Millisecond,
+    HealthCheckTimeout:       100 * time.Millisecond, // also bounds HealthCheck[T] and HealthCheckNamed
 
     Clock: nil, // nil: the real clock
     DisableStarterAutoDetection: false, // true: Start only starts AsStarter() services
