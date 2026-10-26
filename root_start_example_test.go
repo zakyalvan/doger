@@ -119,3 +119,21 @@ func ExampleRootScope_Refresh() {
 	// reports started
 	// tenant-worker started
 }
+
+func ExampleScope_Start() {
+	root := New()
+	_ = root.Start()
+
+	// A tenant scope created after Start, with its own workers.
+	tenant := root.Scope("tenant-a")
+	ProvideNamedValue(tenant, "sync", &exampleWorker{name: "tenant-a sync"})
+	other := root.Scope("tenant-b")
+	ProvideNamedValue(other, "sync", &exampleWorker{name: "tenant-b sync"})
+
+	// Starts tenant-a and its descendants only.
+	if err := tenant.Start(); err != nil {
+		fmt.Println(err)
+	}
+	// Output:
+	// tenant-a sync started
+}

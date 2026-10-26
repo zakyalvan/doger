@@ -203,3 +203,16 @@ err := root.Refresh() // starts both workers
 - `Refresh` fires no [container hook](./container-hooks.md).
 - Before the first successful `Start`, it returns an error matching `doger.ErrNotStarted`. Once root `Shutdown` began, it returns an error matching `doger.ErrStartAfterShutdown`, which takes precedence. It starts nothing in either case.
 - Concurrent `Refresh` calls run one at a time. Never call `Refresh` synchronously from code that runs during a `Refresh` (a Starter, a kind handler, a provider or a hook): it would wait for itself.
+
+### Starting one scope {#scope-start}
+
+`scope.Start()` (or `StartWithContext(ctx)`) does what `Refresh` does, restricted to that scope and its descendants. It is the natural way to start a tenant or plugin scope created after `Start`:
+
+```go
+tenant := root.Scope("tenant-a")
+doger.Provide(tenant, NewTenantSync)
+
+err := tenant.Start() // starts tenant-a and its child scopes only
+```
+
+Services of ancestor scopes that the subtree depends on are built as needed, but `scope.Start` does not start them: `Refresh` does. On the root's own scope (for example the scope a root service's provider works with), `Start` behaves as `Refresh`. `scope.Start` follows the same rules as `Refresh`: `ErrNotStarted`, `ErrStartAfterShutdown`, at most once per service, and calls serialized with `Refresh`.

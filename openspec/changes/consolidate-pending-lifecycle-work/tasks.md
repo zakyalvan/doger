@@ -235,10 +235,10 @@ Rules:
 
 ## 34. Scope.Start starts a subtree (container-start; design P2)
 
-- [ ] 34.1 RED: add `TestScopeStart_Subtree`, `TestScopeStart_RootScope` and the two `tenant.Start()` rows of `TestIncrementalStart_Phase`; verify `go test -race -run 'TestScopeStart_|TestIncrementalStart_Phase' .` fails to compile only on `Scope.Start`
-- [ ] 34.2 GREEN: add `Scope.Start`/`StartWithContext` running the pipeline with `roots = [s]`, delegating to Refresh on the root's own scope (design P2); verify the 34.1 command passes and `make test` is green
-- [ ] 34.3 REFACTOR: none needed if 34.2 only calls `runPipeline`; otherwise *Inline Function* any wrapper it left; verify `make test` and `make lint` pass
-- [ ] 34.4 Add `ExampleScope_Start` and the scope-start section of the starter page; verify the example and the docs lint and build pass
+- [x] 34.1 RED: add `TestScopeStart_Subtree`, `TestScopeStart_RootScope` and the two `tenant.Start()` rows of `TestIncrementalStart_Phase`; verify `go test -race -run 'TestScopeStart_|TestIncrementalStart_Phase' .` fails to compile only on `Scope.Start`
+- [x] 34.2 GREEN: add `Scope.Start`/`StartWithContext` running the pipeline with `roots = [s]`, delegating to Refresh on the root's own scope (design P2); verify the 34.1 command passes and `make test` is green
+- [x] 34.3 REFACTOR: none needed if 34.2 only calls `runPipeline`; otherwise *Inline Function* any wrapper it left; verify `make test` and `make lint` pass
+- [x] 34.4 Add `ExampleScope_Start` and the scope-start section of the starter page; verify the example and the docs lint and build pass
 
 ## 35. Incremental starts are serialized and cancelled by Shutdown (container-start; design P1, P2)
 

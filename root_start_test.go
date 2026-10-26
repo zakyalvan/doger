@@ -1401,6 +1401,18 @@ func TestIncrementalStart_Phase(t *testing.T) {
 			want:      ErrNotStarted,
 		},
 		{
+			name:      "nothing done, tenant.Start",
+			previous:  func(*RootScope) {},
+			operation: func(_ *RootScope, tenant *Scope) error { return tenant.Start() },
+			want:      ErrNotStarted,
+		},
+		{
+			name:      "Shutdown without Start, tenant.Start",
+			previous:  func(root *RootScope) { root.Shutdown() },
+			operation: func(_ *RootScope, tenant *Scope) error { return tenant.Start() },
+			want:      ErrStartAfterShutdown,
+		},
+		{
 			name: "Start then Shutdown, root.Refresh",
 			previous: func(root *RootScope) {
 				_ = root.Start()
@@ -1434,4 +1446,43 @@ func TestIncrementalStart_Phase(t *testing.T) {
 			assert.Equal(t, before, starts.count("w"), "the operation started nothing")
 		})
 	}
+}
+
+func TestScopeStart_Subtree(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+	is := assert.New(t)
+
+	root := New()
+	require.NoError(t, root.Start())
+	starts := &countingStarters{}
+	tenantA := root.Scope("tenant-a")
+	provideCountedStarter(tenantA, starts, "wa")
+	tenantB := root.Scope("tenant-b")
+	provideCountedStarter(tenantB, starts, "wb")
+	jobs := tenantA.Scope("jobs")
+	provideCountedStarter(jobs, starts, "cron")
+	provideCountedStarter(root, starts, "late")
+
+	is.NoError(tenantA.Start())
+
+	is.Equal([]string{"wa", "cron"}, starts.list())
+	is.Equal(0, starts.count("wb"))
+	is.Equal(0, starts.count("late"))
+}
+
+func TestScopeStart_RootScope(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	require.NoError(t, root.Start())
+	starts := &countingStarters{}
+	provideCountedStarter(root, starts, "late")
+
+	// the *Scope a root service's provider works with
+	scope := root.self
+
+	assert.NoError(t, scope.Start())
+	assert.Equal(t, 1, starts.count("late"))
 }

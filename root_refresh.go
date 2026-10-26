@@ -103,3 +103,27 @@ func (s *RootScope) markStarted(service any) {
 	}
 	s.started[service] = struct{}{}
 }
+
+// Start starts what is not started yet in this scope and its descendants,
+// with context.Background(); see [Scope.StartWithContext].
+func (s *Scope) Start() error {
+	return s.StartWithContext(context.Background())
+}
+
+// StartWithContext does what [RootScope.RefreshWithContext] does, restricted
+// to this scope and its descendants: it builds their services that are not
+// started or handled yet, runs kind handlers for their new components and
+// starts their Starters. Ancestor services the subtree depends on are built
+// as needed but not started by it. On the root's own scope it is Refresh.
+//
+// It follows the rules of Refresh: [ErrNotStarted] before the container's
+// first successful Start, [ErrStartAfterShutdown] once root Shutdown began,
+// calls serialized with Refresh, and never call it synchronously from code
+// running during a Refresh or Scope.Start.
+func (s *Scope) StartWithContext(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	return s.rootScope.startIncremental(ctx, s)
+}
