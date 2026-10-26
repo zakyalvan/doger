@@ -122,6 +122,20 @@ func ExampleRootScope_Refresh() {
 	// tenant-worker started
 }
 
+func ExampleRootScope_Refresh_notStarted() {
+	root := New()
+
+	// Refresh needs a container whose first Start succeeded.
+	err := root.Refresh()
+	fmt.Println(errors.Is(err, ErrNotStarted))
+
+	_ = root.Start()
+	fmt.Println(root.Refresh())
+	// Output:
+	// true
+	// <nil>
+}
+
 func ExampleScope_Start() {
 	root := New()
 	_ = root.Start()

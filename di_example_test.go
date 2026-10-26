@@ -531,6 +531,19 @@ func ExampleInvokeAllMap() {
 	// 2
 }
 
+func ExampleMustInvokeAllMap() {
+	injector := New()
+	ProvideNamed(injector, "email", func(Injector) (*exampleEmailNotifier, error) { return &exampleEmailNotifier{}, nil })
+	ProvideNamed(injector, "sms", func(Injector) (*exampleSMSNotifier, error) { return &exampleSMSNotifier{}, nil })
+
+	// Like InvokeAllMap, but panics on error.
+	notifiers := MustInvokeAllMap[exampleNotifier](injector)
+
+	fmt.Println(notifiers["email"].Notify("deploy done"))
+	// Output:
+	// email: deploy done
+}
+
 type exampleMiddleware struct {
 	name  string
 	order int

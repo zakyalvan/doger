@@ -1,6 +1,7 @@
 package doger
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 )
@@ -95,4 +96,16 @@ func ExampleExplainNamedService_source() {
 	// * cache (depends-on) from scope [root] -> depends-on
 	// * db from scope [root] -> invoked
 	// * job (declared) from scope [root] -> declared
+}
+
+func ExampleDependencySource_UnmarshalText() {
+	// The JSON of an explained edge decodes back, source included.
+	var edge ExplainServiceDependencyOutput
+	err := json.Unmarshal([]byte(`{"service": "cache", "source": "depends-on"}`), &edge)
+
+	fmt.Println(err, edge.Service, edge.Source)
+	fmt.Println(json.Unmarshal([]byte(`{"source": "other"}`), &edge))
+	// Output:
+	// <nil> cache depends-on
+	// DI: unknown dependency source "other"
 }

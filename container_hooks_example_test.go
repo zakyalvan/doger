@@ -149,6 +149,42 @@ func ExampleRootScope_AddScopeClosingHook() {
 	// closed tenant-a
 }
 
+func ExampleRootScope_AddScopeStartingHook() {
+	root := New()
+	_ = root.Start()
+
+	// Veto the start of a tenant scope, for example until its config exists.
+	root.AddScopeStartingHook(func(_ context.Context, scope *Scope) error {
+		if scope.Name() == "tenant-b" {
+			return errors.New("no config")
+		}
+		return nil
+	})
+
+	fmt.Println(root.Scope("tenant-a").Start())
+	fmt.Println(root.Scope("tenant-b").Start())
+	// Output:
+	// <nil>
+	// DI: scope `tenant-b` start aborted: no config
+}
+
+func ExampleRootScope_AddScopeStartedHook() {
+	root := New()
+	_ = root.Start()
+
+	// Runs once the tenant's services started.
+	root.AddScopeStartedHook(func(_ context.Context, scope *Scope) {
+		fmt.Println("started", scope.Name())
+	})
+
+	tenant := root.Scope("tenant-a")
+	ProvideNamedValue(tenant, "worker", &exampleWorker{name: "worker"})
+	_ = tenant.Start()
+	// Output:
+	// worker started
+	// started tenant-a
+}
+
 func ExampleRootScope_Phase() {
 	root := New()
 	fmt.Println(root.Phase())
