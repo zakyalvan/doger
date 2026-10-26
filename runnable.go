@@ -18,7 +18,7 @@ type Runner interface {
 var runnableKind = NewKind[Runner, struct{}]("runnable")
 
 // Runnable is the built-in kind of one-shot runners. By default, every root
-// container has a StageAfterStart handler for it that calls Run once per
+// container has an implicit StageAfterStart handler for it that calls Run once per
 // opted-in service, in dependency then registration order, and stops at the
 // first error. Replace it with Runnable.Handle.
 //
@@ -31,6 +31,14 @@ var Runnable = runnableKind
 func AsRunnable() ProvideOption {
 	return runnableKind.With(struct{}{})
 }
+
+// defaultRunnableEntry is the default Runnable handler entry.
+var defaultRunnableEntry = runnableKind.newEntry(StageAfterStart, runRunner)
+
+// defaultKinds is the kind list every new container starts with: the
+// default Runnable handler in the first slot. Containers share it, so New
+// does not allocate it; kind lists are copied before they are written.
+var defaultKinds = []kindEntry{defaultRunnableEntry}
 
 // runRunner is the default Runnable handler: it runs the runner inline.
 func runRunner(ctx context.Context, c Component[Runner, struct{}]) error {

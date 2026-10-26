@@ -18,10 +18,94 @@ var (
 	// ErrAlreadyStarted is returned by a Start call after the first one, whether
 	// the first one succeeded or failed.
 	ErrAlreadyStarted = errors.New("DI: container already started")
-	// ErrStartAfterShutdown is returned by Start once root Shutdown has begun.
-	// It is also the cause Shutdown gives the context of a running Start.
+	// ErrStartAfterShutdown is returned by Start, Refresh and Scope.Start once
+	// root Shutdown has begun. It is also the cause Shutdown gives the context
+	// of a running Start, Refresh or Scope.Start, so the error a run that
+	// Shutdown interrupted returns matches it.
 	ErrStartAfterShutdown = errors.New("DI: container is shut down")
+	// ErrNotStarted is returned by Refresh and Scope.Start while the
+	// container's first Start has not succeeded.
+	ErrNotStarted = errors.New("DI: container not started")
 )
+
+// StartOp names the step of Start that failed for a service.
+type StartOp string
+
+const (
+	// StartOpBuild is the build of a service (its provider or a declared
+	// dependency), or a check of its instance.
+	StartOpBuild StartOp = "build"
+	// StartOpStart is the Start method of a Starter.
+	StartOpStart StartOp = "start"
+	// StartOpHandle is a kind handler call for a component.
+	StartOpHandle StartOp = "handle"
+)
+
+// StartError is the error Start, Refresh and Scope.Start return when a
+// service or a kind handler fails. Errors that are not tied to a service (a
+// guard, a cancelled context, a cycle among the dependency edges checked
+// before the build) are not StartError values; a cycle met while building a
+// service, for example through [DependsOnNamed], is that service's build
+// failure.
+//
+// When a service opted in with [AsStarter] implements no Starter interface,
+// Op is StartOpStart and Error returns Cause's message without the "failed
+// to start service" prefix, because that message names the service already.
+//
+// Use errors.As to inspect it; errors.Is reaches Cause through Unwrap.
+type StartError struct {
+	Scope   *Scope  // scope the service is registered in
+	Service string  // name of the service
+	Kind    string  // name of the kind whose handler failed; empty unless Op is StartOpHandle
+	Op      StartOp // failed step
+	Cause   error   // underlying error
+
+	unprefixed bool // Error returns Cause's message as is
+}
+
+// newStartError returns the StartError of a service failing at op.
+func newStartError(op StartOp, scope *Scope, service, kind string, cause error) *StartError {
+	return &StartError{Scope: scope, Service: service, Kind: kind, Op: op, Cause: cause}
+}
+
+// Error returns the failure message, naming the service and its scope. A
+// nil Scope reads as an empty scope name and a nil Cause as <nil>, so a
+// value built by hand never panics.
+func (e *StartError) Error() string {
+	switch {
+	case e.unprefixed:
+		return e.causeText()
+	case e.Op == StartOpHandle:
+		return fmt.Sprintf("DI: kind `%s` failed for service `%s` in scope `%s`: %s", e.Kind, e.Service, e.scopeName(), e.causeText())
+	case e.Op == StartOpStart:
+		return fmt.Sprintf("DI: failed to start service `%s` in scope `%s`: %s", e.Service, e.scopeName(), e.causeText())
+	default:
+		return fmt.Sprintf("DI: failed to build service `%s` in scope `%s`: %s", e.Service, e.scopeName(), e.causeText())
+	}
+}
+
+// scopeName returns the name of Scope, or "" when it is nil.
+func (e *StartError) scopeName() string {
+	if e.Scope == nil {
+		return ""
+	}
+
+	return e.Scope.Name()
+}
+
+// causeText returns the message of Cause, or "<nil>" when it is nil.
+func (e *StartError) causeText() string {
+	if e.Cause == nil {
+		return "<nil>"
+	}
+
+	return e.Cause.Error()
+}
+
+// Unwrap returns Cause.
+func (e *StartError) Unwrap() error {
+	return e.Cause
+}
 
 // ShutdownReport represents the result of a shutdown operation.
 // It includes overall success, the list of services that were shut down,
@@ -88,7 +172,7 @@ func mergeShutdownReports(reports ...*ShutdownReport) *ShutdownReport {
 		out.ShutdownTime += r.ShutdownTime
 	}
 
-	out.Succeed = len(out.Errors) > 0
+	out.Succeed = len(out.Errors) == 0
 
 	return &out
 }

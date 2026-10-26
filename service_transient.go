@@ -58,7 +58,14 @@ func (s *serviceTransient[T]) getInstance(i Injector) (T, error) {
 		return empty[T](), err
 	}
 
-	return handleProviderPanic(s.provider, i)
+	instance, err := handleProviderPanic(s.provider, i)
+	if err != nil {
+		return empty[T](), err
+	}
+
+	onAfterBuild(i, s.name, instance)
+
+	return instance, nil
 }
 
 func (s *serviceTransient[T]) isHealthchecker() bool {

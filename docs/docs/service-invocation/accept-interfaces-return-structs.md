@@ -59,7 +59,7 @@ metric.Inc()    // <- r.counter will be incremented
 
 :::info
 
-The first matching service in the scope tree is returned.
+When several services match, the selection is deterministic: the service in the **nearest** scope (the invoking scope before its ancestors), then the **earliest registration** (an `Override` keeps the position of the registration it replaces), then the smallest service name. Aliases are candidates too. A service hidden by a service of the same name in a nearer scope is not a candidate, even when the nearer one does not match: this is the visibility rule of named resolution and of `doger.InvokeAll`. Called from a provider, the service that provider builds is skipped, as for `doger.InvokeAll`, and so is an alias whose target chain resolves to it, so a decorator can resolve the service it wraps. Use `doger.InvokeNamed` to pin a specific service.
 
 :::
 
@@ -73,7 +73,7 @@ Eg: `fmt.Stringer` might match dozens of services in a container.
 
 ### InvokeStruct and implicit aliasing {#invokestruct-and-implicit-aliasing}
 
-When using `doger.InvokeStruct`, if a field is tagged with an empty tag (eg: `` `do:""` ``) and the inferred name does not match a registered service, the injector will fall back to the first registered service that is assignable to the field type, equivalent to `doger.InvokeAs[T]` resolution. Prefer explicit names when multiple assignable services exist.
+When using `doger.InvokeStruct`, if a field is tagged with an empty tag (eg: `` `do:""` ``) and the inferred name does not match a registered service, the injector will fall back to resolution by type, selecting among the services assignable to the field type with the same rule as `doger.InvokeAs[T]`. Prefer explicit names when multiple assignable services exist.
 
 ## Explicit injection {#explicit-injection}
 
@@ -120,6 +120,21 @@ metric.Inc()    // <- r.counter will be incremented
 ```
 
 **Play: https://go.dev/play/p/_wGjnRJfwV8**
+
+### Aliases and shutdown {#aliases-and-shutdown}
+
+An alias never shuts its target down. Shutting a scope down, or calling `doger.Shutdown`/`doger.ShutdownNamed` on the alias name, removes the alias only. The target is shut down through its own registration, exactly once, even when the alias was invoked or lives in a child scope:
+
+```go
+child := injector.Scope("request")
+doger.As[*RequestPerSecond, Metric](child)
+_ = doger.MustInvoke[Metric](child)
+
+child.Shutdown()    // removes the alias; *RequestPerSecond keeps running
+injector.Shutdown() // shuts *RequestPerSecond down, once
+```
+
+To stop the target early, shut it down by its own name: `doger.ShutdownNamed(injector, doger.NameOf[*RequestPerSecond]())`.
 
 :::danger
 

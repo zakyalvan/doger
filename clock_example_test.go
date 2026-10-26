@@ -39,3 +39,36 @@ func ExampleInjectorOpts_clock() {
 	// Output:
 	// DI: health check timeout: context deadline exceeded
 }
+
+func ExampleInjectorOpts_healthCheckSingleTimeout() {
+	// HealthCheckTimeout bounds each check of HealthCheck(); single-service
+	// checks such as HealthCheckNamed get their own, longer bound here.
+	clock := clockwork.NewFakeClock()
+	injector := NewWithOpts(&InjectorOpts{
+		Clock:                    clock,
+		HealthCheckTimeout:       time.Second,
+		HealthCheckSingleTimeout: 10 * time.Second,
+	})
+
+	db := &clockExampleDatabase{release: make(chan struct{})}
+	defer close(db.release)
+	ProvideNamedValue(injector, "db", db)
+
+	result := make(chan error, 1)
+	go func() { result <- HealthCheckNamed(injector, "db") }()
+
+	_ = clock.BlockUntilContext(context.Background(), 1) // the 10s bound is armed
+	clock.Advance(time.Second)                           // HealthCheckTimeout does not apply
+	select {
+	case err := <-result:
+		fmt.Println("returned early:", err)
+	case <-time.After(10 * time.Millisecond):
+		fmt.Println("still running after 1s")
+	}
+
+	clock.Advance(9 * time.Second)
+	fmt.Println(<-result)
+	// Output:
+	// still running after 1s
+	// DI: health check timeout: context deadline exceeded
+}

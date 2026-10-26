@@ -1,6 +1,7 @@
 package doger
 
 import (
+	"encoding/json"
 	"fmt"
 	"slices"
 	"sync"
@@ -517,6 +518,202 @@ func TestDeclaredEdges_ShutdownOrder(t *testing.T) {
 
 			require.True(t, root.Shutdown().Succeed)
 			assert.Equal(t, []string{"scheduler", "job"}, rec.list())
+		})
+	}
+}
+
+// edgeSourceFixture builds the "Source per edge" setup: worker invokes db,
+// depends on cache, and is declared to depend on job.
+func edgeSourceFixture(t *testing.T) *RootScope {
+	t.Helper()
+
+	root := New()
+	rec := &callRecorder{}
+	provideRecorded(root, rec, "db")
+	provideRecorded(root, rec, "cache")
+	provideRecorded(root, rec, "job")
+	ProvideNamed(root, "worker", func(i Injector) (*depValue, error) {
+		if _, err := InvokeNamed[*depValue](i, "db"); err != nil {
+			return nil, err
+		}
+		return &depValue{name: "worker"}, nil
+	}, DependsOnNamed("cache"))
+	_, err := InvokeNamed[*depValue](root, "worker")
+	require.NoError(t, err)
+	require.NoError(t, DeclareDependency(root, "worker", "job"))
+
+	return root
+}
+
+func TestExplain_EdgeSource(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		extra   func(t *testing.T, root *RootScope)
+		marks   []string
+		noMarks []string
+	}{
+		{
+			name:    "nothing else",
+			extra:   func(*testing.T, *RootScope) {},
+			marks:   []string{"* cache (depends-on) from scope", "* job (declared) from scope", "* db from scope"},
+			noMarks: []string{"db (", "cache (invoked)"},
+		},
+		{
+			name: "db also declared",
+			extra: func(t *testing.T, root *RootScope) {
+				t.Helper()
+				require.NoError(t, DeclareDependency(root, "worker", "db"))
+			},
+			marks:   []string{"* db from scope"},
+			noMarks: []string{"db ("},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+			is := assert.New(t)
+
+			root := edgeSourceFixture(t)
+			tt.extra(t, root)
+
+			explained, ok := ExplainNamedService(root, "worker")
+			require.True(t, ok)
+
+			sources := map[string]DependencySource{}
+			for _, edge := range explained.Dependencies {
+				sources[edge.Service] = edge.Source
+			}
+			is.Equal(map[string]DependencySource{
+				"cache": DependencySourceDependsOn,
+				"db":    DependencySourceInvoked,
+				"job":   DependencySourceDeclared,
+			}, sources)
+
+			output := explained.String()
+			for _, mark := range tt.marks {
+				is.Contains(output, mark)
+			}
+			for _, mark := range tt.noMarks {
+				is.NotContains(output, mark)
+			}
+		})
+	}
+}
+
+func TestExplain_EdgeSourceStrongest(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	// both edges are declared first, then recorded a stronger way
+	root := New()
+	rec := &callRecorder{}
+	provideRecorded(root, rec, "db")
+	provideRecorded(root, rec, "cache")
+	provideRecorded(root, rec, "queue")
+	ProvideNamed(root, "worker", func(i Injector) (*depValue, error) {
+		if _, err := InvokeNamed[*depValue](i, "queue"); err != nil {
+			return nil, err
+		}
+		_, err := InvokeNamed[*depValue](i, "db")
+		return &depValue{name: "worker"}, err
+	}, DependsOnNamed("cache"), DependsOnNamed("queue"))
+	require.NoError(t, DeclareDependency(root, "worker", "db"))
+	require.NoError(t, DeclareDependency(root, "worker", "cache"))
+	_, err := InvokeNamed[*depValue](root, "worker")
+	require.NoError(t, err)
+
+	explained, ok := ExplainNamedService(root, "worker")
+	require.True(t, ok)
+	sources := map[string]DependencySource{}
+	for _, edge := range explained.Dependencies {
+		sources[edge.Service] = edge.Source
+	}
+
+	assert.Equal(t, map[string]DependencySource{
+		"db":    DependencySourceInvoked,   // declared, then invoked
+		"cache": DependencySourceDependsOn, // declared, then depends-on
+		"queue": DependencySourceInvoked,   // depends-on, then invoked
+	}, sources)
+}
+
+func TestExplain_EdgeSourceDependents(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := edgeSourceFixture(t)
+
+	explained, ok := ExplainNamedService(root, "job")
+	require.True(t, ok)
+	require.Len(t, explained.Dependents, 1)
+	assert.Equal(t, "worker", explained.Dependents[0].Service)
+	assert.Equal(t, DependencySourceDeclared, explained.Dependents[0].Source)
+}
+
+func TestExplain_EdgeSourceCompat(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+	is := assert.New(t)
+
+	root := New()
+	rec := &callRecorder{}
+	provideRecorded(root, rec, "db")
+	ProvideNamed(root, "worker", func(i Injector) (*depValue, error) {
+		_, err := InvokeNamed[*depValue](i, "db")
+		return &depValue{name: "worker"}, err
+	})
+	_, err := InvokeNamed[*depValue](root, "worker")
+	require.NoError(t, err)
+
+	explained, ok := ExplainNamedService(root, "worker")
+	require.True(t, ok)
+	require.Len(t, explained.Dependencies, 1)
+
+	// the output produced before edge sources existed
+	is.Equal("* db from scope [root]", explained.Dependencies[0].String())
+	is.Contains(explained.String(), "\nDependencies:\n* db from scope [root]\n\nDependents:\n")
+
+	encoded, err := json.Marshal(explained.Dependencies[0])
+	require.NoError(t, err)
+	is.Contains(string(encoded), `"source":"invoked"`)
+}
+
+func TestDependencySource_UnmarshalText(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		text   string
+		source DependencySource
+		errMsg string
+	}{
+		{text: "invoked", source: DependencySourceInvoked},
+		{text: "depends-on", source: DependencySourceDependsOn},
+		{text: "declared", source: DependencySourceDeclared},
+		{text: "other", errMsg: "other"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.text, func(t *testing.T) {
+			t.Parallel()
+			is := assert.New(t)
+
+			// start from another source, so that a decoder that never
+			// assigns the zero value (invoked) fails
+			out := ExplainServiceDependencyOutput{Source: DependencySourceDeclared}
+			if tt.source == DependencySourceDeclared {
+				out.Source = DependencySourceInvoked
+			}
+			err := json.Unmarshal([]byte(`{"service": "db", "source": "`+tt.text+`"}`), &out)
+
+			if tt.errMsg != "" {
+				is.ErrorContains(err, tt.errMsg)
+				return
+			}
+			is.NoError(err)
+			is.Equal(ExplainServiceDependencyOutput{Service: "db", Source: tt.source}, out)
 		})
 	}
 }

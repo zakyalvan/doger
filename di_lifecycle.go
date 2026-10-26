@@ -1,6 +1,11 @@
 package doger
 
-import "context"
+import (
+	"context"
+	"time"
+
+	"github.com/jonboulle/clockwork"
+)
 
 // Healthchecker is an interface that services can implement to provide health checking capabilities.
 // Services implementing this interface can be health-checked by the DI container to ensure they
@@ -165,6 +170,16 @@ type StarterWithContextAndError interface {
 	Start(context.Context) error
 }
 
+// Ordered positions a member in the slices returned by InvokeAll: lower
+// values come first, and a member that does not implement Ordered counts as
+// 0. The sort is stable, so members with equal values keep the default
+// order (ancestors first, then registration order). Ordered affects only
+// collections: never construction, start or shutdown order. A WithOrder
+// registration option takes precedence over it.
+type Ordered interface {
+	Order() int
+}
+
 // HealthCheck returns a service status, using type inference to determine the service name.
 // This function performs a health check on a service by inferring its name from the type T.
 // The service must implement either Healthchecker or HealthcheckerWithContext interface.
@@ -247,6 +262,13 @@ func HealthCheckNamed(i Injector, name string) error {
 //
 // Returns an error if the health check fails, or nil if the service is healthy.
 //
+// The check is bounded, on the injector's clock, by
+// InjectorOpts.HealthCheckSingleTimeout when it is set (a negative value
+// means no bound), and otherwise by HealthCheckTimeout when it is greater
+// than zero, as each check of HealthCheck() is; HealthCheckGlobalTimeout
+// does not apply. HealthCheck, HealthCheckWithContext
+// and HealthCheckNamed go through this function and follow the same rule.
+//
 // Example:
 //
 //	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -257,8 +279,44 @@ func HealthCheckNamed(i Injector, name string) error {
 //	    log.Printf("Main database health check failed: %v", err)
 //	}
 func HealthCheckNamedWithContext(ctx context.Context, i Injector, name string) error {
+	injector := getInjectorOrDefault(i)
+
+	opts := injector.RootScope().opts
+	ctx, cancel := healthCheckContextWithin(ctx, opts.Clock, opts.singleHealthCheckTimeout())
+	defer cancel()
+
 	// @TODO: should we queue the health check into the healthcheck pool ?
-	return getInjectorOrDefault(i).serviceHealthCheck(ctx, name)
+	return injector.serviceHealthCheck(ctx, name)
+}
+
+// perServiceHealthCheckContext bounds ctx by HealthCheckTimeout, on the
+// injector's clock, when it is greater than zero, as each check of
+// HealthCheck() is. HealthCheckGlobalTimeout does not apply.
+func perServiceHealthCheckContext(ctx context.Context, injector Injector) (context.Context, context.CancelFunc) {
+	opts := injector.RootScope().opts
+	return healthCheckContextWithin(ctx, opts.Clock, opts.HealthCheckTimeout)
+}
+
+// singleHealthCheckTimeout returns the bound of a single-service health
+// check: HealthCheckSingleTimeout, or HealthCheckTimeout when it is 0. A
+// value of 0 or less means no bound.
+func (o *InjectorOpts) singleHealthCheckTimeout() time.Duration {
+	if o.HealthCheckSingleTimeout != 0 {
+		return o.HealthCheckSingleTimeout
+	}
+
+	return o.HealthCheckTimeout
+}
+
+// healthCheckContextWithin bounds ctx by timeout on clock when timeout is
+// greater than zero, and leaves it unbounded otherwise.
+func healthCheckContextWithin(ctx context.Context, clock clockwork.Clock, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout <= 0 {
+		return ctx, func() {}
+	}
+
+	ctx = withHealthCheckDeadline(ctx, clock.Now().Add(timeout))
+	return clockwork.WithTimeout(ctx, clock, timeout)
 }
 
 // Shutdown stops a service, using type inference to determine the service name.

@@ -122,6 +122,17 @@ type InjectorOpts struct {
 	// This hook can be used for logging, metrics collection, or error handling.
 	HookAfterInvocation []func(scope *Scope, serviceName string, err error)
 
+	// HookAfterBuild is called with each instance the container builds:
+	// after every successful provider call (each transient instance
+	// included) and after an eager value's first successful invocation. It
+	// is not called for a failed build, a cached lazy instance or an alias,
+	// and runs between the before- and after-invocation hooks. A panic
+	// propagates to the caller, as for the other per-service hooks. It runs
+	// after the service released its lock, so it may invoke, health-check or
+	// explain that service; another goroutine may obtain the instance before
+	// the hook returned.
+	HookAfterBuild []func(scope *Scope, serviceName string, instance any)
+
 	// HookBeforeShutdown is called before a service is shut down.
 	// This hook can be used for cleanup preparation or logging.
 	HookBeforeShutdown []func(scope *Scope, serviceName string)
@@ -130,13 +141,117 @@ type InjectorOpts struct {
 	// This hook can be used for logging, metrics collection, or error handling.
 	HookAfterShutdown []func(scope *Scope, serviceName string, err error)
 
-	// HookBeforeStart is called by Start just before a service's Start method.
+	// HookBeforeStart is called by Start, Refresh and Scope.Start just before
+	// a service's Start method. With StartParallelism > 1, calls for
+	// different services may run concurrently.
 	HookBeforeStart []func(scope *Scope, serviceName string)
 
-	// HookAfterStart is called by Start just after a service's Start method,
-	// with the error the method returned, unwrapped (nil on success; a
-	// recovered panic as an error).
+	// HookAfterStart is called by Start, Refresh and Scope.Start just after a
+	// service's Start method, with the error the method returned, unwrapped
+	// (nil on success; a recovered panic as an error). With StartParallelism
+	// > 1, calls for different services may run concurrently.
 	HookAfterStart []func(scope *Scope, serviceName string, err error)
+
+	// HookContainerStarting is called by the root container's first Start,
+	// after its one-shot guard and before its context check, discovery or any
+	// instantiation, with the Start-time context. A non-nil error vetoes
+	// Start: the remaining Starting hooks do not run, nothing is built or
+	// started, and Start returns an error wrapping it. A panic is a veto too:
+	// Start returns an error containing the panic value (wrapping it when it
+	// is an error), and HookContainerPanic is not called.
+	//
+	// A Starting hook must not call root Shutdown synchronously without a
+	// deadline: Shutdown waits for the running Start, which waits for the hook.
+	// With a deadline, Shutdown returns a failed report when it expires, and
+	// Start then fails with an error matching ErrStartAfterShutdown.
+	HookContainerStarting []func(ctx context.Context, scope *RootScope) error
+
+	// HookContainerStarted is called by the first Start once its pipeline
+	// succeeded: after every Starter and every StageAfterStart handler,
+	// including the Runnable handler. It receives the context passed to
+	// Start. Use it for last wiring, such as route registration. It runs
+	// after the running Start was released, so it may call root Shutdown.
+	HookContainerStarted []func(ctx context.Context, scope *RootScope)
+
+	// HookContainerReady is called by the first Start after every Started
+	// hook has returned, with the context passed to Start. Use it to signal
+	// readiness to an orchestrator. It may call root Shutdown.
+	HookContainerReady []func(ctx context.Context, scope *RootScope)
+
+	// HookContainerFailed is called by the first Start when it fails after
+	// its one-shot guard, with the context passed to Start and the exact
+	// error Start returns. It may call root Shutdown, for example to clean up
+	// what did start. When a per-service hook panics during Start (such as
+	// HookBeforeStart or HookAfterBuild), the Failed hooks run with an error
+	// wrapping the panic value before Start re-raises it; a Failed hook panic
+	// then goes to HookContainerPanic when set, and is logged otherwise.
+	HookContainerFailed []func(ctx context.Context, scope *RootScope, err error)
+
+	// HookContainerClosing is called by the root Shutdown that begins the
+	// close phase (the first one), before any service is shut down, with the
+	// Shutdown context. It fires whether or not Start ran or succeeded.
+	//
+	// A Closing hook must not call root Shutdown synchronously without a
+	// deadline: that call waits for the running Shutdown, which waits for the
+	// hook. With a deadline, it returns a failed report when it expires.
+	//
+	// Ordering with Start: a Shutdown that begins while Start runs cancels
+	// it and fires Closing only after Start's pipeline returned, or after the
+	// Shutdown context ended. Once the pipeline has returned, Closing and
+	// Closed may run before or while the Started, Ready or Failed hooks run on
+	// the Start goroutine: hooks sharing state across these points must
+	// synchronize it.
+	HookContainerClosing []func(ctx context.Context, scope *RootScope)
+
+	// HookContainerClosed is called by the first root Shutdown once every
+	// service is shut down and the close phase is closed, with the Shutdown
+	// context and the report Shutdown returns. Mutating the report is
+	// unsupported. Concurrent Shutdown callers may return before the Closed
+	// hooks have run. A Closed hook may call root Shutdown, which returns a
+	// copy of the first report.
+	HookContainerClosed []func(ctx context.Context, scope *RootScope, report *ShutdownReport)
+
+	// HookScopeStarting is called by Scope.Start on a child scope, after its
+	// phase check and before anything starts, with the scope. A non-nil error
+	// or a panic vetoes Scope.Start, which returns an error wrapping it. It is
+	// not called when the scope, or one of its ancestors, is shutting down:
+	// Scope.Start then starts nothing and returns nil. The root's own scope
+	// never fires scope hooks.
+	HookScopeStarting []func(ctx context.Context, scope *Scope) error
+
+	// HookScopeStarted is called by Scope.Start on a child scope once its
+	// services started successfully. It is not called when the scope, or one
+	// of its ancestors, was shutting down, so that Scope.Start started
+	// nothing. A shutdown of the scope that begins after Scope.Start collected
+	// its services waits for those services to start, then runs its Closing
+	// hooks, so they may run during or before the Started hooks. A panic is
+	// recovered and dispatched like a container observer hook panic, with the
+	// point "scope-started" (see HookContainerPanic).
+	HookScopeStarted []func(ctx context.Context, scope *Scope)
+
+	// HookScopeClosing is called when a child scope shuts down, directly or
+	// as part of its parent's shutdown, after its children shut down and
+	// before its own services. Sibling scopes shut down in parallel, so their
+	// hooks may run concurrently. A panic is dispatched with the point
+	// "scope-closing" (see HookContainerPanic).
+	HookScopeClosing []func(ctx context.Context, scope *Scope)
+
+	// HookScopeClosed is called when a child scope shut down, after its
+	// services. A panic is dispatched with the point "scope-closed" (see
+	// HookContainerPanic).
+	HookScopeClosed []func(ctx context.Context, scope *Scope)
+
+	// HookContainerPanic receives the first panic recovered from a Started,
+	// Ready, Failed, Closing or Closed hook, once the operation is complete:
+	// every hook of the list has run, and so has the rest of Start or
+	// Shutdown. hook names the point ("started", "ready", "failed",
+	// "closing" or "closed"); later panics of the same operation are logged
+	// with Logf. Start or Shutdown then returns its normal result. Scope
+	// observer hooks follow the same policy for Scope.Start and a child
+	// scope shutdown, with the points "scope-started", "scope-closing" and
+	// "scope-closed". Default (nil): re-panic with the recovered value.
+	// Panics in Starting hooks are vetoes and never reach it.
+	HookContainerPanic func(scope *RootScope, hook string, recovered any)
 
 	// Logf is the logging function used by the DI container for internal logging.
 	// If not provided, no logging will occur. This function should handle the format
@@ -154,18 +269,30 @@ type InjectorOpts struct {
 	HealthCheckGlobalTimeout time.Duration
 
 	// HealthCheckTimeout sets a timeout for individual service health checks.
-	// This timeout applies to each service's health check method.
+	// This timeout applies to each service's health check method, both in
+	// HealthCheck() and, unless HealthCheckSingleTimeout is set, in the
+	// single-service HealthCheck[T], HealthCheckWithContext[T],
+	// HealthCheckNamed and HealthCheckNamedWithContext functions.
 	// Default: no timeout (individual health checks can run indefinitely).
 	HealthCheckTimeout time.Duration
+
+	// HealthCheckSingleTimeout bounds the single-service HealthCheck[T],
+	// HealthCheckWithContext[T], HealthCheckNamed and
+	// HealthCheckNamedWithContext functions in place of HealthCheckTimeout:
+	// a positive value is their bound and a negative value means no bound.
+	// Checks run by HealthCheck() keep HealthCheckTimeout.
+	// Default: 0, which keeps HealthCheckTimeout for them too.
+	HealthCheckSingleTimeout time.Duration
 
 	// StructTagKey specifies the tag key used for struct field injection.
 	// Default: "do" (see DefaultStructTagKey constant).
 	// This allows customization of the struct tag format for injection.
 	StructTagKey string
 
-	// Clock is the time source of the container. It measures HealthCheckTimeout
-	// and HealthCheckGlobalTimeout, lazy service build times, and shutdown
-	// durations. Child scopes and Clone use the root scope's clock.
+	// Clock is the time source of the container. It measures
+	// HealthCheckTimeout, HealthCheckSingleTimeout and HealthCheckGlobalTimeout,
+	// lazy service build times, and shutdown durations. Child scopes and Clone
+	// use the root scope's clock.
 	// Default: the real clock (clockwork.NewRealClock()).
 	// Set a clockwork.NewFakeClock() to control time in tests. A health check
 	// running on a fake clock must wait on ctx.Done(): ctx.Err() blocks on a
@@ -176,6 +303,15 @@ type InjectorOpts struct {
 	// registered with AsStarter. By default, every non-transient service whose
 	// registered type implements a Starter variant is started too.
 	DisableStarterAutoDetection bool
+
+	// StartParallelism is the number of Starters that Start, Refresh and
+	// Scope.Start may run concurrently, each only after every Starter it
+	// depends on has started. The first failure stops scheduling new
+	// Starters; running ones are awaited, then the failure is returned.
+	// Default: 0 or 1, sequential. With n > 1, HookBeforeStart and
+	// HookAfterStart may run concurrently and must synchronize their state.
+	// Kind handlers always run sequentially.
+	StartParallelism uint
 
 	// EnableRunnerAutoDetection makes Start run, as a Runnable, every
 	// non-transient service whose registered type implements Runner. By
@@ -190,19 +326,72 @@ func (o *InjectorOpts) copy() *InjectorOpts {
 		HookAfterRegistration:    append([]func(*Scope, string){}, o.HookAfterRegistration...),
 		HookBeforeInvocation:     append([]func(*Scope, string){}, o.HookBeforeInvocation...),
 		HookAfterInvocation:      append([]func(*Scope, string, error){}, o.HookAfterInvocation...),
+		HookAfterBuild:           append([]func(*Scope, string, any){}, o.HookAfterBuild...),
 		HookBeforeShutdown:       append([]func(*Scope, string){}, o.HookBeforeShutdown...),
 		HookAfterShutdown:        append([]func(*Scope, string, error){}, o.HookAfterShutdown...),
 		HookBeforeStart:          append([]func(*Scope, string){}, o.HookBeforeStart...),
 		HookAfterStart:           append([]func(*Scope, string, error){}, o.HookAfterStart...),
+		HookContainerStarting:    append([]func(context.Context, *RootScope) error{}, o.HookContainerStarting...),
+		HookContainerStarted:     append([]func(context.Context, *RootScope){}, o.HookContainerStarted...),
+		HookContainerReady:       append([]func(context.Context, *RootScope){}, o.HookContainerReady...),
+		HookContainerFailed:      append([]func(context.Context, *RootScope, error){}, o.HookContainerFailed...),
+		HookContainerClosing:     append([]func(context.Context, *RootScope){}, o.HookContainerClosing...),
+		HookContainerClosed:      append([]func(context.Context, *RootScope, *ShutdownReport){}, o.HookContainerClosed...),
+		HookContainerPanic:       o.HookContainerPanic,
+		HookScopeStarting:        append([]func(context.Context, *Scope) error{}, o.HookScopeStarting...),
+		HookScopeStarted:         append([]func(context.Context, *Scope){}, o.HookScopeStarted...),
+		HookScopeClosing:         append([]func(context.Context, *Scope){}, o.HookScopeClosing...),
+		HookScopeClosed:          append([]func(context.Context, *Scope){}, o.HookScopeClosed...),
 		Logf:                     o.Logf,
 		HealthCheckParallelism:   o.HealthCheckParallelism,
 		HealthCheckGlobalTimeout: o.HealthCheckGlobalTimeout,
 		HealthCheckTimeout:       o.HealthCheckTimeout,
+		HealthCheckSingleTimeout: o.HealthCheckSingleTimeout,
 		StructTagKey:             o.StructTagKey,
 		Clock:                    o.Clock,
 
 		DisableStarterAutoDetection: o.DisableStarterAutoDetection,
+		StartParallelism:            o.StartParallelism,
 		EnableRunnerAutoDetection:   o.EnableRunnerAutoDetection,
+	}
+}
+
+// initDefaults replaces unset options with their defaults: a no-op Logf,
+// empty hook lists and the real clock.
+func (o *InjectorOpts) initDefaults() {
+	if o.Logf == nil {
+		o.Logf = noOpLogf
+	}
+
+	emptyIfNil(&o.HookBeforeRegistration)
+	emptyIfNil(&o.HookAfterRegistration)
+	emptyIfNil(&o.HookBeforeInvocation)
+	emptyIfNil(&o.HookAfterInvocation)
+	emptyIfNil(&o.HookAfterBuild)
+	emptyIfNil(&o.HookBeforeShutdown)
+	emptyIfNil(&o.HookAfterShutdown)
+	emptyIfNil(&o.HookBeforeStart)
+	emptyIfNil(&o.HookAfterStart)
+	emptyIfNil(&o.HookContainerStarting)
+	emptyIfNil(&o.HookContainerStarted)
+	emptyIfNil(&o.HookContainerReady)
+	emptyIfNil(&o.HookContainerFailed)
+	emptyIfNil(&o.HookContainerClosing)
+	emptyIfNil(&o.HookContainerClosed)
+	emptyIfNil(&o.HookScopeStarting)
+	emptyIfNil(&o.HookScopeStarted)
+	emptyIfNil(&o.HookScopeClosing)
+	emptyIfNil(&o.HookScopeClosed)
+
+	if o.Clock == nil {
+		o.Clock = clockwork.NewRealClock()
+	}
+}
+
+// emptyIfNil replaces a nil slice with an empty one.
+func emptyIfNil[T any](s *[]T) {
+	if *s == nil {
+		*s = []T{}
 	}
 }
 
@@ -227,6 +416,14 @@ func (o *InjectorOpts) onBeforeInvocation(scope *Scope, serviceName string) {
 func (o *InjectorOpts) onAfterInvocation(scope *Scope, serviceName string, err error) {
 	for _, fn := range o.HookAfterInvocation {
 		fn(scope, serviceName, err)
+	}
+}
+
+func (o *InjectorOpts) onAfterBuild(scope *Scope, serviceName string, instance any) {
+	for _, fn := range o.HookAfterBuild {
+		if fn != nil {
+			fn(scope, serviceName, instance)
+		}
 	}
 }
 

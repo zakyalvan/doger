@@ -3,7 +3,10 @@ package doger
 import (
 	"context"
 	"errors"
+	"fmt"
+	"math"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -371,6 +374,24 @@ func TestStart_LateRegistrationNotStarted(t *testing.T) {
 	is.Equal(int32(0), instance.starts.Load())
 }
 
+func TestStart_LateScopeNotStarted(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+	is := assert.New(t)
+
+	root := New()
+	require.NoError(t, root.Start())
+	tenant := root.Scope("tenant")
+	instance := provideCounted(tenant, "worker", &startWithErr{})
+	_, err := InvokeNamed[*startWithErr](tenant, "worker")
+	require.NoError(t, err)
+
+	is.Equal(int32(0), instance.starts.Load(), "a scope created after Start is not started by it")
+
+	is.NoError(root.Refresh())
+	is.Equal(int32(1), instance.starts.Load())
+}
+
 func TestStart_DependencyOrder(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, time.Second)
@@ -408,6 +429,42 @@ func TestStart_DependencyOrder(t *testing.T) {
 	}
 	is.Contains(recorded, "build repo")
 	is.Equal([]string{"start db", "start http", "start consumer"}, recorded[firstStart:])
+	started, _ := tracked(root, wrapperOf(t, root.self, "repo"))
+	is.False(started, "repo is built but, not being a Starter, not started")
+}
+
+func TestStartError_StarterPanic(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+
+	tests := []struct {
+		name        string
+		parallelism uint
+	}{
+		{name: "sequential", parallelism: 0},
+		{name: "StartParallelism 2", parallelism: 2},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+			is := assert.New(t)
+
+			root := NewWithOpts(&InjectorOpts{StartParallelism: tt.parallelism})
+			provideLazy(root, "a", &ctxStarter{fn: func(context.Context) error { panic(errBoom) }})
+			provideLazy(root, "b", &errorStarter{})
+
+			err := root.Start()
+
+			var startErr *StartError
+			require.ErrorAs(t, err, &startErr)
+			is.Equal(StartOpStart, startErr.Op)
+			is.Equal("a", startErr.Service)
+			is.ErrorIs(err, errBoom)
+		})
+	}
 }
 
 func TestStart_ScopeTraversal(t *testing.T) {
@@ -1147,4 +1204,1074 @@ func TestStart_HooksSkipNonStarter(t *testing.T) {
 
 	is.ErrorContains(err, "DI: service `app.Lifecycle` was opted in with AsStarter but does not implement any Starter interface")
 	is.Empty(rec.list())
+}
+
+func TestStartError_Fields(t *testing.T) {
+	t.Parallel()
+
+	errBuild := errors.New("build failed")
+	errBoom := errors.New("boom")
+
+	tests := []struct {
+		name    string
+		setup   func(root *RootScope)
+		service string
+		kind    string
+		op      StartOp
+		cause   error
+		message string // the message before StartError existed
+	}{
+		{
+			name: "provider returns errBuild",
+			setup: func(root *RootScope) {
+				ProvideNamed(root, "b", func(Injector) (*startWithErr, error) { return nil, errBuild })
+			},
+			service: "b", op: StartOpBuild, cause: errBuild,
+			message: "DI: failed to build service `b` in scope `[root]`: build failed",
+		},
+		{
+			name: "Start returns errBoom",
+			setup: func(root *RootScope) {
+				provideLazy(root, "b", &errorStarter{err: errBoom})
+			},
+			service: "b", op: StartOpStart, cause: errBoom,
+			message: "DI: failed to start service `b` in scope `[root]`: boom",
+		},
+		{
+			name: "kind handler returns errBoom",
+			setup: func(root *RootScope) {
+				k := NewKind[Job, Spec]("k")
+				ProvideNamed(root, "j", func(Injector) (*CleanupJob, error) { return &CleanupJob{}, nil }, k.With(Spec{}))
+				k.Handle(root, StageBeforeStart, func(context.Context, Component[Job, Spec]) error { return errBoom })
+			},
+			service: "j", kind: "k", op: StartOpHandle, cause: errBoom,
+			message: "DI: kind `k` failed for service `j` in scope `[root]`: boom",
+		},
+		{
+			name: "missing declared dependency",
+			setup: func(root *RootScope) {
+				ProvideNamed(root, "b", func(Injector) (*startWithErr, error) { return &startWithErr{}, nil }, DependsOnNamed("missing"))
+			},
+			service: "b", op: StartOpBuild, cause: ErrServiceNotFound,
+			message: "DI: failed to build service `b` in scope `[root]`: DI: could not find service `missing`, available services: `b`, path: `b` -> `missing`",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+			is := assert.New(t)
+
+			root := New()
+			tt.setup(root)
+
+			err := root.Start()
+
+			var startErr *StartError
+			require.ErrorAs(t, err, &startErr)
+			is.Equal(tt.service, startErr.Service)
+			is.Equal("[root]", startErr.Scope.Name())
+			is.Equal(tt.kind, startErr.Kind)
+			is.Equal(tt.op, startErr.Op)
+			is.ErrorIs(err, tt.cause)
+			is.EqualError(err, tt.message)
+		})
+	}
+}
+
+func TestStartError_NotForGuards(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		start    func(root *RootScope) error
+		sentinel error
+	}{
+		{
+			name: "already started",
+			start: func(root *RootScope) error {
+				_ = root.Start()
+				return root.Start()
+			},
+			sentinel: ErrAlreadyStarted,
+		},
+		{
+			name: "already shut down",
+			start: func(root *RootScope) error {
+				root.Shutdown()
+				return root.Start()
+			},
+			sentinel: ErrStartAfterShutdown,
+		},
+		{
+			name: "context already cancelled",
+			start: func(root *RootScope) error {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return root.StartWithContext(ctx)
+			},
+			sentinel: context.Canceled,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+
+			root := New()
+			ProvideNamedValue(root, "b", &startWithErr{})
+
+			err := tt.start(root)
+
+			var startErr *StartError
+			assert.NotErrorAs(t, err, &startErr)
+			assert.ErrorIs(t, err, tt.sentinel)
+		})
+	}
+}
+
+// countingStarters counts Start calls per service name and records their order.
+type countingStarters struct {
+	mu     sync.Mutex
+	counts map[string]int
+	order  []string
+}
+
+func (c *countingStarters) record(name string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.counts == nil {
+		c.counts = map[string]int{}
+	}
+	c.counts[name]++
+	c.order = append(c.order, name)
+}
+
+func (c *countingStarters) count(name string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.counts[name]
+}
+
+func (c *countingStarters) reset() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.order = nil
+}
+
+func (c *countingStarters) list() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.order)
+}
+
+// countedStarter is a Starter reporting its starts to starts.
+type countedStarter struct {
+	name   string
+	starts *countingStarters
+}
+
+func (s *countedStarter) Start() error {
+	s.starts.record(s.name)
+	return nil
+}
+
+// provideCountedStarter registers lazy Starter name in scope.
+func provideCountedStarter(scope Injector, starts *countingStarters, name string, opts ...ProvideOption) {
+	ProvideNamed(scope, name, func(Injector) (*countedStarter, error) {
+		return &countedStarter{name: name, starts: starts}, nil
+	}, opts...)
+}
+
+func TestRefresh_StartsNew(t *testing.T) {
+	t.Parallel()
+
+	for _, times := range []int{1, 2} {
+		t.Run(fmt.Sprintf("%d", times), func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+			is := assert.New(t)
+
+			root := New()
+			starts := &countingStarters{}
+			provideCountedStarter(root, starts, "a")
+			require.NoError(t, root.Start())
+			starts.reset()
+
+			provideCountedStarter(root, starts, "late")
+			tenant := root.Scope("tenant")
+			provideCountedStarter(tenant, starts, "worker")
+
+			for call := range times {
+				is.NoError(root.Refresh())
+				if call == 0 {
+					is.Equal([]string{"late", "worker"}, starts.list())
+				}
+			}
+
+			is.Equal(1, starts.count("a"))
+			is.Equal(1, starts.count("late"))
+			is.Equal(1, starts.count("worker"))
+		})
+	}
+}
+
+func TestRefresh_NothingNew(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	starts := &countingStarters{}
+	provideCountedStarter(root, starts, "a")
+	require.NoError(t, root.Start())
+
+	assert.NoError(t, root.Refresh())
+	assert.Equal(t, 1, starts.count("a"))
+}
+
+func TestIncrementalStart_Phase(t *testing.T) {
+	t.Parallel()
+
+	errBuild := errors.New("build failed")
+
+	tests := []struct {
+		name      string
+		failA     bool
+		previous  func(root *RootScope)
+		operation func(root *RootScope, tenant *Scope) error
+		want      error
+	}{
+		{
+			name:      "nothing done, root.Refresh",
+			previous:  func(*RootScope) {},
+			operation: func(root *RootScope, _ *Scope) error { return root.Refresh() },
+			want:      ErrNotStarted,
+		},
+		{
+			name:      "Start failed, root.Refresh",
+			failA:     true,
+			previous:  func(root *RootScope) { _ = root.Start() },
+			operation: func(root *RootScope, _ *Scope) error { return root.Refresh() },
+			want:      ErrNotStarted,
+		},
+		{
+			name:      "nothing done, tenant.Start",
+			previous:  func(*RootScope) {},
+			operation: func(_ *RootScope, tenant *Scope) error { return tenant.Start() },
+			want:      ErrNotStarted,
+		},
+		{
+			name:      "Shutdown without Start, tenant.Start",
+			previous:  func(root *RootScope) { root.Shutdown() },
+			operation: func(_ *RootScope, tenant *Scope) error { return tenant.Start() },
+			want:      ErrStartAfterShutdown,
+		},
+		{
+			name: "Start then Shutdown, root.Refresh",
+			previous: func(root *RootScope) {
+				_ = root.Start()
+				root.Shutdown()
+			},
+			operation: func(root *RootScope, _ *Scope) error { return root.Refresh() },
+			want:      ErrStartAfterShutdown,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+
+			root := New()
+			starts := &countingStarters{}
+			if tt.failA {
+				ProvideNamed(root, "a", func(Injector) (*countedStarter, error) { return nil, errBuild })
+			} else {
+				provideCountedStarter(root, starts, "a")
+			}
+			tenant := root.Scope("tenant")
+			provideCountedStarter(tenant, starts, "w")
+			tt.previous(root)
+			before := starts.count("w") // the first Start may have started "w"
+
+			err := tt.operation(root, tenant)
+
+			assert.ErrorIs(t, err, tt.want)
+			assert.Equal(t, before, starts.count("w"), "the operation started nothing")
+		})
+	}
+}
+
+func TestScopeStart_Subtree(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+	is := assert.New(t)
+
+	root := New()
+	require.NoError(t, root.Start())
+	starts := &countingStarters{}
+	tenantA := root.Scope("tenant-a")
+	provideCountedStarter(tenantA, starts, "wa")
+	tenantB := root.Scope("tenant-b")
+	provideCountedStarter(tenantB, starts, "wb")
+	jobs := tenantA.Scope("jobs")
+	provideCountedStarter(jobs, starts, "cron")
+	provideCountedStarter(root, starts, "late")
+
+	is.NoError(tenantA.Start())
+
+	is.Equal([]string{"wa", "cron"}, starts.list())
+	is.Equal(0, starts.count("wb"))
+	is.Equal(0, starts.count("late"))
+}
+
+func TestScopeStart_RootScope(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	k := NewKind[Job, Spec]("k")
+	var scope *Scope
+	k.Handle(root, StageBeforeStart, func(_ context.Context, c Component[Job, Spec]) error {
+		scope = c.Scope // the *Scope a root service works with
+		return nil
+	})
+	ProvideNamed(root, "j", func(Injector) (*CleanupJob, error) { return &CleanupJob{name: "j"}, nil }, k.With(Spec{}))
+	require.NoError(t, root.Start())
+	require.NotNil(t, scope)
+	starts := &countingStarters{}
+	provideCountedStarter(root, starts, "late")
+
+	assert.NoError(t, scope.Start())
+	assert.Equal(t, 1, starts.count("late"))
+}
+
+func TestRefresh_Concurrent(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, 5*time.Second)
+	is := assert.New(t)
+
+	root := New()
+	require.NoError(t, root.Start())
+	starts := &countingStarters{}
+	for i := range 10 {
+		provideCountedStarter(root, starts, fmt.Sprintf("s%d", i))
+	}
+
+	errs := make(chan error, 10)
+	var wg sync.WaitGroup
+	for range 10 {
+		wg.Go(func() { errs <- root.Refresh() })
+	}
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		is.NoError(err)
+	}
+	for i := range 10 {
+		is.Equal(1, starts.count(fmt.Sprintf("s%d", i)))
+	}
+}
+
+func TestRefresh_ShutdownCancels(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		is := assert.New(t)
+
+		root := New()
+		require.NoError(t, root.Start())
+		entered := make(chan struct{})
+		ProvideNamed(root, "late", func(Injector) (*ctxStarter, error) {
+			return &ctxStarter{fn: func(ctx context.Context) error {
+				close(entered)
+				<-ctx.Done()
+				time.Sleep(time.Second) // returns 1s after the cancellation
+				return ctx.Err()
+			}}, nil
+		})
+
+		refreshErr := make(chan error, 1)
+		go func() { refreshErr <- root.Refresh() }()
+		<-entered
+
+		begin := time.Now()
+		report := root.Shutdown()
+		is.Equal(time.Second, time.Since(begin), "Shutdown waits for the cancelled Refresh")
+		// Shutdown is released when Refresh's run ends; let the goroutine
+		// deliver its result before the non-blocking check
+		synctest.Wait()
+
+		select {
+		case err := <-refreshErr:
+			is.ErrorIs(err, ErrStartAfterShutdown)
+		default:
+			is.Fail("Shutdown returned before Refresh returned")
+		}
+		is.True(report.Succeed, report.Error())
+	})
+}
+
+// sleepingStarter records "<name> start", sleeps for d (bubble time), then
+// records "<name> returned" and returns err.
+type sleepingStarter struct {
+	name string
+	d    time.Duration
+	err  error
+	rec  *callRecorder
+}
+
+func (s *sleepingStarter) Start() error {
+	s.rec.record(s.name + " start")
+	time.Sleep(s.d)
+	s.rec.record(s.name + " returned")
+	return s.err
+}
+
+func TestStart_Parallel(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		n       uint
+		elapsed time.Duration
+	}{
+		{n: 0, elapsed: 5 * time.Second},
+		{n: 1, elapsed: 5 * time.Second},
+		{n: 2, elapsed: 3 * time.Second},
+		{n: 3, elapsed: 2 * time.Second},
+		{n: 8, elapsed: 2 * time.Second},
+		{n: math.MaxUint, elapsed: 2 * time.Second},
+	}
+
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("%d", tt.n), func(t *testing.T) {
+			t.Parallel()
+
+			synctest.Test(t, func(t *testing.T) {
+				is := assert.New(t)
+
+				root := NewWithOpts(&InjectorOpts{StartParallelism: tt.n})
+				rec := &callRecorder{}
+				for _, name := range []string{"a", "b", "c", "d", "e"} {
+					ProvideNamed(root, name, func(i Injector) (*sleepingStarter, error) {
+						if name == "d" {
+							if _, err := InvokeNamed[*sleepingStarter](i, "a"); err != nil {
+								return nil, err
+							}
+						}
+						return &sleepingStarter{name: name, d: time.Second, rec: rec}, nil
+					})
+				}
+
+				begin := time.Now()
+				is.NoError(root.Start())
+
+				is.Equal(tt.elapsed, time.Since(begin))
+				events := rec.list()
+				is.Less(indexOf(events, "a returned"), indexOf(events, "d start"))
+			})
+		})
+	}
+}
+
+func TestStart_ParallelIncremental(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		scope func(root *RootScope) Injector
+		call  func(root *RootScope) error
+	}{
+		{
+			name:  "root.Refresh()",
+			scope: func(root *RootScope) Injector { return root },
+			call:  func(root *RootScope) error { return root.Refresh() },
+		},
+		{
+			name:  "tenant.Start()",
+			scope: func(root *RootScope) Injector { return root.Scope("tenant") },
+			call: func(root *RootScope) error {
+				tenant, _ := root.ChildByName("tenant")
+				return tenant.Start()
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			synctest.Test(t, func(t *testing.T) {
+				is := assert.New(t)
+
+				root := NewWithOpts(&InjectorOpts{StartParallelism: 3})
+				require.NoError(t, root.Start())
+				scope := tt.scope(root)
+				rec := &callRecorder{}
+				for _, name := range []string{"a", "b", "c"} {
+					ProvideNamed(scope, name, func(Injector) (*sleepingStarter, error) {
+						return &sleepingStarter{name: name, d: time.Second, rec: rec}, nil
+					})
+				}
+
+				begin := time.Now()
+				is.NoError(tt.call(root))
+
+				is.Equal(time.Second, time.Since(begin))
+				is.ElementsMatch([]string{"a start", "a returned", "b start", "b returned", "c start", "c returned"}, rec.list())
+			})
+		})
+	}
+}
+
+func TestStart_ParallelIncrementalDependencyOrder(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		scope bool // the run is tenant.Start(), not root.Refresh()
+	}{
+		{name: "root.Refresh()"},
+		{name: "tenant.Start()", scope: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			synctest.Test(t, func(t *testing.T) {
+				is := assert.New(t)
+
+				root := NewWithOpts(&InjectorOpts{StartParallelism: 3})
+				require.NoError(t, root.Start())
+				var scope Injector = root
+				run := root.Refresh
+				if tt.scope {
+					tenant := root.Scope("tenant")
+					scope, run = tenant, tenant.Start
+				}
+				rec := &callRecorder{}
+				for _, name := range []string{"a", "b", "c", "d"} {
+					ProvideNamed(scope, name, func(i Injector) (*sleepingStarter, error) {
+						if name == "d" {
+							if _, err := InvokeNamed[*sleepingStarter](i, "a"); err != nil {
+								return nil, err
+							}
+						}
+						d := time.Second
+						if name == "a" {
+							d = 2 * time.Second // b's or c's slot frees before a returns
+						}
+						return &sleepingStarter{name: name, d: d, rec: rec}, nil
+					})
+				}
+
+				begin := time.Now()
+				is.NoError(run())
+
+				// a, b and c start together; d waits for a
+				is.Equal(3*time.Second, time.Since(begin))
+				events := rec.list()
+				is.Less(indexOf(events, "a returned"), indexOf(events, "d start"))
+			})
+		})
+	}
+}
+
+// provideLazy registers value lazily under name, through a provider that
+// returns it, where a scenario says "lazy".
+func provideLazy[T any](scope Injector, name string, value T) {
+	ProvideNamed(scope, name, func(Injector) (T, error) { return value, nil })
+}
+
+func TestStart_ParallelFailure(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		incremental bool // "a", "b" and "c" are registered after Start and started by Refresh
+	}{
+		{name: "Start"},
+		{name: "Refresh", incremental: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			synctest.Test(t, func(t *testing.T) {
+				is := assert.New(t)
+
+				errBoom := errors.New("boom")
+				root := NewWithOpts(&InjectorOpts{StartParallelism: 2})
+				run := root.Start
+				if tt.incremental {
+					require.NoError(t, root.Start())
+					run = root.Refresh
+				}
+				rec := &callRecorder{}
+				provideLazy(root, "a", &sleepingStarter{name: "a", d: time.Second, err: errBoom, rec: rec})
+				provideLazy(root, "b", &sleepingStarter{name: "b", d: 2 * time.Second, rec: rec})
+				provideLazy(root, "c", &sleepingStarter{name: "c", d: time.Second, rec: rec})
+
+				begin := time.Now()
+				err := run()
+
+				// the first failure stops scheduling; the run waits for "b"
+				is.Equal(2*time.Second, time.Since(begin))
+				is.ErrorIs(err, errBoom)
+				is.ErrorContains(err, "`a`")
+				events := rec.list()
+				is.Equal(0, countOf(events, "c start"))
+				is.Equal(1, countOf(events, "b start"))
+			})
+		})
+	}
+}
+
+func TestStart_ParallelCancelStopsScheduling(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		incremental bool // the Starters are registered after Start and started by Refresh
+	}{
+		{name: "Start"},
+		{name: "Refresh", incremental: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+			is := assert.New(t)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			root := NewWithOpts(&InjectorOpts{StartParallelism: 2})
+			run := root.StartWithContext
+			if tt.incremental {
+				require.NoError(t, root.Start())
+				run = root.RefreshWithContext
+			}
+			aDone := make(chan struct{})
+			var cStarts atomic.Int32
+			// "a" cancels and succeeds; "b" succeeds once "a" returned, so no
+			// Starter fails and only the scheduler's own check can stop "c"
+			provideLazy(root, "a", &ctxStarter{fn: func(context.Context) error {
+				cancel()
+				close(aDone)
+				return nil
+			}})
+			provideLazy(root, "b", &ctxStarter{fn: func(context.Context) error {
+				<-aDone
+				return nil
+			}})
+			provideLazy(root, "c", &ctxStarter{fn: func(context.Context) error {
+				cStarts.Add(1)
+				return nil
+			}})
+
+			err := run(ctx)
+
+			is.ErrorIs(err, context.Canceled)
+			is.Equal(int32(0), cStarts.Load(), "c was scheduled after the cancel")
+		})
+	}
+}
+
+func TestStart_FailureThenShutdown(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		incremental bool
+	}{
+		{name: "Start", incremental: false},
+		{name: "Refresh", incremental: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			synctest.Test(t, func(t *testing.T) {
+				is := assert.New(t)
+
+				errBoom := errors.New("boom")
+				root := NewWithOpts(&InjectorOpts{StartParallelism: 2})
+				if tt.incremental {
+					require.NoError(t, root.Start())
+				}
+				bCancelled := make(chan struct{})
+				provideLazy(root, "a", &ctxStarter{fn: func(context.Context) error {
+					time.Sleep(time.Second)
+					return errBoom
+				}})
+				provideLazy(root, "b", &ctxStarter{fn: func(ctx context.Context) error {
+					select {
+					case <-ctx.Done():
+						close(bCancelled)
+						return ctx.Err()
+					case <-time.After(10 * time.Second):
+						return nil
+					}
+				}})
+				shutdownDone := make(chan struct{})
+				go func() {
+					defer close(shutdownDone)
+					time.Sleep(1500 * time.Millisecond)
+					root.Shutdown()
+				}()
+
+				var err error
+				if tt.incremental {
+					err = root.Refresh()
+				} else {
+					err = root.Start()
+				}
+				<-shutdownDone
+
+				is.ErrorIs(err, errBoom)
+				is.ErrorIs(err, ErrStartAfterShutdown)
+				select {
+				case <-bCancelled:
+				default:
+					is.Fail("Shutdown did not cancel b")
+				}
+			})
+		})
+	}
+}
+
+func TestStart_ParallelHooks(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, 5*time.Second)
+	is := assert.New(t)
+
+	rec := &callRecorder{}
+	root := NewWithOpts(&InjectorOpts{
+		StartParallelism: 4,
+		HookBeforeStart:  []func(*Scope, string){func(_ *Scope, name string) { rec.record("before " + name) }},
+		HookAfterStart:   []func(*Scope, string, error){func(_ *Scope, name string, _ error) { rec.record("after " + name) }},
+	})
+	starts := &countingStarters{}
+	for i := range 8 {
+		provideCountedStarter(root, starts, fmt.Sprintf("s%d", i))
+	}
+
+	require.NoError(t, root.Start())
+
+	events := rec.list()
+	for i := range 8 {
+		name := fmt.Sprintf("s%d", i)
+		is.Equal(1, countOf(events, "before "+name))
+		is.Equal(1, countOf(events, "after "+name))
+		is.Less(indexOf(events, "before "+name), indexOf(events, "after "+name))
+	}
+}
+
+// sleepyStarter sleeps 1s in Start, counting how many are inside Start.
+type sleepyStarter struct {
+	running *atomic.Int32
+	instant bool // return at once instead of sleeping 1s
+}
+
+func (s *sleepyStarter) Start() error {
+	s.running.Add(1)
+	defer s.running.Add(-1)
+	if !s.instant {
+		time.Sleep(time.Second)
+	}
+	return nil
+}
+
+func TestStart_ParallelHookPanic(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		n           uint
+		before      bool
+		incremental bool // the Starters are registered after Start and started by Refresh
+		phase       ContainerPhase
+	}{
+		{name: "n=1, HookBeforeStart", n: 1, before: true, phase: PhaseFailed},
+		{name: "n=4, HookBeforeStart", n: 4, before: true, phase: PhaseFailed},
+		{name: "n=4, HookAfterStart", n: 4, before: false, phase: PhaseFailed},
+		{name: "n=4, HookBeforeStart, Refresh", n: 4, before: true, incremental: true, phase: PhaseReady},
+		{name: "n=4, HookAfterStart, Refresh", n: 4, before: false, incremental: true, phase: PhaseReady},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				is := assert.New(t)
+
+				panicFor := func(name string) {
+					if name == "b" {
+						panic("hook-boom")
+					}
+				}
+				opts := &InjectorOpts{StartParallelism: tt.n}
+				if tt.before {
+					opts.HookBeforeStart = []func(*Scope, string){func(_ *Scope, name string) { panicFor(name) }}
+				} else {
+					opts.HookAfterStart = []func(*Scope, string, error){func(_ *Scope, name string, _ error) { panicFor(name) }}
+				}
+				root := NewWithOpts(opts)
+				run := root.Start
+				if tt.incremental {
+					require.NoError(t, root.Start())
+					run = root.Refresh
+				}
+				var running atomic.Int32
+				// "b" returns at once, so its hooks fire while "a" and "c" still run
+				for _, name := range []string{"a", "b", "c"} {
+					ProvideNamed(root, name, func(Injector) (*sleepyStarter, error) {
+						return &sleepyStarter{running: &running, instant: name == "b"}, nil
+					})
+				}
+
+				var recovered any
+				var runningAtPanic int32
+				func() {
+					defer func() {
+						recovered = recover()
+						runningAtPanic = running.Load()
+					}()
+					_ = run()
+				}()
+
+				is.Equal("hook-boom", recovered)
+				is.Zero(runningAtPanic, "Starters still inside Start when the panic was raised")
+				is.Equal(tt.phase, root.Phase())
+			})
+		})
+	}
+}
+
+// pausingWrapper pauses the first getServiceType call made once it is armed,
+// which start collection makes for every registered service, so a test can
+// act between a run's collection and its claim.
+type pausingWrapper struct {
+	serviceWrapperAny
+	armed   atomic.Bool
+	reached chan struct{}
+	release chan struct{}
+}
+
+func (w *pausingWrapper) getServiceType() ServiceType {
+	if w.armed.CompareAndSwap(true, false) {
+		close(w.reached)
+		<-w.release
+	}
+
+	return w.serviceWrapperAny.getServiceType()
+}
+
+// pauseCollection registers an armed pausingWrapper as "pause" in scope.
+// Collection walks scopes breadth-first, so it pauses after every scope
+// nearer to the run's root than scope.
+func pauseCollection(scope *Scope) *pausingWrapper {
+	ProvideNamedValue(scope, "pause", 0)
+	inner, _ := scope.serviceGet("pause")
+	w := &pausingWrapper{
+		serviceWrapperAny: inner.(serviceWrapperAny), //nolint:errcheck,forcetypeassert
+		reached:           make(chan struct{}),
+		release:           make(chan struct{}),
+	}
+	w.armed.Store(true)
+	scope.serviceSet("pause", w)
+
+	return w
+}
+
+func TestStart_ShutdownBetweenCollectAndClaim(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		ancestor   bool // the root registers its own lazy Starter "w"
+		scopeStart bool // the run is tenant.Start(), not root.Refresh()
+		rootStarts int
+	}{
+		{name: "Refresh", rootStarts: 0},
+		{name: "Refresh, root w", ancestor: true, rootStarts: 1},
+		{name: "Scope.Start", scopeStart: true, rootStarts: 0},
+		{name: "Scope.Start, root w", ancestor: true, scopeStart: true, rootStarts: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+			is := assert.New(t)
+
+			root := New()
+			rootStarts, tenantStarts := &countingStarters{}, &countingStarters{}
+			if tt.ancestor {
+				provideCountedStarter(root, rootStarts, "w")
+			}
+			require.NoError(t, root.Start())
+			tenant := root.Scope("tenant")
+			provideCountedStarter(tenant, tenantStarts, "w")
+
+			// collection visits "pause" after tenant's own services
+			pauseIn := root.Scope("other").Scope("deep")
+			run := root.Refresh
+			if tt.scopeStart {
+				pauseIn = tenant.Scope("jobs")
+				run = tenant.Start
+			}
+			pause := pauseCollection(pauseIn)
+
+			runErr := make(chan error, 1)
+			go func() { runErr <- run() }()
+			<-pause.reached
+			report := tenant.Shutdown()
+			close(pause.release)
+			err := <-runErr
+
+			is.True(report.Succeed)
+			is.NoError(err)
+			is.Zero(tenantStarts.count("w"))
+			is.Equal(tt.rootStarts, rootStarts.count("w"))
+		})
+	}
+}
+
+func TestStart_CallerCancelThenShutdown(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	tests := []struct {
+		name        string
+		parallelism uint
+		outcome     error // what "a" returns once released
+		incremental bool
+	}{
+		{name: "Start, failure", parallelism: 1, outcome: errBoom},
+		{name: "Refresh, failure", parallelism: 1, outcome: errBoom, incremental: true},
+		{name: "parallel Start, failure", parallelism: 4, outcome: errBoom},
+		{name: "parallel Refresh, failure", parallelism: 4, outcome: errBoom, incremental: true},
+		{name: "Start, nil", parallelism: 1},
+		{name: "Refresh, nil", parallelism: 1, incremental: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			synctest.Test(t, func(t *testing.T) {
+				is := assert.New(t)
+
+				root := NewWithOpts(&InjectorOpts{StartParallelism: tt.parallelism})
+				if tt.incremental {
+					require.NoError(t, root.Start())
+				}
+				entered, release := make(chan struct{}), make(chan struct{})
+				provideLazy(root, "a", &ctxStarter{fn: func(context.Context) error {
+					close(entered)
+					<-release
+					return tt.outcome
+				}})
+				bEntered := make(chan struct{})
+				if tt.parallelism > 1 {
+					// a second Starter, so the parallel scheduler runs; it is
+					// running before the cancel, so the scheduler's own abort
+					// check cannot become the first failure
+					provideLazy(root, "b", &ctxStarter{fn: func(context.Context) error {
+						close(bEntered)
+						<-release
+						return nil
+					}})
+				} else {
+					close(bEntered)
+				}
+				ctx, cancel := context.WithCancel(context.Background())
+				runErr := make(chan error, 1)
+				go func() {
+					if tt.incremental {
+						runErr <- root.RefreshWithContext(ctx)
+					} else {
+						runErr <- root.StartWithContext(ctx)
+					}
+				}()
+				<-entered
+				<-bEntered
+
+				cancel()
+				shutdownDone := make(chan struct{})
+				go func() {
+					defer close(shutdownDone)
+					root.Shutdown()
+				}()
+				synctest.Wait() // Shutdown waits for the run
+				close(release)
+				err := <-runErr
+				<-shutdownDone
+
+				is.ErrorIs(err, ErrStartAfterShutdown)
+				is.ErrorIs(err, context.Canceled)
+				if tt.outcome != nil {
+					is.ErrorIs(err, tt.outcome)
+				}
+				is.Equal(1, strings.Count(err.Error(), "context canceled"), "message: %v", err)
+			})
+		})
+	}
+}
+
+func TestAbortOutcome(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	alreadyAborted := fmt.Errorf("boom (start aborted: %w)", ErrStartAfterShutdown)
+	tests := []struct {
+		name   string
+		cause  error // nil: cancelled by the caller, context.Canceled
+		result error
+		want   string
+		same   bool // the result is returned unchanged
+	}{
+		{name: "Shutdown cause, nil", cause: ErrStartAfterShutdown, want: "DI: start aborted: DI: container is shut down"},
+		{name: "caller cause, nil", want: "DI: start aborted: DI: container is shut down: context canceled"},
+		{name: "Shutdown cause, failure", cause: ErrStartAfterShutdown, result: errBoom, want: "boom (start aborted: DI: container is shut down)"},
+		{name: "caller cause, failure", result: errBoom, want: "boom (start aborted: DI: container is shut down: context canceled)"},
+		{
+			name:   "caller cause, failure carrying it",
+			result: fmt.Errorf("boom (start aborted: %w)", context.Canceled),
+			want:   "boom (start aborted: context canceled) (start aborted: DI: container is shut down)",
+		},
+		{name: "caller cause, failure already aborted", result: alreadyAborted, want: alreadyAborted.Error(), same: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			is := assert.New(t)
+
+			ctx, cancel := context.WithCancelCause(context.Background())
+			cancel(tt.cause) // nil cause: context.Canceled
+
+			err := abortOutcome(ctx, tt.result)
+
+			is.EqualError(err, tt.want)
+			is.ErrorIs(err, ErrStartAfterShutdown)
+			if tt.result != nil {
+				is.ErrorIs(err, tt.result)
+			}
+			if tt.cause == nil && !tt.same {
+				is.ErrorIs(err, context.Canceled)
+			}
+			if tt.same {
+				is.Same(tt.result, err)
+			}
+		})
+	}
 }

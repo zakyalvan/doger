@@ -1,6 +1,7 @@
 package doger
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 )
@@ -73,4 +74,38 @@ func ExampleDeclareDependency() {
 	// true
 	// stop scheduler
 	// stop job
+}
+
+func ExampleExplainNamedService_source() {
+	root := New()
+	ProvideNamedValue(root, "db", "postgres")
+	ProvideNamedValue(root, "cache", "redis")
+	ProvideNamedValue(root, "job", "cleanup")
+	ProvideNamed(root, "worker", func(i Injector) (string, error) {
+		_ = MustInvokeNamed[string](i, "db")
+		return "worker", nil
+	}, DependsOnNamed("cache"))
+	_ = MustInvokeNamed[string](root, "worker")
+	_ = DeclareDependency(root, "worker", "job")
+
+	explained, _ := ExplainNamedService(root, "worker")
+	for _, dependency := range explained.Dependencies {
+		fmt.Println(dependency.String(), "->", dependency.Source)
+	}
+	// Output:
+	// * cache (depends-on) from scope [root] -> depends-on
+	// * db from scope [root] -> invoked
+	// * job (declared) from scope [root] -> declared
+}
+
+func ExampleDependencySource_UnmarshalText() {
+	// The JSON of an explained edge decodes back, source included.
+	var edge ExplainServiceDependencyOutput
+	err := json.Unmarshal([]byte(`{"service": "cache", "source": "depends-on"}`), &edge)
+
+	fmt.Println(err, edge.Service, edge.Source)
+	fmt.Println(json.Unmarshal([]byte(`{"source": "other"}`), &edge))
+	// Output:
+	// <nil> cache depends-on
+	// DI: unknown dependency source "other"
 }

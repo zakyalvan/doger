@@ -509,3 +509,173 @@ func TestHealthCheck_ConsumerDeadlineOnContextOnly(t *testing.T) {
 		})
 	}
 }
+
+func TestHealthCheck_PerServiceTimeout(t *testing.T) {
+	t.Parallel()
+
+	const runs = 100
+
+	type svc = healthCheckTestOnClock
+	named := func(_ context.Context, i Injector) error { return HealthCheckNamed(i, "svc") }
+	namedCtx := func(ctx context.Context, i Injector) error { return HealthCheckNamedWithContext(ctx, i, "svc") }
+	typed := func(_ context.Context, i Injector) error { return HealthCheck[*svc](i) }
+	typedCtx := func(ctx context.Context, i Injector) error { return HealthCheckWithContext[*svc](ctx, i) }
+
+	tests := []struct {
+		name     string
+		call     func(context.Context, Injector) error
+		byType   bool // registered under its type name, for the typed functions
+		timeout  time.Duration
+		global   time.Duration
+		duration time.Duration
+		want     string // "" for nil
+	}{
+		{name: "HealthCheckNamed_10ms_check_20ms", call: named, timeout: 10 * time.Millisecond, duration: 20 * time.Millisecond, want: healthCheckTestDeadlineMessage},
+		{name: "HealthCheckNamedWithContext_10ms_check_20ms", call: namedCtx, timeout: 10 * time.Millisecond, duration: 20 * time.Millisecond, want: healthCheckTestDeadlineMessage},
+		{name: "HealthCheck_10ms_check_9ms", call: typed, byType: true, timeout: 10 * time.Millisecond, duration: 9 * time.Millisecond},
+		{name: "HealthCheckWithContext_10ms_check_10ms", call: typedCtx, byType: true, timeout: 10 * time.Millisecond, duration: 10 * time.Millisecond, want: healthCheckTestDeadlineMessage},
+		{name: "HealthCheckNamed_global_only", call: named, global: 10 * time.Millisecond, duration: 20 * time.Millisecond},
+		{name: "HealthCheckNamed_no_timeout_check_1h", call: named, duration: time.Hour},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var unexpected int
+			var firstErr error
+			synctest.Test(t, func(t *testing.T) {
+				for range runs {
+					fc := clockwork.NewFakeClock()
+					i := NewWithOpts(&InjectorOpts{
+						Clock:                    fc,
+						HealthCheckTimeout:       tt.timeout,
+						HealthCheckGlobalTimeout: tt.global,
+					})
+					check := &svc{clock: fc, duration: tt.duration}
+					if tt.byType {
+						ProvideValue(i, check)
+					} else {
+						ProvideNamedValue(i, "svc", check)
+					}
+
+					result := make(chan error, 1)
+					go func() { result <- tt.call(context.Background(), i) }()
+					synctest.Wait()
+					fc.Advance(tt.duration)
+					err := <-result
+
+					ok := err == nil
+					if tt.want != "" {
+						ok = err != nil && err.Error() == tt.want
+					}
+					if !ok {
+						unexpected++
+						if firstErr == nil {
+							firstErr = fmt.Errorf("got %v", err) //nolint:errorlint
+						}
+					}
+
+					fc.Advance(tt.duration) // let an abandoned check return
+					synctest.Wait()
+				}
+			})
+
+			assert.Zero(t, unexpected, "runs not returning %q (first: %v)", tt.want, firstErr)
+		})
+	}
+}
+
+func TestHealthCheck_PerServiceErrorInTime(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	errDBDown := errors.New("db down")
+	i := NewWithOpts(&InjectorOpts{HealthCheckTimeout: 10 * time.Millisecond})
+	ProvideNamedValue(i, "svc", &healthCheckTestResult{err: errDBDown})
+
+	err := HealthCheckNamed(i, "svc")
+
+	assert.Same(t, errDBDown, err)
+	assert.NotErrorIs(t, err, ErrHealthCheckTimeout)
+}
+
+func TestHealthCheckSingleTimeout(t *testing.T) {
+	t.Parallel()
+
+	const runs = 20
+
+	type svc = healthCheckTestOnClock
+	named := func(_ context.Context, i Injector) error { return HealthCheckNamed(i, "svc") }
+	namedCtx := func(ctx context.Context, i Injector) error { return HealthCheckNamedWithContext(ctx, i, "svc") }
+	typed := func(_ context.Context, i Injector) error { return HealthCheck[*svc](i) }
+	typedCtx := func(ctx context.Context, i Injector) error { return HealthCheckWithContext[*svc](ctx, i) }
+	all := func(_ context.Context, i Injector) error { return i.HealthCheck()["svc"] }
+
+	tests := []struct {
+		name     string
+		call     func(context.Context, Injector) error
+		byType   bool // registered under its type name, for the typed functions
+		timeout  time.Duration
+		single   time.Duration
+		duration time.Duration
+		want     string // "" for nil
+	}{
+		{name: "HealthCheckNamed_inherits", call: named, timeout: 10 * time.Millisecond, duration: 20 * time.Millisecond, want: healthCheckTestDeadlineMessage},
+		{name: "HealthCheckNamed_own_larger_bound_in_time", call: named, timeout: 10 * time.Millisecond, single: 30 * time.Millisecond, duration: 20 * time.Millisecond},
+		{name: "HealthCheckNamed_own_larger_bound_past", call: named, timeout: 10 * time.Millisecond, single: 30 * time.Millisecond, duration: 40 * time.Millisecond, want: healthCheckTestDeadlineMessage},
+		{name: "HealthCheckNamedWithContext_own_bound_only", call: namedCtx, single: 10 * time.Millisecond, duration: 10 * time.Millisecond, want: healthCheckTestDeadlineMessage},
+		{name: "HealthCheck_negative_unbounded", call: typed, byType: true, timeout: 10 * time.Millisecond, single: -1, duration: time.Hour},
+		{name: "HealthCheckWithContext_negative_both_unset", call: typedCtx, byType: true, single: -1, duration: time.Hour},
+		{name: "injector_HealthCheck_keeps_HealthCheckTimeout", call: all, timeout: 10 * time.Millisecond, single: -1, duration: 20 * time.Millisecond, want: healthCheckTestDeadlineMessage},
+		{name: "injector_HealthCheck_ignores_single", call: all, single: 10 * time.Millisecond, duration: 20 * time.Millisecond},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var unexpected int
+			var firstErr error
+			synctest.Test(t, func(t *testing.T) {
+				for range runs {
+					fc := clockwork.NewFakeClock()
+					i := NewWithOpts(&InjectorOpts{
+						Clock:                    fc,
+						HealthCheckTimeout:       tt.timeout,
+						HealthCheckSingleTimeout: tt.single,
+					})
+					check := &svc{clock: fc, duration: tt.duration}
+					if tt.byType {
+						ProvideValue(i, check)
+					} else {
+						ProvideNamedValue(i, "svc", check)
+					}
+
+					result := make(chan error, 1)
+					go func() { result <- tt.call(context.Background(), i) }()
+					synctest.Wait()
+					fc.Advance(tt.duration)
+					err := <-result
+
+					ok := err == nil
+					if tt.want != "" {
+						ok = err != nil && err.Error() == tt.want
+					}
+					if !ok {
+						unexpected++
+						if firstErr == nil {
+							firstErr = fmt.Errorf("got %v", err) //nolint:errorlint
+						}
+					}
+
+					fc.Advance(tt.duration) // let an abandoned check return
+					synctest.Wait()
+					i.Shutdown()
+				}
+			})
+
+			assert.Zero(t, unexpected, "first unexpected: %v", firstErr)
+		})
+	}
+}

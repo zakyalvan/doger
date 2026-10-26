@@ -130,6 +130,48 @@ func BenchmarkInvokeAs(b *testing.B) {
 	}
 }
 
+// newCollectionInjector registers n visible services, half of them
+// matching benchIface, and builds them once.
+func newCollectionInjector(n int) *doger.RootScope {
+	injector := doger.New()
+	for j := range n {
+		if j%2 == 0 {
+			doger.ProvideNamedValue(injector, fmt.Sprintf("bench-member-%d", j), &benchSvcImpl{})
+		} else {
+			doger.ProvideNamedValue(injector, fmt.Sprintf("bench-filler-%d", j), &benchSvcA{})
+		}
+	}
+	_ = doger.MustInvokeAll[benchIface](injector)
+
+	return injector
+}
+
+func BenchmarkInvokeAll(b *testing.B) {
+	for _, n := range []int{10, 100, 1000} {
+		b.Run(fmt.Sprintf("%d", n), func(b *testing.B) {
+			injector := newCollectionInjector(n)
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			for n := 0; n < b.N; n++ {
+				_, _ = doger.InvokeAll[benchIface](injector)
+			}
+		})
+	}
+}
+
+func BenchmarkInvokeAllParallel(b *testing.B) {
+	injector := newCollectionInjector(100)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			_, _ = doger.InvokeAll[benchIface](injector)
+		}
+	})
+}
+
 func BenchmarkInvokeNestedScopes(b *testing.B) {
 	injector := doger.New()
 	doger.Provide(injector, func(i doger.Injector) (*benchSvcA, error) {

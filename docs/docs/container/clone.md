@@ -43,6 +43,12 @@ doger.Override[Engine](injector, func (i doger.Injector) (Engine, error) {
 })
 ```
 
+## What a clone keeps {#what-a-clone-keeps}
+
+A clone keeps the service registrations and the [component kind](../service-lifecycle/component-kinds.md) handlers, including a replaced `Runnable` handler, with their stages and order. Handling a kind on the clone replaces its handler on the clone only. `Clone()` also keeps the container options and hooks; `CloneWithOpts(opts)` uses only `opts`.
+
+A clone does not keep invoked instances or the lifecycle state: it starts and shuts down on its own.
+
 ## When to use Clone {#when-to-use-clone}
 
 - **Table-driven tests**: clone once per test case to avoid state leaking between them.

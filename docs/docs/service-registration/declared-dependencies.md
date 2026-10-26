@@ -60,6 +60,18 @@ A dynamic edge builds nothing, so it orders **start** (when declared before or d
 
 Shutdown treats declared edges, static and dynamic, exactly like invoked dependencies: a dependent is shut down before the services it depends on.
 
+## Edge source in explanations {#edge-source}
+
+`doger.ExplainService` and `doger.ExplainNamedService` report, for each dependency or dependent, how its edge was recorded, in `ExplainServiceDependencyOutput.Source`:
+
+| `Source`                    | Recorded by                              | `String()`               |
+| --------------------------- | ---------------------------------------- | ------------------------ |
+| `DependencySourceInvoked`   | a provider invoking the service          | `* db from scope …`      |
+| `DependencySourceDependsOn` | a `DependsOn` or `DependsOnNamed` option | `* cache (depends-on) …` |
+| `DependencySourceDeclared`  | `DeclareDependency`                      | `* job (declared) …`     |
+
+An edge recorded several ways keeps the first of invoked, depends-on and declared: a dependency both invoked and declared reports `invoked`. Invoked edges print exactly as before, and JSON encodes the source by name (`"source": "invoked"`).
+
 ## Clones {#clones}
 
 A clone starts with an empty dependency graph:

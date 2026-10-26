@@ -479,3 +479,238 @@ func ExampleMustInvokeAs() {
 	fmt.Println(service.GetName())
 	// Output: alias-test-service
 }
+
+type exampleGreeter interface{ Greet() string }
+
+type exampleEnglishGreeter struct{}
+
+func (*exampleEnglishGreeter) Greet() string { return "hello" }
+
+// exampleLoudGreeter decorates the exampleGreeter its provider resolves.
+type exampleLoudGreeter struct{ inner exampleGreeter }
+
+func (g *exampleLoudGreeter) Greet() string { return "loud(" + g.inner.Greet() + ")" }
+
+func ExampleInvokeAs_decorator() {
+	injector := New()
+
+	// The decorator is registered first, so it is the first match for
+	// exampleGreeter. Called from its own provider, InvokeAs skips the
+	// service that provider builds, and its aliases, so the decorator
+	// resolves the service it wraps.
+	ProvideNamed(injector, "loud", func(i Injector) (*exampleLoudGreeter, error) {
+		inner, err := InvokeAs[exampleGreeter](i)
+		if err != nil {
+			return nil, err
+		}
+		return &exampleLoudGreeter{inner: inner}, nil
+	})
+	ProvideNamed(injector, "english", func(Injector) (*exampleEnglishGreeter, error) {
+		return &exampleEnglishGreeter{}, nil
+	})
+
+	// From outside a provider, the decorator is the first match.
+	greeter, err := InvokeAs[exampleGreeter](injector)
+
+	fmt.Println(greeter.Greet(), err)
+	// Output: loud(hello) <nil>
+}
+
+type exampleNotifier interface{ Notify(msg string) string }
+
+type exampleEmailNotifier struct{}
+
+func (*exampleEmailNotifier) Notify(msg string) string { return "email: " + msg }
+
+type exampleSMSNotifier struct{}
+
+func (*exampleSMSNotifier) Notify(msg string) string { return "sms: " + msg }
+
+func ExampleInvokeAll() {
+	injector := New()
+	Provide(injector, func(Injector) (*exampleEmailNotifier, error) { return &exampleEmailNotifier{}, nil })
+	Provide(injector, func(Injector) (*exampleSMSNotifier, error) { return &exampleSMSNotifier{}, nil })
+	ProvideValue(injector, "not a notifier")
+
+	// Every service whose registered type implements exampleNotifier, in
+	// registration order. With no match, the result is an empty slice.
+	notifiers, err := InvokeAll[exampleNotifier](injector)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	for _, notifier := range notifiers {
+		fmt.Println(notifier.Notify("deploy done"))
+	}
+	// Output:
+	// email: deploy done
+	// sms: deploy done
+}
+
+func ExampleMustInvokeAll() {
+	injector := New()
+	Provide(injector, func(Injector) (*exampleEmailNotifier, error) { return &exampleEmailNotifier{}, nil })
+	Provide(injector, func(Injector) (*exampleSMSNotifier, error) { return &exampleSMSNotifier{}, nil })
+
+	// Like InvokeAll, but panics on error.
+	for _, notifier := range MustInvokeAll[exampleNotifier](injector) {
+		fmt.Println(notifier.Notify("deploy done"))
+	}
+	// Output:
+	// email: deploy done
+	// sms: deploy done
+}
+
+func ExampleInvokeAllMap() {
+	injector := New()
+	ProvideNamed(injector, "email", func(Injector) (*exampleEmailNotifier, error) { return &exampleEmailNotifier{}, nil })
+	ProvideNamed(injector, "sms", func(Injector) (*exampleSMSNotifier, error) { return &exampleSMSNotifier{}, nil })
+
+	// The same members as InvokeAll, keyed by service name.
+	notifiers, err := InvokeAllMap[exampleNotifier](injector)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	fmt.Println(notifiers["sms"].Notify("deploy done"))
+	fmt.Println(len(notifiers))
+	// Output:
+	// sms: deploy done
+	// 2
+}
+
+func ExampleMustInvokeAllMap() {
+	injector := New()
+	ProvideNamed(injector, "email", func(Injector) (*exampleEmailNotifier, error) { return &exampleEmailNotifier{}, nil })
+	ProvideNamed(injector, "sms", func(Injector) (*exampleSMSNotifier, error) { return &exampleSMSNotifier{}, nil })
+
+	// Like InvokeAllMap, but panics on error.
+	notifiers := MustInvokeAllMap[exampleNotifier](injector)
+
+	fmt.Println(notifiers["email"].Notify("deploy done"))
+	// Output:
+	// email: deploy done
+}
+
+type exampleMiddleware struct {
+	name  string
+	order int
+}
+
+func (m *exampleMiddleware) Order() int { return m.order }
+
+func ExampleOrdered() {
+	injector := New()
+	ProvideNamedValue(injector, "logging", &exampleMiddleware{name: "logging", order: 10})
+	ProvideNamedValue(injector, "recover", &exampleMiddleware{name: "recover"})
+	ProvideNamedValue(injector, "auth", &exampleMiddleware{name: "auth"})
+
+	// Lowest Order() first; equal values keep registration order.
+	middlewares := MustInvokeAll[*exampleMiddleware](injector)
+	for _, middleware := range middlewares {
+		fmt.Println(middleware.name, middleware.Order())
+	}
+	// Output:
+	// recover 0
+	// auth 0
+	// logging 10
+}
+
+// exampleVendorFilter stands for a third-party type you cannot edit to add
+// an Order method.
+type exampleVendorFilter struct{ name string }
+
+func (f *exampleVendorFilter) Notify(msg string) string { return f.name + ": " + msg }
+
+func ExampleWithOrder() {
+	injector := New()
+	ProvideNamedValue(injector, "audit", &exampleVendorFilter{name: "audit"})
+	ProvideNamedValue(injector, "ratelimit", &exampleVendorFilter{name: "ratelimit"}, WithOrder(-1))
+
+	// WithOrder positions a registration without touching its type.
+	for _, notifier := range MustInvokeAll[exampleNotifier](injector) {
+		fmt.Println(notifier.Notify("hello"))
+	}
+	// Output:
+	// ratelimit: hello
+	// audit: hello
+}
+
+type exampleNotifierHub struct {
+	All    []exampleNotifier          `do:"*"`
+	ByName map[string]exampleNotifier `do:"*"`
+}
+
+func ExampleInvokeStruct_collection() {
+	injector := New()
+	ProvideNamed(injector, "email", func(Injector) (*exampleEmailNotifier, error) { return &exampleEmailNotifier{}, nil })
+	ProvideNamed(injector, "sms", func(Injector) (*exampleSMSNotifier, error) { return &exampleSMSNotifier{}, nil })
+
+	// do:"*" fills a slice with InvokeAll and a map with InvokeAllMap.
+	hub := MustInvokeStruct[exampleNotifierHub](injector)
+
+	for _, notifier := range hub.All {
+		fmt.Println(notifier.Notify("hi"))
+	}
+	fmt.Println(len(hub.ByName))
+	// Output:
+	// email: hi
+	// sms: hi
+	// 2
+}
+
+// exampleDispatcher holds a live collection of every exampleNotifier.
+type exampleDispatcher struct {
+	notifiers Collection[exampleNotifier]
+}
+
+func ExampleCollection_All() {
+	injector := New()
+	ProvideNamed(injector, "dispatcher", func(i Injector) (*exampleDispatcher, error) {
+		return &exampleDispatcher{notifiers: InvokeCollection[exampleNotifier](i)}, nil
+	})
+	ProvideNamed(injector, "email", func(Injector) (*exampleEmailNotifier, error) { return &exampleEmailNotifier{}, nil })
+
+	// Inside a provider, read with the provider's own injector: its
+	// dependency on each member is recorded, as InvokeAll records it.
+	ProvideNamed(injector, "report", func(i Injector) (string, error) {
+		dispatcher, err := InvokeNamed[*exampleDispatcher](i, "dispatcher")
+		if err != nil {
+			return "", err
+		}
+		notifiers, err := dispatcher.notifiers.All(i)
+		return fmt.Sprintf("%d notifier(s)", len(notifiers)), err
+	})
+
+	report, err := InvokeNamed[string](injector, "report")
+	fmt.Println(report, err)
+
+	explained, _ := ExplainNamedService(injector, "report")
+	for _, dependency := range explained.Dependencies {
+		fmt.Println("report depends on", dependency.Service)
+	}
+	// Output:
+	// 1 notifier(s) <nil>
+	// report depends on dispatcher
+	// report depends on email
+}
+
+func ExampleInvokeCollection() {
+	injector := New()
+	ProvideNamed(injector, "email", func(Injector) (*exampleEmailNotifier, error) { return &exampleEmailNotifier{}, nil })
+
+	notifiers := InvokeCollection[exampleNotifier](injector)
+
+	// Registered after the collection was created: still a member.
+	ProvideNamed(injector, "sms", func(Injector) (*exampleSMSNotifier, error) { return &exampleSMSNotifier{}, nil })
+
+	all, _ := notifiers.All(nil) // resolved now
+	for _, notifier := range all {
+		fmt.Println(notifier.Notify("hi"))
+	}
+	// Output:
+	// email: hi
+	// sms: hi
+}

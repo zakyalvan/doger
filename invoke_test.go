@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestInvokeAnyByName(t *testing.T) {
@@ -38,7 +39,7 @@ func TestInvokeAnyByName(t *testing.T) {
 		// check we received a virtualScope
 		vs, ok := ivs.(*virtualScope)
 		is.True(ok)
-		is.Equal([]string{"hello"}, vs.invokerChain)
+		is.Equal([]string{"hello"}, vs.invokerChain())
 		is.NotEqual(i, ivs)
 
 		// create a dependency/dependent relationship
@@ -135,14 +136,18 @@ func TestInvokeAnyByName(t *testing.T) {
 	is.True(afterCalled, "AfterInvocationHook should be called")
 }
 
+// TestInvokeByName is not parallel: it replaces DefaultRootScope.
 func TestInvokeByName(t *testing.T) {
-	t.Parallel()
 	testWithTimeout(t, 100*time.Millisecond)
 	is := assert.New(t)
 
+	previous := DefaultRootScope
+	DefaultRootScope = New()
+	t.Cleanup(func() { DefaultRootScope = previous })
+
 	// test default injector vs scope
-	ProvideNamedValue(DefaultRootScope, "foo", "bar")
-	svc, err := invokeByName[string](nil, "foo")
+	ProvideNamedValue(DefaultRootScope, "invoke-by-name-default", "bar")
+	svc, err := invokeByName[string](nil, "invoke-by-name-default")
 	is.NoError(err)
 	is.Equal("bar", svc)
 
@@ -165,7 +170,7 @@ func TestInvokeByName(t *testing.T) {
 		// check we received a virtualScope
 		vs, ok := ivs.(*virtualScope)
 		is.True(ok)
-		is.Equal([]string{"hello"}, vs.invokerChain)
+		is.Equal([]string{"hello"}, vs.invokerChain())
 		is.NotEqual(i, ivs)
 
 		// create a dependency/dependent relationship
@@ -302,7 +307,7 @@ func TestInvokeByGenericType(t *testing.T) {
 		// check we received a virtualScope
 		vs, ok := ivs.(*virtualScope)
 		is.True(ok)
-		is.Equal([]string{"*github.com/kartaladev/doger.eagerTest"}, vs.invokerChain)
+		is.Equal([]string{"*github.com/kartaladev/doger.eagerTest"}, vs.invokerChain())
 		is.NotEqual(i, ivs)
 
 		// create a dependency/dependent relationship
@@ -920,4 +925,649 @@ func TestInvoke_ProviderPanicNil_GODEBUGOverride(t *testing.T) {
 
 	assert.NoError(t, err, "child output:\n%s", out)
 	assert.Contains(t, string(out), "--- PASS: TestInvoke_ProviderPanicNil_GODEBUGOverride")
+}
+
+// Greeter is implemented by greeterImpl, named after its service.
+type Greeter interface{ Greet() string }
+
+type greeterImpl struct{ name string }
+
+func (g *greeterImpl) Greet() string { return g.name }
+
+// provideGreeter registers lazy Greeter implementation name in scope.
+func provideGreeter(scope Injector, name string) {
+	ProvideNamed(scope, name, func(Injector) (*greeterImpl, error) { return &greeterImpl{name: name}, nil })
+}
+
+func TestInvokeAs_Deterministic(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		setup    func(root *RootScope) (from Injector)
+		selected string
+	}{
+		{name: "b then a, from root", setup: func(root *RootScope) Injector {
+			provideGreeter(root, "b")
+			provideGreeter(root, "a")
+			return root
+		}, selected: "b"},
+		{name: "a then b, from root", setup: func(root *RootScope) Injector {
+			provideGreeter(root, "a")
+			provideGreeter(root, "b")
+			return root
+		}, selected: "a"},
+		{name: "child match is nearer", setup: func(root *RootScope) Injector {
+			provideGreeter(root, "a")
+			request := root.Scope("request")
+			provideGreeter(request, "z")
+			return request
+		}, selected: "z"},
+		{name: "root does not see the child", setup: func(root *RootScope) Injector {
+			provideGreeter(root, "a")
+			provideGreeter(root.Scope("request"), "z")
+			return root
+		}, selected: "a"},
+		{name: "override keeps position", setup: func(root *RootScope) Injector {
+			provideGreeter(root, "b")
+			provideGreeter(root, "a")
+			OverrideNamed(root, "b", func(Injector) (*greeterImpl, error) { return &greeterImpl{name: "b"}, nil })
+			return root
+		}, selected: "b"},
+		{name: "clone keeps positions", setup: func(root *RootScope) Injector {
+			provideGreeter(root, "b")
+			clone := root.Clone()
+			provideGreeter(clone, "a")
+			return clone
+		}, selected: "b"},
+		{name: "clone keeps each registration index", setup: func(root *RootScope) Injector {
+			provideGreeter(root, "b")
+			provideGreeter(root, "a")
+			return root.Clone()
+		}, selected: "b"},
+		{name: "an alias is a candidate", setup: func(root *RootScope) Injector {
+			provideGreeter(root, "x")
+			provideGreeter(root, "a")
+			request := root.Scope("request")
+			// the only match in the nearest scope
+			if err := AsNamed[*greeterImpl, Greeter](request, "a", "g"); err != nil {
+				panic(err)
+			}
+			return request
+		}, selected: "a"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+
+			for range 10 {
+				from := tt.setup(New())
+
+				greeter, err := InvokeAs[Greeter](from)
+
+				assert.NoError(t, err)
+				assert.Equal(t, tt.selected, greeter.Greet())
+			}
+		})
+	}
+}
+
+func TestInvokeAs_DeterministicStable(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, 5*time.Second)
+
+	for range 100 {
+		root := New()
+		for i := range 20 {
+			provideGreeter(root, fmt.Sprintf("s%02d", i))
+		}
+
+		greeter, err := InvokeAs[Greeter](root)
+
+		assert.NoError(t, err)
+		assert.Equal(t, "s00", greeter.Greet())
+	}
+}
+
+func TestMustInvokeAs_Deterministic(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, 5*time.Second)
+
+	for range 100 {
+		root := New()
+		provideGreeter(root, "b")
+		provideGreeter(root, "a")
+
+		assert.Equal(t, "b", MustInvokeAs[Greeter](root).Greet())
+	}
+}
+
+func TestMustInvokeAs_FromProvider(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	ProvideNamed(root, "decor", func(i Injector) (*greeterDecor, error) {
+		return &greeterDecor{inner: MustInvokeAs[Greeter](i)}, nil
+	})
+	provideGreeter(root, "base")
+
+	decor, err := InvokeNamed[*greeterDecor](root, "decor")
+
+	require.NoError(t, err)
+	assert.Equal(t, "decor(base)", decor.Greet())
+	assert.Equal(t, []string{"base"}, explainedNames(t, root, "decor", false))
+}
+
+func TestInvokeAs_StoredInjectorSkipsHolder(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	var stored Injector
+	ProvideNamed(root, "decor", func(i Injector) (*greeterDecor, error) {
+		stored = i
+		return &greeterDecor{inner: &greeterImpl{name: "none"}}, nil
+	})
+	provideGreeter(root, "base")
+	_, err := InvokeNamed[*greeterDecor](root, "decor")
+	require.NoError(t, err)
+
+	// "decor" registered first, so only the skip keeps it out
+	greeter, err := InvokeAs[Greeter](stored)
+
+	require.NoError(t, err)
+	assert.Equal(t, "base", greeter.Greet())
+}
+
+func TestInvokeAs_SeesRegistryChanges(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		change func(t *testing.T, root *RootScope) // made after a first InvokeAs
+		want   string
+	}{
+		{name: "a registration", change: func(_ *testing.T, root *RootScope) {
+			provideGreeter(root, "late")
+		}, want: "late"},
+		{name: "an override", change: func(_ *testing.T, root *RootScope) {
+			OverrideNamed(root, "a", func(Injector) (*greeterImpl, error) { return &greeterImpl{name: "a-v2"}, nil })
+		}, want: "a-v2"},
+		{name: "a shutdown", change: func(t *testing.T, root *RootScope) {
+			t.Helper()
+			require.NoError(t, ShutdownNamed(root, "a"))
+		}, want: "b"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+
+			root := New()
+			_, err := InvokeAs[Greeter](root) // no match yet
+			require.ErrorIs(t, err, ErrServiceNotMatch)
+			if tt.name != "a registration" {
+				provideGreeter(root, "a")
+				provideGreeter(root, "b")
+				greeter, err := InvokeAs[Greeter](root)
+				require.NoError(t, err)
+				require.Equal(t, "a", greeter.Greet())
+			}
+
+			tt.change(t, root)
+			greeter, err := InvokeAs[Greeter](root)
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, greeter.Greet())
+		})
+	}
+}
+
+func TestInvokeAs_ConcurrentRegistration(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, 5*time.Second)
+
+	root := New()
+	provideGreeter(root, "first")
+
+	var wg sync.WaitGroup
+	for range 20 {
+		wg.Go(func() {
+			for range 50 {
+				greeter, err := InvokeAs[Greeter](root)
+				if assert.NoError(t, err) {
+					assert.Equal(t, "first", greeter.Greet())
+				}
+			}
+		})
+	}
+	for n := range 10 {
+		wg.Go(func() {
+			for k := range 20 {
+				provideGreeter(root, fmt.Sprintf("late-%d-%d", n, k))
+			}
+		})
+	}
+	wg.Wait()
+}
+
+func TestInvokeAs_SingleAndMissing(t *testing.T) {
+	t.Parallel()
+
+	t.Run("one match", func(t *testing.T) {
+		t.Parallel()
+		root := New()
+		provideGreeter(root, "a")
+
+		greeter, err := InvokeAs[Greeter](root)
+
+		assert.NoError(t, err)
+		assert.Equal(t, "a", greeter.Greet())
+	})
+
+	t.Run("no match", func(t *testing.T) {
+		t.Parallel()
+		root := New()
+
+		_, err := InvokeAs[Greeter](root)
+
+		assert.ErrorIs(t, err, ErrServiceNotMatch)
+	})
+}
+
+func TestInvokeStruct_ImplicitAliasingDeterministic(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, 5*time.Second)
+
+	type withGreeter struct {
+		G Greeter `do:""`
+	}
+
+	for range 100 {
+		root := New()
+		provideGreeter(root, "b")
+		provideGreeter(root, "a")
+
+		value, err := InvokeStruct[withGreeter](root)
+
+		assert.NoError(t, err)
+		assert.Equal(t, "b", value.G.Greet())
+	}
+}
+
+// greeterDecor is a Greeter decorating the Greeter its provider resolves.
+type greeterDecor struct{ inner Greeter }
+
+func (d *greeterDecor) Greet() string { return "decor(" + d.inner.Greet() + ")" }
+
+func TestInvokeAs_SkipsInvoker(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		before  bool     // register "base" before "decor"
+		base    bool     // register "base" at all
+		aliases []string // a chain of Greeter aliases from "decor", registered after it
+		want    string
+	}{
+		{name: "base registered after decor", base: true, want: "decor(base)"},
+		{name: "base registered before decor", base: true, before: true, want: "decor(base)"},
+		{name: "no other match"},
+		{name: "alias of decor, then base", base: true, aliases: []string{"decor-alias"}, want: "decor(base)"},
+		{name: "chained aliases of decor, then base", base: true, aliases: []string{"a1", "a2"}, want: "decor(base)"},
+		{name: "alias of decor, no other match", aliases: []string{"decor-alias"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+
+			root := New()
+			if tt.base && tt.before {
+				provideGreeter(root, "base")
+			}
+			ProvideNamed(root, "decor", func(i Injector) (*greeterDecor, error) {
+				inner, err := InvokeAs[Greeter](i)
+				if err != nil {
+					return nil, err
+				}
+				return &greeterDecor{inner: inner}, nil
+			})
+			target := "decor"
+			for index, alias := range tt.aliases {
+				if index == 0 {
+					require.NoError(t, AsNamed[*greeterDecor, Greeter](root, target, alias))
+				} else {
+					require.NoError(t, AsNamed[Greeter, Greeter](root, target, alias))
+				}
+				target = alias
+			}
+			if tt.base && !tt.before {
+				provideGreeter(root, "base")
+			}
+
+			decor, err := InvokeNamed[*greeterDecor](root, "decor")
+
+			if tt.want == "" {
+				assert.ErrorIs(t, err, ErrServiceNotMatch)
+				assert.NotErrorIs(t, err, ErrCircularDependency)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, decor.Greet())
+		})
+	}
+}
+
+func TestInvokeStruct_FallbackSkipsInvoker(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	type withGreeter struct {
+		G Greeter `do:""`
+	}
+
+	root := New()
+	ProvideNamed(root, "decor", func(i Injector) (*greeterDecor, error) {
+		value, err := InvokeStruct[withGreeter](i)
+		if err != nil {
+			return nil, err
+		}
+		return &greeterDecor{inner: value.G}, nil
+	})
+	provideGreeter(root, "base")
+
+	decor, err := InvokeNamed[*greeterDecor](root, "decor")
+
+	require.NoError(t, err)
+	assert.Equal(t, "decor(base)", decor.Greet())
+}
+
+func TestAliasResolvesTo_Loop(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	x := newServiceAlias[Greeter, Greeter]("x", root, "y")
+	root.serviceSet("x", x)
+	root.serviceSet("y", newServiceAlias[Greeter, Greeter]("y", root, "x"))
+
+	assert.False(t, aliasResolvesTo(x, "decor"))
+	assert.True(t, aliasResolvesTo(x, "x"))
+}
+
+// TestInvokeAs_SkipsAliasOfShadowedName characterizes the name-only rule of
+// aliasResolvesTo: a parent alias whose target has the invoker's name is
+// skipped although it resolves to the parent's service, which the invoker
+// shadows, so the decorator finds no match instead of a cycle.
+func TestInvokeAs_SkipsAliasOfShadowedName(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	provideGreeter(root, "svc")
+	require.NoError(t, AsNamed[*greeterImpl, Greeter](root, "svc", "g"))
+	child := root.Scope("child")
+	ProvideNamed(child, "svc", func(i Injector) (*greeterDecor, error) {
+		inner, err := InvokeAs[Greeter](i)
+		if err != nil {
+			return nil, err
+		}
+		return &greeterDecor{inner: inner}, nil
+	})
+
+	_, err := InvokeNamed[*greeterDecor](child, "svc")
+
+	assert.ErrorIs(t, err, ErrServiceNotMatch)
+	assert.NotErrorIs(t, err, ErrCircularDependency)
+}
+
+func TestInvokeStruct_FallbackKeepsNestedNotFound(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+	is := assert.New(t)
+
+	type withGreeter struct {
+		G Greeter `do:""`
+	}
+
+	root := New()
+	provideGreeter(root, "other")
+	// the service named after the field type exists, but its provider fails
+	// with a not-found error of its own
+	Provide(root, func(i Injector) (Greeter, error) {
+		_, err := InvokeNamed[string](i, "missing-config")
+		return nil, err
+	})
+
+	_, err := InvokeStruct[withGreeter](root)
+
+	is.ErrorIs(err, ErrServiceNotFound)
+	is.ErrorContains(err, "missing-config")
+}
+
+func TestInvokeStruct_DecoratorNamedAfterFieldType(t *testing.T) {
+	t.Parallel()
+
+	type withGreeter struct {
+		G Greeter `do:""`
+	}
+
+	tests := []struct {
+		name string
+		base bool // register "base", another Greeter
+		want string
+	}{
+		{name: "another match", base: true, want: "decor(base)"},
+		{name: "no other match"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+
+			root := New()
+			if tt.base {
+				provideGreeter(root, "base")
+			}
+			// the decorator is registered under the field type's own name
+			Provide(root, func(i Injector) (Greeter, error) {
+				value, err := InvokeStruct[withGreeter](i)
+				if err != nil {
+					return nil, err
+				}
+				return &greeterDecor{inner: value.G}, nil
+			})
+
+			decor, err := Invoke[Greeter](root)
+
+			if tt.want == "" {
+				assert.ErrorIs(t, err, ErrCircularDependency)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, decor.Greet())
+		})
+	}
+}
+
+func TestCircularDependency_SameNameInAnotherScope(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		resolve func(i Injector) (int, error) // what root "agg" does
+		from    string                        // the scope "x" is invoked from
+		wantErr error
+	}{
+		{
+			name: "InvokeNamed of the root x from a child x",
+			resolve: func(i Injector) (int, error) {
+				_, err := InvokeNamed[*greeterImpl](i, "x")
+				return 1, err
+			},
+			from: "child",
+		},
+		{
+			name: "InvokeAll from a child x",
+			resolve: func(i Injector) (int, error) {
+				all, err := InvokeAll[Greeter](i)
+				return len(all), err
+			},
+			from: "child",
+		},
+		{
+			name: "the root x, a real cycle",
+			resolve: func(i Injector) (int, error) {
+				_, err := InvokeNamed[*greeterImpl](i, "x")
+				return 1, err
+			},
+			from:    "root",
+			wantErr: ErrCircularDependency,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+
+			root := New()
+			child := root.Scope("child")
+			ProvideNamed(root, "agg", func(i Injector) (int, error) { return tt.resolve(i) })
+			// the child "x" shadows the root "x" and invokes "agg"
+			ProvideNamed(child, "x", func(i Injector) (*greeterImpl, error) {
+				_, err := InvokeNamed[int](i, "agg")
+				return &greeterImpl{name: "child-x"}, err
+			})
+			ProvideNamed(root, "x", func(i Injector) (*greeterImpl, error) {
+				if tt.from == "root" {
+					_, err := InvokeNamed[int](i, "agg")
+					return &greeterImpl{name: "x"}, err
+				}
+				return &greeterImpl{name: "x"}, nil
+			})
+			from := map[string]Injector{"root": root, "child": child}[tt.from]
+
+			_, err := InvokeNamed[*greeterImpl](from, "x")
+
+			if tt.wantErr != nil {
+				assert.ErrorIs(t, err, tt.wantErr)
+				return
+			}
+			assert.NoError(t, err)
+		})
+	}
+}
+
+func TestInvokeStruct_FallbackSkipsInvokerAlias(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	type withGreeter struct {
+		G Greeter `do:""`
+	}
+
+	root := New()
+	ProvideNamed(root, "decor", func(i Injector) (*greeterDecor, error) {
+		value, err := InvokeStruct[withGreeter](i)
+		if err != nil {
+			return nil, err
+		}
+		return &greeterDecor{inner: value.G}, nil
+	})
+	require.NoError(t, AsNamed[*greeterDecor, Greeter](root, "decor", "decor-alias"))
+	provideGreeter(root, "base")
+
+	decor, err := InvokeNamed[*greeterDecor](root, "decor")
+
+	require.NoError(t, err)
+	assert.Equal(t, "decor(base)", decor.Greet())
+}
+
+type (
+	// shadowStore is implemented by shadowPG only.
+	shadowStore interface{ store() }
+	shadowPG    struct{ scope string }
+
+	shadowStruct struct {
+		S shadowStore `do:""`
+	}
+)
+
+func (*shadowPG) store() {}
+
+func TestInvokeAs_Shadowing(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		mid     bool // invoke from a scope below the one registering db
+		childDB func(child *Scope)
+		check   func(t *testing.T, child *Scope)
+	}{
+		{
+			name:    "string db in an intermediate scope, InvokeAs from below it",
+			mid:     true,
+			childDB: func(child *Scope) { ProvideNamedValue(child, "db", "a string") },
+			check: func(t *testing.T, child *Scope) {
+				t.Helper()
+				_, err := InvokeAs[shadowStore](child)
+				assert.ErrorIs(t, err, ErrServiceNotMatch)
+			},
+		},
+		{
+			name:    "string child db, InvokeAs",
+			childDB: func(child *Scope) { ProvideNamedValue(child, "db", "a string") },
+			check: func(t *testing.T, child *Scope) {
+				t.Helper()
+				_, err := InvokeAs[shadowStore](child)
+				assert.ErrorIs(t, err, ErrServiceNotMatch)
+			},
+		},
+		{
+			name:    "string child db, InvokeStruct",
+			childDB: func(child *Scope) { ProvideNamedValue(child, "db", "a string") },
+			check: func(t *testing.T, child *Scope) {
+				t.Helper()
+				_, err := InvokeStruct[shadowStruct](child)
+				assert.ErrorIs(t, err, ErrServiceNotFound)
+			},
+		},
+		{
+			name: "Store child db, InvokeAs",
+			childDB: func(child *Scope) {
+				ProvideNamed(child, "db", func(Injector) (*shadowPG, error) { return &shadowPG{scope: "request"}, nil })
+			},
+			check: func(t *testing.T, child *Scope) {
+				t.Helper()
+				store, err := InvokeAs[shadowStore](child)
+				assert.NoError(t, err)
+				assert.Equal(t, &shadowPG{scope: "request"}, store)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+
+			root := New()
+			ProvideNamed(root, "db", func(Injector) (*shadowPG, error) { return &shadowPG{scope: "[root]"}, nil })
+			child := root.Scope("request")
+			tt.childDB(child)
+			if tt.mid {
+				child = child.Scope("leaf")
+			}
+
+			tt.check(t, child)
+		})
+	}
 }

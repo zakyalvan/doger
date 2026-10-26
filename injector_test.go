@@ -7,8 +7,8 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+// TestGetInjectorOrDefault is not parallel: it replaces DefaultRootScope.
 func TestGetInjectorOrDefault(t *testing.T) {
-	// t.Parallel() // parallel forbidden by write on DefaultRootScope
 	testWithTimeout(t, 100*time.Millisecond)
 	is := assert.New(t)
 
@@ -19,7 +19,9 @@ func TestGetInjectorOrDefault(t *testing.T) {
 		foobar string
 	}
 
+	previous := DefaultRootScope
 	DefaultRootScope = New()
+	t.Cleanup(func() { DefaultRootScope = previous })
 
 	Provide(nil, func(i Injector) (*test, error) {
 		return &test{foobar: "42"}, nil

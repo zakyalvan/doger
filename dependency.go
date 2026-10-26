@@ -49,7 +49,7 @@ func DeclareDependency(i Injector, dependent, dependency string) error {
 		return fmt.Errorf("%w: %s", ErrCircularDependency, humanReadableInvokerChain(chain))
 	}
 
-	root.dag.addDependency(from.ScopeID, from.ScopeName, from.Service, to.ScopeID, to.ScopeName, to.Service)
+	root.dag.addDependency(from.ScopeID, from.ScopeName, from.Service, to.ScopeID, to.ScopeName, to.Service, DependencySourceDeclared)
 
 	return nil
 }

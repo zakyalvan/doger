@@ -414,6 +414,17 @@ func MustInvokeNamed[T any](i Injector, name string) T {
 // If the service is not found in the DI container, an error is returned.
 // If the service is found but not assignable to the struct field, an error is returned.
 //
+// An empty tag (`do:""`) names the service after the field type. When no
+// visible service has that name, or, called from a provider, only the
+// service that provider builds has it, InvokeStruct falls back to resolution
+// by type, selecting among assignable services with the rule of [InvokeAs].
+// The fallback depends on the name only: a service with that name that fails
+// to build returns its error, even one matching [ErrServiceNotFound].
+//
+// The tag value `*` injects a collection: a []E field receives
+// [InvokeAll][E] and a map[string]E field [InvokeAllMap][E]; any other field
+// kind is an error. A service named `*` cannot be injected by tag.
+//
 // Play: https://go.dev/play/p/I3_Rznkprpj
 //
 // Example:
@@ -505,6 +516,10 @@ func MustInvokeStruct[T any](i Injector) T {
 //
 // Returns an error if the alias cannot be created (e.g., type incompatibility or missing service).
 //
+// Shutting the alias down (with its scope, or with Shutdown/ShutdownNamed on
+// the alias name) removes the alias but never shuts its target down: the
+// target is shut down only through its own registration, exactly once.
+//
 // Play: https://go.dev/play/p/T5zKBRZaZhj
 //
 // Example:
@@ -554,6 +569,10 @@ func MustAs[Initial any, Alias any](i Injector) {
 //
 // Returns an error if the alias cannot be created (e.g., type incompatibility or missing service).
 //
+// Shutting the alias down (with its scope, or with Shutdown/ShutdownNamed on
+// the alias name) removes the alias but never shuts its target down: the
+// target is shut down only through its own registration, exactly once.
+//
 // Play: https://go.dev/play/p/h1R5rxKizwR
 //
 // Example:
@@ -579,8 +598,8 @@ func AsNamed[Initial any, Alias any](i Injector, initial string, alias string) e
 		return fmt.Errorf("DI: service `%s` has not been declared", initial)
 	}
 
-	provide(i, alias, nil, func(_ string, _ any) serviceWrapper[Alias] {
-		return newServiceAlias[Initial, Alias](alias, i, initial)
+	provide(_i, alias, nil, func(_ string, _ any) serviceWrapper[Alias] {
+		return newServiceAlias[Initial, Alias](alias, _i, initial)
 	}, nil)
 
 	return nil
@@ -606,12 +625,89 @@ func MustAsNamed[Initial any, Alias any](i Injector, initial string, alias strin
 }
 
 /////////////////////////////////////////////////////////////////////////////
+// 							Collections
+/////////////////////////////////////////////////////////////////////////////
+
+// InvokeAll invokes every visible service whose registered type is
+// assignable to T, and returns them as a slice. A nil injector means
+// [DefaultRootScope].
+//
+// Membership is decided by registered type, without building anything: a
+// service is a member when the type it was registered with is assignable to
+// T, so services of other types are never built. Eager values are members
+// as is. Beware InvokeAll[any]: every service matches, so every one is built.
+//
+// Members come ancestors first: by scope depth from the root scope down to
+// the invoking scope, then by registration order within a scope (an
+// override keeps the position of the registration it replaces). The order
+// is the same across calls and in clones.
+//
+// With no match, InvokeAll returns an empty, non-nil slice and a nil error,
+// never ErrServiceNotFound. When a member fails to build, it returns nil and
+// an error naming the member and wrapping its cause; members built before
+// it stay built.
+//
+// Visibility follows scope ancestry: services of the invoking scope and of
+// its ancestors, never of siblings or children. When a name exists in
+// several of these scopes, only the nearest service is considered, even if
+// it is not assignable to T: it then hides the ancestor's, as InvokeNamed
+// would. Inside a provider, the invoking scope is the scope the provider's
+// service is registered in. Aliases (As, Bind) are never members: their
+// target represents itself.
+//
+// Inside a provider, the service that provider builds is not a member, so a
+// composite can collect every other implementation of its own interface.
+// Any other member already in the invocation chain still fails the call
+// with ErrCircularDependency.
+//
+// Invocation hooks fire once per member, with the member's name, as for N
+// calls to Invoke. The result is a snapshot: services registered later are
+// not added to it, and changing it does not affect later calls; transient
+// members give a new instance on every call. Resolve once and keep the
+// result outside hot loops.
+func InvokeAll[T any](i Injector) ([]T, error) {
+	return invokeAllByGenericType[T](collectionFrom(getInjectorOrDefault(i)))
+}
+
+// MustInvokeAll is like [InvokeAll] but panics with the error InvokeAll
+// would return.
+func MustInvokeAll[T any](i Injector) []T {
+	return must1(InvokeAll[T](i))
+}
+
+// InvokeAllMap returns the same members as [InvokeAll], keyed by service
+// name, under the same visibility, alias, self-exclusion, shadowing and
+// failure rules. With no match, it returns an empty, non-nil map.
+func InvokeAllMap[T any](i Injector) (map[string]T, error) {
+	return invokeAllMapByGenericType[T](collectionFrom(getInjectorOrDefault(i)))
+}
+
+// MustInvokeAllMap is like [InvokeAllMap] but panics with the error
+// InvokeAllMap would return.
+func MustInvokeAllMap[T any](i Injector) map[string]T {
+	return must1(InvokeAllMap[T](i))
+}
+
+/////////////////////////////////////////////////////////////////////////////
 // 							Implicit aliases
 /////////////////////////////////////////////////////////////////////////////
 
 // InvokeAs invokes a service in the DI container by finding the first service that matches the provided type or interface.
 // This function searches through all registered services to find one that can be cast to the requested type T.
 // It's useful when you want to retrieve a service by interface without explicitly creating aliases.
+//
+// When several visible services are assignable to T, it selects the one in
+// the nearest scope (the invoking scope before its ancestors), then the
+// earliest registration (an override keeps its position), then the smallest
+// service name. Aliases are candidates too. A service hidden by a service
+// of the same name in a nearer scope is not a candidate, as for InvokeAll.
+// Called from a provider, the service that provider builds is not a
+// candidate either, nor is an alias whose target chain resolves to it, so a
+// decorator can resolve the service it wraps; when it is the only match, the
+// error matches ErrServiceNotMatch. This holds for an injector a provider
+// stored and uses after it returned too: it still skips that provider's
+// service.
+// Use InvokeNamed to pin a specific service.
 //
 // Parameters:
 //   - i: The injector to search for the service
@@ -636,6 +732,7 @@ func InvokeAs[T any](i Injector) (T, error) {
 // MustInvokeAs invokes a service in the DI container by finding the first service that matches the provided type or interface.
 // This function panics if an error occurs during invocation.
 // It's useful when you want to retrieve a service by interface without explicitly creating aliases.
+// The selection rule is the one of [InvokeAs].
 //
 // Parameters:
 //   - i: The injector to search for the service
@@ -880,7 +977,8 @@ func TransientNamed[T any](serviceName string, p Provider[T], opts ...ProvideOpt
 //   - Alias: The type to bind to (must be implemented by Initial)
 //
 // Returns a function that creates the type alias when executed.
-// Panics if the binding cannot be created.
+// Panics if the binding cannot be created. Like [As], the alias never shuts
+// its target down.
 //
 // Play: https://go.dev/play/p/j69I52whJr2
 //
@@ -907,7 +1005,8 @@ func Bind[Initial any, Alias any]() func(Injector) {
 //   - Alias: The type to bind to (must be implemented by Initial)
 //
 // Returns a function that creates the named type alias when executed.
-// Panics if the binding cannot be created.
+// Panics if the binding cannot be created. Like [AsNamed], the alias never
+// shuts its target down.
 //
 // Play: https://go.dev/play/p/m2gW7s9_qgq
 //

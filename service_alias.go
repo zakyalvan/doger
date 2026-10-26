@@ -14,6 +14,7 @@ var (
 	_ serviceWrapperHealthcheck = (*serviceAlias[int, int])(nil)
 	_ serviceWrapperShutdown    = (*serviceAlias[int, int])(nil)
 	_ serviceWrapperClone       = (*serviceAlias[int, int])(nil)
+	_ serviceWrapperAliasTarget = (*serviceAlias[int, int])(nil)
 )
 
 type serviceAlias[Initial any, Alias any] struct {
@@ -63,6 +64,12 @@ func (s *serviceAlias[Initial, Alias]) getServiceType() ServiceType {
 
 func (s *serviceAlias[Initial, Alias]) getReflectType() reflect.Type {
 	return reflect.TypeFor[Alias]() // if T is a pointer or interface, it will return a typed nil
+}
+
+// aliasTarget returns the injector the alias resolves its target from, and
+// the target's name.
+func (s *serviceAlias[Initial, Alias]) aliasTarget() (Injector, string) {
+	return s.scope, s.targetName
 }
 
 func (s *serviceAlias[Initial, Alias]) getInstanceAny(i Injector) (any, error) {
@@ -140,18 +147,10 @@ func (s *serviceAlias[Initial, Alias]) isShutdowner() bool {
 	return service.isShutdowner()
 }
 
-func (s *serviceAlias[Initial, Alias]) shutdown(ctx context.Context) error {
-	serviceAny, _, ok := s.scope.serviceGetRec(s.targetName)
-	if !ok {
-		return nil
-	}
-
-	service, ok := serviceAny.(serviceWrapperShutdown)
-	if !ok {
-		return nil
-	}
-
-	return service.shutdown(ctx)
+// shutdown never shuts the target down: the target is shut down only through
+// its own registration, exactly once. Scope shutdown still removes the alias.
+func (s *serviceAlias[Initial, Alias]) shutdown(context.Context) error {
+	return nil
 }
 
 func (s *serviceAlias[Initial, Alias]) clone(newScope Injector) any {

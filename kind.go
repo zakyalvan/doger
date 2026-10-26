@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"slices"
 )
 
 // kindID identifies a kind. NewKind allocates a new one, so two kinds with
@@ -95,7 +96,9 @@ func (k Kind[T, M]) With(meta M) ProvideOption {
 //
 // At Start, the handler is called once per component, in dependency order,
 // then scope depth, then registration order, with the Start-time context.
-// The first error, or a recovered panic, stops Start. A handler may call
+// The first error, or a recovered panic, stops Start. A handler call that
+// failed during Refresh or Scope.Start is made again for that component by
+// the next one that covers it. A handler may call
 // [DeclareDependency]; edges declared during [StageBeforeStart] order the
 // Starters of the same Start. Do not call Shutdown from a handler.
 //
@@ -112,7 +115,27 @@ func (k Kind[T, M]) Handle(root *RootScope, stage Stage, handler func(context.Co
 		root = DefaultRootScope
 	}
 
-	entry := kindEntry{
+	entry := k.newEntry(stage, handler)
+
+	root.kindsMu.Lock()
+	defer root.kindsMu.Unlock()
+
+	// copy on write: the list may be shared with other containers
+	kinds := slices.Clone(root.kinds)
+	for i := range kinds {
+		if kinds[i].id == k.id {
+			kinds[i] = entry // keeps the slot: order of first Handle
+			root.kinds = kinds
+			return
+		}
+	}
+	kinds = append(kinds, entry)
+	root.kinds = kinds
+}
+
+// newEntry type-erases handler into a kind entry for stage.
+func (k Kind[T, M]) newEntry(stage Stage, handler func(context.Context, Component[T, M]) error) kindEntry {
+	return kindEntry{
 		id:    k.id,
 		stage: stage,
 		run: func(ctx context.Context, scope *Scope, name string, instance any, meta any) error {
@@ -125,17 +148,6 @@ func (k Kind[T, M]) Handle(root *RootScope, stage Stage, handler func(context.Co
 			return handler(ctx, Component[T, M]{Scope: scope, Name: name, Instance: typed, Meta: typedMeta})
 		},
 	}
-
-	root.kindsMu.Lock()
-	defer root.kindsMu.Unlock()
-
-	for i := range root.kinds {
-		if root.kinds[i].id == k.id {
-			root.kinds[i] = entry // keeps the slot: order of first Handle
-			return
-		}
-	}
-	root.kinds = append(root.kinds, entry)
 }
 
 // target returns the kind's target type T.

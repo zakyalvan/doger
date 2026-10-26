@@ -87,6 +87,8 @@ doger.InjectorOpts{
     // When many services are checked at the same time.
     HealthCheckGlobalTimeout: time.Duration
     HealthCheckTimeout:       time.Duration
+    // Single-service checks only: 0 keeps HealthCheckTimeout, < 0 is unbounded.
+    HealthCheckSingleTimeout: time.Duration
 }
 ```
 
@@ -124,7 +126,26 @@ The result of a health check does not depend on goroutine scheduling:
 - The timeout error matches `doger.ErrHealthCheckTimeout` and the context error with `errors.Is`. Its message is `DI: health check timeout: context canceled` or `DI: health check timeout: context deadline exceeded`.
 - A check that returns before its context ends keeps its own result.
 - A service without a health check (a value without a `HealthCheck` method, a lazy service not invoked yet, a transient service) always reports `nil`, even on an ended context.
-- `HealthCheckTimeout` and `HealthCheckGlobalTimeout` are measured on the injector's [clock](../container/options.md#clock). A check that ends exactly when one of these timeouts elapses is a timeout. A deadline you set on your own context counts when that context is done.
+- `HealthCheckTimeout`, `HealthCheckSingleTimeout` and `HealthCheckGlobalTimeout` are measured on the injector's [clock](../container/options.md#clock). A check that ends exactly when one of these timeouts elapses is a timeout. A deadline you set on your own context counts when that context is done.
+
+### Single-service checks {#single-service-checks}
+
+`doger.HealthCheck[T]`, `HealthCheckWithContext[T]`, `HealthCheckNamed` and `HealthCheckNamedWithContext` are bounded by `HealthCheckTimeout` when it is greater than zero, exactly like each check of `injector.HealthCheck()`. `HealthCheckGlobalTimeout` does not apply to them, since they check a single service. With `HealthCheckTimeout` at zero they are unbounded, unless your context has a deadline.
+
+To give them a different bound, set `HealthCheckSingleTimeout`: a positive value is their own bound, and a negative value leaves them unbounded. Its default, 0, keeps `HealthCheckTimeout` for them. The checks run by `injector.HealthCheck()` always use `HealthCheckTimeout`.
+
+```go
+i := doger.NewWithOpts(&doger.InjectorOpts{
+    HealthCheckTimeout:       100 * time.Millisecond, // each check of i.HealthCheck()
+    HealthCheckSingleTimeout: 2 * time.Second,        // HealthCheck[T], HealthCheckNamed and the other single-service checks
+})
+```
+
+```go
+i := doger.NewWithOpts(&doger.InjectorOpts{HealthCheckTimeout: 100 * time.Millisecond})
+
+err := doger.HealthCheckNamed(i, "db") // a check still running after 100ms times out
+```
 
 ```go
 ctx, cancel := context.WithCancel(context.Background())
