@@ -308,10 +308,10 @@ Rules:
 
 ## 45. Collection struct injection (collection-struct-injection; design S3)
 
-- [ ] 45.1 RED: add `invoke_all_struct_test.go` with `TestInvokeStruct_CollectionFields` (4 rows), `TestInvokeStruct_CollectionCustomTag`, `TestInvokeStruct_CollectionInvalidField` (2 rows), `TestInvokeStruct_CollectionMemberFailure` and `TestInvokeStruct_CollectionExcludesSelf`; verify `go test -race -run TestInvokeStruct_Collection .` fails because `*` is looked up as a service name (ErrServiceNotFound)
-- [ ] 45.2 GREEN: generalize the collection pipeline to a `reflect.Type` target and handle the `*` tag value in `invokeByTags` for slice and `map[string]` fields (design S3); verify the 45.1 command passes, the Part K tests pass unchanged, and `make test` is green
-- [ ] 45.3 REFACTOR: *Extract Function* `injectCollectionField(injector, field, value)` out of `invokeByTags`, bringing its `gocyclo` down; verify `make test` and `make lint` pass
-- [ ] 45.4 Add `ExampleInvokeStruct_collection`, the struct-injection docs section, and an upgrading-page entry for the `*` name (BREAKING edge case); verify the example and the docs lint and build pass
+- [x] 45.1 RED: add `invoke_all_struct_test.go` with `TestInvokeStruct_CollectionFields` (4 rows), `TestInvokeStruct_CollectionCustomTag`, `TestInvokeStruct_CollectionInvalidField` (2 rows), `TestInvokeStruct_CollectionMemberFailure` and `TestInvokeStruct_CollectionExcludesSelf`; verify `go test -race -run TestInvokeStruct_Collection .` fails because `*` is looked up as a service name (ErrServiceNotFound)
+- [x] 45.2 GREEN: generalize the collection pipeline to a `reflect.Type` target and handle the `*` tag value in `invokeByTags` for slice and `map[string]` fields (design S3); verify the 45.1 command passes, the Part K tests pass unchanged, and `make test` is green
+- [x] 45.3 REFACTOR: *Extract Function* `injectCollectionField(injector, field, value)` out of `invokeByTags`, bringing its `gocyclo` down; verify `make test` and `make lint` pass
+- [x] 45.4 Add `ExampleInvokeStruct_collection`, the struct-injection docs section, and an upgrading-page entry for the `*` name (BREAKING edge case); verify the example and the docs lint and build pass
 
 ## 46. Live collections (live-collections; design S4)
 

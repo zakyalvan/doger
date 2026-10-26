@@ -418,6 +418,10 @@ func MustInvokeNamed[T any](i Injector, name string) T {
 // service has that name, InvokeStruct falls back to resolution by type,
 // selecting among assignable services with the rule of [InvokeAs].
 //
+// The tag value `*` injects a collection: a []E field receives
+// [InvokeAll][E] and a map[string]E field [InvokeAllMap][E]; any other field
+// kind is an error. A service named `*` cannot be injected by tag.
+//
 // Play: https://go.dev/play/p/I3_Rznkprpj
 //
 // Example:

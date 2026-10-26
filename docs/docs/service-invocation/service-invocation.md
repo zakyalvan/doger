@@ -84,6 +84,25 @@ doger.Provide[*MyService](i, doger.InvokeStruct[MyService])
 
 **Play: https://go.dev/play/p/Rqa4RCjThoI**
 
+### Collection fields {#collection-fields}
+
+The tag value `*` injects a [collection](./collection-invocation.md): a `[]E` field receives `doger.InvokeAll[E]`, and a `map[string]E` field receives `doger.InvokeAllMap[E]`, with the same membership, order and failure rules.
+
+```go
+type Bus struct {
+    Handlers []EventHandler          `do:"*"`
+    ByName   map[string]EventHandler `do:"*"`
+}
+
+bus, err := doger.InvokeStruct[Bus](injector)
+```
+
+- An empty collection is an empty, non-nil slice or map.
+- Inside a provider, the service that provider builds is not a member.
+- `*` on any other field kind fails with `` DI: tag `*` requires a slice or map[string] field, got `S.F` ``.
+- A member failure fails `InvokeStruct` with the collection error.
+- It works with a custom tag key too (`inject:"*"`).
+
 ### Implicit aliasing behavior with InvokeStruct {#implicit-aliasing-behavior-with-invokestruct}
 
 When a field uses an empty tag value (eg: `do:""`) and no service is registered under the field type, the injector falls back to resolution by type: among the services assignable to the field type, it selects the one in the nearest scope, then the earliest registration, then the smallest name (same rule as `doger.InvokeAs[T]`).

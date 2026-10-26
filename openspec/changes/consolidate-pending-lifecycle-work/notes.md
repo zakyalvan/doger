@@ -67,3 +67,5 @@ Each was shown to fail with a temporary, uncommitted mutation:
 
 - 41.1 `TestScopeHooks_RootFiresNone` passes on arrival; firing scope hooks for the root's own scope fails it.
 - 42.2: when a parent shuts down, child scopes shut down on their own goroutines (`wg.Go`), so a re-panic there would terminate the process. Child scope shutdown therefore keeps its first hook panic and the parent merges it after `wg.Wait`; it is dispatched once, on the calling goroutine (for root `Shutdown`, through the container's own dispatch). Pinned by an extra test, `TestScopeHooks_ObserverPanicThroughParent`.
+- 45.1 the invalid-field message uses the struct name `InvokeStruct` passes to `invokeByTags` (`NameOf[S]()`, the full type name), like the existing "not assignable to field" error. The spec's `` `S.H` `` is read as shorthand for it.
+- 45.3 `invokeByTags` is still above the gocyclo limit after extracting `injectCollectionField`, so its existing `//nolint:gocyclo` stays.

@@ -200,46 +200,66 @@ func invokeServiceInstance(injector Injector, vScope *virtualScope, hookName, re
 	return instance, nil
 }
 
-// invokeAllByGenericType invokes every collection member for T.
+// invokeAllByGenericType invokes every collection member for T, in
+// collection order.
 func invokeAllByGenericType[T any](i Injector) ([]T, error) {
-	injector := getInjectorOrDefault(i)
-
-	type orderedMember struct {
-		member T
-		order  int
+	members, err := invokeCollection(getInjectorOrDefault(i), reflect.TypeFor[T](), true)
+	if err != nil {
+		return nil, err
 	}
 
-	type builtMember struct {
-		candidate collectionCandidate
-		member    T
+	result := make([]T, 0, len(members))
+	for _, m := range members {
+		typed, _ := m.instance.(T)
+		result = append(result, typed)
 	}
 
-	candidates := collectionCandidates[T](injector)
-	built := make([]builtMember, 0, len(candidates))
-	err := buildMembers(injector, candidates, func(candidate collectionCandidate, member T) {
-		built = append(built, builtMember{candidate: candidate, member: member})
+	return result, nil
+}
+
+// collectionMember is a built member of a collection.
+type collectionMember struct {
+	candidate collectionCandidate
+	instance  any
+}
+
+// invokeCollection builds the members of the collection for target, visible
+// from injector, in default order. When ordered is true, a separate stable
+// pass then sorts them by WithOrder or Order(), once every member is built.
+func invokeCollection(injector Injector, target reflect.Type, ordered bool) ([]collectionMember, error) {
+	candidates := collectionCandidatesFor(injector, target)
+	members := make([]collectionMember, 0, len(candidates))
+	err := buildMembers(injector, candidates, func(candidate collectionCandidate, instance any) {
+		members = append(members, collectionMember{candidate: candidate, instance: instance})
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	// a separate pass once every member is built, stable over the default order
-	members := make([]orderedMember, 0, len(built))
-	for _, b := range built {
-		order, err := orderValue(b.candidate.name, b.member, b.candidate.options())
+	if !ordered {
+		return members, nil
+	}
+
+	orders := make([]int, len(members))
+	for index, m := range members {
+		order, err := orderValue(m.candidate.name, m.instance, m.candidate.options())
 		if err != nil {
 			return nil, err
 		}
-		members = append(members, orderedMember{member: b.member, order: order})
+		orders[index] = order
 	}
-	slices.SortStableFunc(members, func(a, b orderedMember) int { return cmp.Compare(a.order, b.order) })
+	positions := make([]int, len(members))
+	for index := range positions {
+		positions[index] = index
+	}
+	slices.SortStableFunc(positions, func(a, b int) int { return cmp.Compare(orders[a], orders[b]) })
 
-	result := make([]T, 0, len(members))
-	for _, m := range members {
-		result = append(result, m.member)
+	sorted := make([]collectionMember, 0, len(members))
+	for _, index := range positions {
+		sorted = append(sorted, members[index])
 	}
 
-	return result, nil
+	return sorted, nil
 }
 
 // orderValue returns the collection order of a built member: its WithOrder
@@ -267,17 +287,17 @@ func orderValue(name string, instance any, opts *serviceOptions) (order int, err
 }
 
 // invokeAllMapByGenericType invokes every collection member for T, keyed
-// by name.
+// by name. Order() is never called.
 func invokeAllMapByGenericType[T any](i Injector) (map[string]T, error) {
-	injector := getInjectorOrDefault(i)
-
-	candidates := collectionCandidates[T](injector)
-	result := make(map[string]T, len(candidates))
-	err := buildMembers(injector, candidates, func(candidate collectionCandidate, member T) {
-		result[candidate.name] = member
-	})
+	members, err := invokeCollection(getInjectorOrDefault(i), reflect.TypeFor[T](), false)
 	if err != nil {
 		return nil, err
+	}
+
+	result := make(map[string]T, len(members))
+	for _, m := range members {
+		typed, _ := m.instance.(T)
+		result[m.candidate.name] = typed
 	}
 
 	return result, nil
@@ -285,7 +305,7 @@ func invokeAllMapByGenericType[T any](i Injector) (map[string]T, error) {
 
 // buildMembers builds the candidates in order and passes each member to
 // add. It stops at the first failure, naming the member.
-func buildMembers[T any](injector Injector, candidates []collectionCandidate, add func(candidate collectionCandidate, member T)) error {
+func buildMembers(injector Injector, candidates []collectionCandidate, add func(candidate collectionCandidate, instance any)) error {
 	vScope, _ := injector.(*virtualScope)
 
 	for _, candidate := range candidates {
@@ -294,8 +314,7 @@ func buildMembers[T any](injector Injector, candidates []collectionCandidate, ad
 			return wrapMemberError(candidate.name, err)
 		}
 
-		typed, _ := instance.(T)
-		add(candidate, typed)
+		add(candidate, instance)
 	}
 
 	return nil
@@ -324,12 +343,12 @@ type collectionCandidate struct {
 	service  any
 }
 
-// collectionCandidates returns the members of a collection for T, visible
-// from injector: the nearest service of each name (even when it is not
-// assignable to T, it shadows its ancestors), without aliases and without
-// the service whose provider invokes the collection, whose registered type
-// is assignable to T.
-func collectionCandidates[T any](injector Injector) []collectionCandidate {
+// collectionCandidatesFor returns the members of a collection for target,
+// visible from injector: the nearest service of each name (even when it is
+// not assignable to target, it shadows its ancestors), without aliases and
+// without the service whose provider invokes the collection, whose
+// registered type is assignable to target.
+func collectionCandidatesFor(injector Injector, target reflect.Type) []collectionCandidate {
 	candidates := []collectionCandidate{}
 	seen := map[string]struct{}{}
 
@@ -345,7 +364,7 @@ func collectionCandidates[T any](injector Injector) []collectionCandidate {
 		seen[name] = struct{}{}
 
 		service, ok := s.(serviceWrapperAny)
-		if !ok || service.getServiceType() == ServiceTypeAlias || !serviceCanCastToGeneric[T](s) {
+		if !ok || service.getServiceType() == ServiceTypeAlias || !serviceCanCastToType(s, target) {
 			return true
 		}
 
@@ -475,6 +494,13 @@ func invokeByTags(i Injector, structName string, structValue reflect.Value, impl
 			fieldValue = reflect.NewAt(fieldValue.Type(), unsafe.Pointer(fieldValue.UnsafeAddr())).Elem()
 		}
 
+		if serviceName == "*" {
+			if err := injectCollectionField(injector, structName, field, fieldValue); err != nil {
+				return err
+			}
+			continue
+		}
+
 		if serviceName == "" {
 			serviceName = typetostring.GetReflectValueType(fieldValue)
 		}
@@ -504,6 +530,51 @@ func invokeByTags(i Injector, structName string, structValue reflect.Value, impl
 	}
 
 	return nil
+}
+
+// injectCollectionField sets a field tagged `*`: a []E field to the members
+// of InvokeAll[E], a map[string]E field to those of InvokeAllMap[E].
+func injectCollectionField(injector Injector, structName string, field reflect.StructField, fieldValue reflect.Value) error {
+	fieldType := fieldValue.Type()
+
+	switch {
+	case fieldType.Kind() == reflect.Slice:
+		members, err := invokeCollection(injector, fieldType.Elem(), true)
+		if err != nil {
+			return err
+		}
+
+		slice := reflect.MakeSlice(fieldType, 0, len(members))
+		for _, m := range members {
+			slice = reflect.Append(slice, memberValue(m.instance, fieldType.Elem()))
+		}
+		fieldValue.Set(slice)
+	case fieldType.Kind() == reflect.Map && fieldType.Key().Kind() == reflect.String:
+		members, err := invokeCollection(injector, fieldType.Elem(), false)
+		if err != nil {
+			return err
+		}
+
+		collection := reflect.MakeMapWithSize(fieldType, len(members))
+		for _, m := range members {
+			collection.SetMapIndex(reflect.ValueOf(m.candidate.name).Convert(fieldType.Key()), memberValue(m.instance, fieldType.Elem()))
+		}
+		fieldValue.Set(collection)
+	default:
+		return fmt.Errorf("DI: tag `*` requires a slice or map[string] field, got `%s.%s`", structName, field.Name)
+	}
+
+	return nil
+}
+
+// memberValue returns instance as a value of type elem: the zero value when
+// instance is a nil interface.
+func memberValue(instance any, elem reflect.Type) reflect.Value {
+	if instance == nil {
+		return reflect.Zero(elem)
+	}
+
+	return reflect.ValueOf(instance)
 }
 
 // serviceNotFound returns a detailed error indicating that the specified service was not found.

@@ -574,3 +574,26 @@ func ExampleWithOrder() {
 	// ratelimit: hello
 	// audit: hello
 }
+
+type exampleNotifierHub struct {
+	All    []exampleNotifier          `do:"*"`
+	ByName map[string]exampleNotifier `do:"*"`
+}
+
+func ExampleInvokeStruct_collection() {
+	injector := New()
+	ProvideNamed(injector, "email", func(Injector) (*exampleEmailNotifier, error) { return &exampleEmailNotifier{}, nil })
+	ProvideNamed(injector, "sms", func(Injector) (*exampleSMSNotifier, error) { return &exampleSMSNotifier{}, nil })
+
+	// do:"*" fills a slice with InvokeAll and a map with InvokeAllMap.
+	hub := MustInvokeStruct[exampleNotifierHub](injector)
+
+	for _, notifier := range hub.All {
+		fmt.Println(notifier.Notify("hi"))
+	}
+	fmt.Println(len(hub.ByName))
+	// Output:
+	// email: hi
+	// sms: hi
+	// 2
+}
