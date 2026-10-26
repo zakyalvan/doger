@@ -604,6 +604,37 @@ func TestExplain_EdgeSource(t *testing.T) {
 	}
 }
 
+func TestExplain_EdgeSourceStrongest(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	// both edges are declared first, then recorded a stronger way
+	root := New()
+	rec := &callRecorder{}
+	provideRecorded(root, rec, "db")
+	provideRecorded(root, rec, "cache")
+	ProvideNamed(root, "worker", func(i Injector) (*depValue, error) {
+		_, err := InvokeNamed[*depValue](i, "db")
+		return &depValue{name: "worker"}, err
+	}, DependsOnNamed("cache"))
+	require.NoError(t, DeclareDependency(root, "worker", "db"))
+	require.NoError(t, DeclareDependency(root, "worker", "cache"))
+	_, err := InvokeNamed[*depValue](root, "worker")
+	require.NoError(t, err)
+
+	explained, ok := ExplainNamedService(root, "worker")
+	require.True(t, ok)
+	sources := map[string]DependencySource{}
+	for _, edge := range explained.Dependencies {
+		sources[edge.Service] = edge.Source
+	}
+
+	assert.Equal(t, map[string]DependencySource{
+		"db":    DependencySourceInvoked,   // declared, then invoked
+		"cache": DependencySourceDependsOn, // declared, then depends-on
+	}, sources)
+}
+
 func TestExplain_EdgeSourceDependents(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, time.Second)
@@ -664,7 +695,12 @@ func TestDependencySource_UnmarshalText(t *testing.T) {
 			t.Parallel()
 			is := assert.New(t)
 
-			var out ExplainServiceDependencyOutput
+			// start from another source, so that a decoder that never
+			// assigns the zero value (invoked) fails
+			out := ExplainServiceDependencyOutput{Source: DependencySourceDeclared}
+			if tt.source == DependencySourceDeclared {
+				out.Source = DependencySourceInvoked
+			}
 			err := json.Unmarshal([]byte(`{"service": "db", "source": "`+tt.text+`"}`), &out)
 
 			if tt.errMsg != "" {
