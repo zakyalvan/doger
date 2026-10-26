@@ -134,6 +134,8 @@ Then the result has keys <keys> and a nil error
 Examples:
   | dependent    | steps                                                                                  | keys   |
   | eager value "e" | the consumer invoked "e"                                                             | {"e"}  |
+  | eager value "e" | the consumer called InvokeStruct for a struct with field `E *ConsoleHandler \`do:"e"\`` | {"e"}  |
+  | eager value "e" | the consumer called InvokeAs[*ConsoleHandler], which selected "e"                    | {"e"}  |
   | lazy "l", also with DependsOnNamed("missing") | the consumer invoked "l", which failed, then registered lazy "missing" (not an EventHandler) and invoked "l" again | {"l"} |
 ```
 
