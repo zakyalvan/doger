@@ -123,21 +123,24 @@ func (d *DAG) addDependency(fromScopeID, fromScopeName, fromServiceName, toScope
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	if current, ok := d.dependencies[from][to]; ok {
+	// from -> to
+	dependencies, ok := d.dependencies[from]
+	if !ok {
+		dependencies = map[ServiceDescription]DependencySource{}
+		d.dependencies[from] = dependencies
+	}
+	if current, ok := dependencies[to]; ok {
 		source = min(source, current)
 	}
-
-	// from -> to
-	if _, ok := d.dependencies[from]; !ok {
-		d.dependencies[from] = map[ServiceDescription]DependencySource{}
-	}
-	d.dependencies[from][to] = source
+	dependencies[to] = source
 
 	// from <- to
-	if _, ok := d.dependents[to]; !ok {
-		d.dependents[to] = map[ServiceDescription]DependencySource{}
+	dependents, ok := d.dependents[to]
+	if !ok {
+		dependents = map[ServiceDescription]DependencySource{}
+		d.dependents[to] = dependents
 	}
-	d.dependents[to][from] = source
+	dependents[from] = source
 }
 
 // edgeSource returns the source of the edge from -> to, and whether it exists.
