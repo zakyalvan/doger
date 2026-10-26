@@ -569,7 +569,7 @@ All tests run under `go test -race` with goleak (`TestMain`). Tests that could h
 | health-check-timeouts | A per-service check returning an error in time keeps it | `healthcheck_timeout_test.go: TestHealthCheck_PerServiceErrorInTime` | unit |
 | container-lifecycle-hooks | Refresh after Start fires no container hook (2 rows) | `container_hooks_test.go: TestContainerHooks_IncrementalStartFiresNone/<row>` | table |
 | container-lifecycle-hooks | A start finishing as Shutdown begins (2 rows, 20000 runs) | `container_hooks_test.go: TestContainerHooks_ShutdownCauseRace/<row>` | stress (regression, V1) |
-| container-start | Independent Starters start concurrently (new max-uint row) | `root_start_test.go: TestStart_Parallel/max_uint` | synctest (regression, V13) |
+| container-start | Independent Starters start concurrently (new max-uint row) | `root_start_test.go: TestStart_Parallel/18446744073709551615` | synctest (regression, V13) |
 | container-start | Parallel incremental start (2 rows) | `root_start_test.go: TestStart_ParallelIncremental/<operation>` | synctest (V8) |
 | container-start | A panicking start hook under parallel start (3 rows) | `root_start_test.go: TestStart_ParallelHookPanic/<row>` | table (regression, V2) |
 | container-start | Incremental start while Start runs (3 rows) | `root_refresh_test.go: TestIncrementalStart_DuringStart/<row>` | table (regression, V3) |

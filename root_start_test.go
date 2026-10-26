@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -1574,6 +1575,7 @@ func TestStart_Parallel(t *testing.T) {
 		{n: 2, elapsed: 3 * time.Second},
 		{n: 3, elapsed: 2 * time.Second},
 		{n: 8, elapsed: 2 * time.Second},
+		{n: math.MaxUint, elapsed: 2 * time.Second},
 	}
 
 	for _, tt := range tests {

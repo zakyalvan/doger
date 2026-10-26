@@ -479,8 +479,10 @@ func starterCandidates(candidates []*startCandidate) []*startCandidate {
 // first error. With StartParallelism n > 1, independent Starters start
 // concurrently.
 func (s *RootScope) startStarters(startCtx context.Context, candidates []*startCandidate) error {
-	if s.opts.StartParallelism > 1 {
-		return s.startStartersParallel(startCtx, candidates, int(s.opts.StartParallelism)) //nolint:gosec // bounded by the number of Starters
+	// more workers than Starters is pointless; clamping keeps the int
+	// conversion in range for huge values such as ^uint(0)
+	if n := min(s.opts.StartParallelism, uint(len(candidates))); n > 1 {
+		return s.startStartersParallel(startCtx, candidates, int(n))
 	}
 
 	for _, candidate := range candidates {

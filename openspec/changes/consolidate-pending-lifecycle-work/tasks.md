@@ -407,9 +407,9 @@ Rules:
 
 ## 60. StartParallelism is clamped to the number of Starters (container-start; design V13)
 
-- [ ] 60.1 RED: add the max-uint row to `TestStart_Parallel`; verify `go test -race -run TestStart_Parallel/max .` fails because no Starter is started
-- [ ] 60.2 GREEN: clamp the parallelism to the number of Starters before the `int` conversion and drop the `nolint`; verify the 60.1 command passes and `make test` is green
-- [ ] 60.3 REFACTOR: none needed; verify `make test` and `make lint` pass
+- [x] 60.1 RED: add the max-uint row to `TestStart_Parallel`; verify `go test -race -run TestStart_Parallel/18446744073709551615 .` fails because no Starter is started
+- [x] 60.2 GREEN: clamp the parallelism to the number of Starters before the `int` conversion and drop the `nolint`; verify the 60.1 command passes and `make test` is green
+- [x] 60.3 REFACTOR: none needed; verify `make test` and `make lint` pass
 
 ## 61. InvokeAs honors shadowing (type-resolution; design V14)
 
