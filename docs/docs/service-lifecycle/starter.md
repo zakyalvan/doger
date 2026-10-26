@@ -202,6 +202,7 @@ err := root.Refresh() // starts both workers
 ```
 
 - Each service starts **at most once** per container: a second `Refresh` starts nothing again, and services started by `Start` are never restarted. An `Override` registered after `Start` is a new service, so `Refresh` starts it.
+- Only a success counts. A Starter whose build or `Start` failed during a `Refresh` or `scope.Start`, or a component whose kind handler failed, is tried again by the next `Refresh` or `scope.Start` that covers it. Fix or remove the service before calling it again if a retry is not wanted.
 - `Refresh` fires no [container hook](./container-hooks.md).
 - Before the first successful `Start`, it returns an error matching `doger.ErrNotStarted`, at once, even while that `Start` is still running. Once root `Shutdown` began, it returns an error matching `doger.ErrStartAfterShutdown`, which takes precedence. It starts nothing in either case.
 - Concurrent `Refresh` calls run one at a time. Never call `Refresh` synchronously from code that runs during a `Refresh` (a Starter, a kind handler, a provider or a hook): it would wait for itself.

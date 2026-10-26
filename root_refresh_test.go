@@ -3,6 +3,7 @@ package doger
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -494,4 +495,60 @@ func TestScopeShutdown_DescendantSkipped(t *testing.T) {
 	is.NoError(err)
 	is.Equal(0, starts.count("w"))
 	is.True((<-shutdown).Succeed)
+}
+
+// flakyStarter fails its first Start with err and succeeds afterwards.
+type flakyStarter struct {
+	err   error
+	calls atomic.Int32
+}
+
+func (s *flakyStarter) Start() error {
+	if s.calls.Add(1) == 1 {
+		return s.err
+	}
+	return nil
+}
+
+func TestRefresh_RetriesFailedStarter(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		scope func(root *RootScope) *Scope // where "late" is registered
+		run   func(root *RootScope, scope *Scope) error
+	}{
+		{
+			name:  "root.Refresh",
+			scope: func(root *RootScope) *Scope { return root.self },
+			run:   func(root *RootScope, _ *Scope) error { return root.Refresh() },
+		},
+		{
+			name:  "tenant.Start",
+			scope: func(root *RootScope) *Scope { return root.Scope("tenant") },
+			run:   func(_ *RootScope, scope *Scope) error { return scope.Start() },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+			is := assert.New(t)
+
+			errBoom := errors.New("boom")
+			root := New()
+			require.NoError(t, root.Start())
+			scope := tt.scope(root)
+			late := &flakyStarter{err: errBoom}
+			provideLazy(scope, "late", late)
+
+			is.ErrorIs(tt.run(root, scope), errBoom)
+			is.NoError(tt.run(root, scope))
+			is.Equal(int32(2), late.calls.Load())
+
+			is.NoError(tt.run(root, scope))
+			is.Equal(int32(2), late.calls.Load())
+		})
+	}
 }

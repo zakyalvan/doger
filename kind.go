@@ -96,7 +96,9 @@ func (k Kind[T, M]) With(meta M) ProvideOption {
 //
 // At Start, the handler is called once per component, in dependency order,
 // then scope depth, then registration order, with the Start-time context.
-// The first error, or a recovered panic, stops Start. A handler may call
+// The first error, or a recovered panic, stops Start. A handler call that
+// failed during Refresh or Scope.Start is made again for that component by
+// the next one that covers it. A handler may call
 // [DeclareDependency]; edges declared during [StageBeforeStart] order the
 // Starters of the same Start. Do not call Shutdown from a handler.
 //

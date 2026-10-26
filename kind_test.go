@@ -712,6 +712,53 @@ func TestKind_RefreshHandlesNew(t *testing.T) {
 	assert.Equal(t, []string{"a", "b"}, rec.names())
 }
 
+func TestKind_RetriesFailedHandler(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+	is := assert.New(t)
+
+	errBoom := errors.New("boom")
+	root := New()
+	k := NewKind[Job, Spec]("k")
+	calls := map[string]int{}
+	k.Handle(root, StageBeforeStart, func(_ context.Context, c Component[Job, Spec]) error {
+		calls[c.Name]++
+		if calls[c.Name] == 1 {
+			return errBoom
+		}
+		return nil
+	})
+	require.NoError(t, root.Start())
+	ProvideNamed(root, "b", func(Injector) (*CleanupJob, error) { return &CleanupJob{name: "b"}, nil }, k.With(Spec{}))
+
+	is.ErrorIs(root.Refresh(), errBoom)
+	is.NoError(root.Refresh())
+	is.NoError(root.Refresh())
+
+	is.Equal(2, calls["b"])
+}
+
+func TestKind_ScopeStartSubtree(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+	is := assert.New(t)
+
+	root := New()
+	k := NewKind[Job, Spec]("k")
+	rec := &componentRecorder[Job, Spec]{}
+	k.Handle(root, StageBeforeStart, rec.handler)
+	require.NoError(t, root.Start())
+	ProvideNamed(root, "r", func(Injector) (*CleanupJob, error) { return &CleanupJob{name: "r"}, nil }, k.With(Spec{}))
+	tenant := root.Scope("tenant")
+	ProvideNamed(tenant, "t", func(Injector) (*CleanupJob, error) { return &CleanupJob{name: "t"}, nil }, k.With(Spec{}))
+
+	is.NoError(tenant.Start())
+	is.Equal([]string{"t"}, rec.names())
+
+	is.NoError(root.Refresh())
+	is.Equal([]string{"t", "r"}, rec.names())
+}
+
 func TestRunnable_RefreshRunsOnce(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, time.Second)

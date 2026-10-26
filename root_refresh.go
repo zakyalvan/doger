@@ -16,8 +16,10 @@ func (s *RootScope) Refresh() error {
 // registered after Start, and scopes created after it. It builds them, runs
 // kind handlers for their new components and starts their Starters, with the
 // same order, context, error and per-service hook rules as Start. Each
-// service is started at most once per container. Refresh fires no container
-// hook.
+// service is started successfully at most once per container: a Starter
+// whose build or Start failed, or a component whose kind handler failed, is
+// tried again by the next Refresh or Scope.Start that covers it. Refresh
+// fires no container hook.
 //
 // It returns an error matching [ErrNotStarted] until the first Start
 // succeeded, at once and without waiting while that Start is still running,
