@@ -198,3 +198,43 @@ The second `/opsx:verify` reproduced four defects with probe tests (the scratch 
 | 71 | integration | `make test`, `make lint`, all 25 `go.work` modules, docs lint and build, strict validation: pass. The Part V and V2 lifecycle tests ran 2000 times each under `-race` with no failure. |
 
 Unrelated, pre-existing: `TestInvokeByName` panics when run with `-count` > 1 (it registers on `DefaultRootScope`); it passes with the default count, as `make test` runs it.
+
+## Part V3: third verification (groups 72-85)
+
+The third `/opsx:verify` and a `/code-review` reproduced five defects with probe tests (W1-W3 and code-review findings 1-3, two of them the same), and a sixth (V23) turned up while planning the fixes, proven by a probe before any change. The user chose the recommended option for every open decision, asked to fix V23 in this round, and to apply every suggestion including the code-review cleanups. Code-review finding 4 (a child scope shutting down between discovery and claim) was not reproduced and gets no change.
+
+| Group | RED (seen before GREEN) | Notes |
+|---|---|---|
+| 72 | `TestCollection_HolderAfterSiblings` (both rows): the map held "d" (the holder) and lacked "e" | Found while planning: `append` reused spare capacity of the depth-3 chain. |
+| 73 | `TestCollection_InvocationsWithoutProvider` (both rows): ``circular dependency detected: `e` -> `e` `` and `` `l` -> `l` `` | 73.3: no extraction; the three sites call differently typed `getInstance` methods, and V36 restructures them. |
+| 74 | `TestStart_FailureThenShutdown` (Start and Refresh rows): ``in chain: "DI: failed to start service `a` in scope `[root]`: boom"``, no `ErrStartAfterShutdown` | 74.3: *Extract Function* `abortOutcome`, shared by `finishStart` and `finishIncremental`. |
+| 75 | `TestStartError_ConsumerBuilt`: all 4 rows panicked with a nil pointer dereference | GREEN was written with `scopeName()` and `causeText()` from the start, so 75.3 needed no further step. |
+| 76 | `TestInvokeAs_SkipsInvoker` ("base after decor" and "no other match") and `TestInvokeStruct_FallbackSkipsInvoker`: ``circular dependency detected: `decor` -> `decor` `` | The "base before decor" row passed on arrival, as expected (earliest registration). |
+| 77 | `TestContainerFailedHook_PipelinePanic` (3 rows): hooks ran `[starting]` only and the Failed error was nil; `TestContainerFailedHook_PanicDuringPipelinePanic` (2 rows): nothing recorded | 77.3: *Extract Function* `failAndRepanic`. `runStartRecovering` tracks completion with a flag, not `recover() != nil`, so a `panic(nil)` under `GODEBUG=panicnil=1` is still handled. |
+| 78 | test-only: `TestRefresh_RetriesFailedStarter` (2 rows), `TestKind_RetriesFailedHandler`, `TestKind_ScopeStartSubtree` passed on arrival | Mutations (reverted): marking a Starter started, or a component handled, on failure fails the retry tests (`expected: 2, actual: 1`); running `Scope.Start`'s pipeline over the root fails `TestKind_ScopeStartSubtree`. |
+| 79 | `TestScopeStartedHook_SkippedWhileClosing` (2 rows): "w" was not started, but `HookScopeStarted` ran 1 time | The parent row holds the parent's Closing hook, which runs after "tenant" already shut down, so it isolates the ancestor check. |
+| 80 | `TestInvokeAll_OrderPanic/string_boom`: ``panicked: DI: recovered panic: boom``; `TestScopeStartingHook_Veto` (2 panic rows): `DI: recovered panic: veto-boom`; `TestScopeHooks_LaterPanicLogged`: `DI: container scope-closing hook panicked: second` | 80.3: *Extract Function* `logHookPanic`, shared by `keepFirstPanic` and `failAndRepanic`. While running 80.2, `go build` hit "no space left on device": the Go build cache had grown to 28 GB across the verification worktrees; `go clean -cache` freed it. |
+| 81.1 | test-only | Mutation (reverted): clearing `ticket.inFlight` for incremental runs in `beginClose` fails the strengthened `TestRefresh_ShutdownCancels` (`expected: 1s, actual: 0s`); before, the whole suite passed under it. |
+| 81.2 | test-only | Mutation (reverted): the transient wrapper passing a second provider result to the hook fails `TestAfterBuildHook_Fires/transient`; with zero-size fixtures it passed. |
+| 81.3 | test-only | Mutations (reverted): keeping the first-recorded source in `dag.go` fails `TestExplain_EdgeSourceStrongest`; an `UnmarshalText` that never assigns invoked fails the `invoked` row now that it starts from another source. |
+| 81.4 | test-only | Mutation (reverted): passing `context.Background()` to the Started, Ready, Failed, Closing and Closed hooks fails all 5 rows of `TestContainerHooks_ObserverContexts`; before, the suite passed under it. `TestContainerHooks_NilContext` asserts 3 and 2 contexts. |
+| 81.5 | test-only | Mutations (reverted), each failing only its new test: `InvokeAllMap` resolving from the plain scope instead of the provider's injector (`TestInvokeAllMap_FromProvider` times out: composite rebuilds itself); `InvokeAllMap` swallowing a member failure; dropping the alias filter; shutting built members down after a failure; building in collection order; an unordered `*` slice; one map shared across calls; `All()` returning no member (`TestCollection_ConcurrentReads`). The 81.2 fixture fields were renamed to blank fields after `unused` flagged them. |
+| 81.6 | test-only | Mutations (reverted): a replacement that moves the kind to the end, and a `Handle` that ignores a replacement, each fail the clone row; the old test passed under both. |
+| 81.7 | test-only | Mutations (reverted), each failing its new check: renaming the `scope-closing` point; skipping the cycle check (the cycle row still matched `ErrStartAfterShutdown` before it checked its own step); `Phase()` ignoring the closing phase; observer loops stopping at the first panic; a child `Scope.ShutdownWithContext` firing the container Closing hooks. A broad `git checkout -- '*.go'` meant to revert one mutation was blocked by the permission check, because it would also have discarded the uncommitted new tests; the tests were committed first, and each later revert named only the mutated file. |
+| 81.8 | test-only | Mutations (reverted): marking every service of a started candidate's scope as started fails the explicit `repo` check (marking only the candidates cannot reach `repo`, which is not a Starter); a `Refresh` that does nothing fails `TestStart_LateScopeNotStarted`; a Start panic recovered without `%w` fails `TestStartError_StarterPanic`; a `MustInvokeAs` returning the last collection member fails its test; removing the eager or transient hook call fails its `TestAfterBuildHook_Panic` row; turning a typed nil into an untyped one fails `TestAfterBuildHook_TypedNil`; a shadow check of the invoking scope alone fails the nested row, once that row put `db` in the intermediate scope (its first version put it in the invoking scope and passed under the mutation). testify's `NotNil` treats a typed nil as nil, so `TestAfterBuildHook_TypedNil` checks the dynamic type. |
+| 84 | refactors | Each step left `make test` and `make lint` green. 84.4 used Go 1.27 promoted fields in composite literals (the `modernize` linter's `embedlit`). 84.5: `BenchmarkNew` stays at 11 allocs/op, 1232 B/op. 84.6: see below. |
+
+### 84.6 Invoker chain from parent links
+
+Interleaved against the head before 84.6 (`a95ccee`, 10 alternating runs, same machine):
+
+| Benchmark | time | B/op | allocs/op |
+|---|---|---|---|
+| InvokeLazySteadyState, InvokeLazyParallel, InvokeAs, InvokeAll/100, InvokeAllParallel | ~ | ~ | -1 per invocation (6 → 5, 9 → 8, 225 → 175) |
+| InvokeNamed | -6.7% | ~ | 4 → 3 |
+| InvokeTransient | -8.0% | ~ | 6 → 5 |
+| InvokeAlias | -6.9% | 288 → 272 | 9 → 7 |
+| InvokeNestedScopes | -6.7% | ~ | 6 → 5 |
+| ProviderChainTransient | -9.6% | 880 → 832 | 24 → 20 |
+| geomean | -5.3% | -0.9% | -18.6% |
+

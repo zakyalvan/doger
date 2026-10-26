@@ -660,6 +660,24 @@ All tests run under `go test -race` with goleak (`TestMain`). Tests that could h
 | container-start | A scope created under a shutting-down scope is skipped | `root_refresh_test.go: TestScopeShutdown_DescendantSkipped` | unit (regression, V22) |
 | container-start | A child shutdown bounded by its context (new bookkeeping line) | `root_refresh_test.go: TestScopeShutdown_WaitBounded` | synctest (regression, V21) |
 | scope-lifecycle-hooks | Nil context reaches scope hooks as non-nil (2 rows) | `scope_hooks_test.go: TestScopeHooks_NilContext/<operation>` | table (regression, V20) |
+| live-collections | The holder stays excluded after its invoker builds siblings (2 invocation paths) | `collection_test.go: TestCollection_HolderAfterSiblings/<path>` | table (regression, V23) |
+| live-collections | Invocations that ran no provider are not running (2 rows) | `collection_test.go: TestCollection_InvocationsWithoutProvider/<row>` | table (regression, V24) |
+| container-start | A failure followed by Shutdown under parallel start (2 rows) | `root_start_test.go: TestStart_FailureThenShutdown/<operation>` | synctest (regression, V25) |
+| container-start | StartError values built by the consumer (4 rows) | `errors_test.go: TestStartError_ConsumerBuilt/<row>` | table (regression, V26) |
+| type-resolution | The invoking service is not a candidate (3 rows) | `invoke_test.go: TestInvokeAs_SkipsInvoker/<row>` | table (regression, V27) |
+| type-resolution | Struct fallback skips the invoking service | `invoke_test.go: TestInvokeStruct_FallbackSkipsInvoker` | unit (regression, V27) |
+| container-lifecycle-hooks | A pipeline panic runs Failed hooks before it is re-raised (3 rows) | `container_hooks_test.go: TestContainerFailedHook_PipelinePanic/<row>` | table (regression, V28) |
+| container-lifecycle-hooks | A Failed hook panic does not replace the pipeline panic (2 rows) | `container_hooks_test.go: TestContainerFailedHook_PanicDuringPipelinePanic/<policy>` | table (regression, V28) |
+| container-start | A Starter that failed is tried again (2 rows) | `root_refresh_test.go: TestRefresh_RetriesFailedStarter/<operation>` | table (V29) |
+| component-kinds | A failed handler is called again | `kind_test.go: TestKind_RetriesFailedHandler` | unit (V29) |
+| component-kinds | Scope.Start handles only its subtree | `kind_test.go: TestKind_ScopeStartSubtree` | unit (V32) |
+| component-kinds | Replacing a handler on the clone leaves the source unchanged (2 rows) | `kind_test.go: TestKind_CloneReplaceIsolated/<container>` | table (V32) |
+| scope-lifecycle-hooks | Scope.Start during the scope's shutdown fires no Started hook (2 rows) | `scope_hooks_test.go: TestScopeStartedHook_SkippedWhileClosing/<row>` | table (regression, V30) |
+| scope-lifecycle-hooks | Starting hook allows or vetoes Scope.Start (panic rows) | `scope_hooks_test.go: TestScopeStartingHook_Veto/<row>` | table (regression, V31) |
+| scope-lifecycle-hooks | Later scope hook panics are logged with their point | `scope_hooks_test.go: TestScopeHooks_LaterPanicLogged` | unit (regression, V31) |
+| scope-lifecycle-hooks | Observer scope hook panics (scope-closing and default-policy Started rows) | `scope_hooks_test.go: TestScopeHooks_ObserverPanic/<row>`, `TestScopeStartedHook_PanicDefault` | table (V32) |
+| collection-ordering | Panicking Order() (string row: exact message) | `invoke_all_order_test.go: TestInvokeAll_OrderPanic/<row>` | table (regression, V31) |
+| container-lifecycle-hooks | Observer hooks receive the operation's context (5 rows) | `container_hooks_test.go: TestContainerHooks_ObserverContexts/<hook>` | table (V32) |
 
 Finding tests without a spec scenario (F2, F4, F5, V12):
 - `root_refresh_test.go: TestRootScope_ForgetsShutDownServices` (group 49) and `TestRootScope_ForgetsOverriddenServices` (regression, V12, internal);
