@@ -30,7 +30,7 @@ And no call panicked
 <!-- cases: N/A 10 compatibility: new API -->
 
 ### Requirement: Scope Starting hooks can veto Scope.Start
-`Scope.Start` on a child scope SHALL run the `HookScopeStarting` hooks with that scope before starting anything; a non-nil error or a panic SHALL abort it with an error wrapping the hook's error. `HookScopeStarted` hooks SHALL run after the scope's services started successfully.
+`Scope.Start` on a child scope SHALL run the `HookScopeStarting` hooks with that scope before starting anything; a non-nil error SHALL abort it with an error wrapping the hook's error, and a panic SHALL abort it with an error reading `scope starting hook panicked: <value>` that wraps the value when it is an error, as for container Starting hooks. `HookScopeStarted` hooks SHALL run after the scope's services started successfully.
 
 #### Scenario: Starting hook allows or vetoes Scope.Start
 ```gherkin
@@ -46,17 +46,47 @@ Examples:
   | behavior                     | result                                                   | starts | recorded |
   | returns nil                  | nil                                                      | 1      | tenant   |
   | returns errVeto              | an error matching errVeto, containing "scope `tenant`"   | 0      | nothing  |
-  | panics with "veto-boom"      | an error containing "veto-boom"                          | 0      | nothing  |
+  | panics with "veto-boom"      | an error containing "scope `tenant` start aborted: DI: scope starting hook panicked: veto-boom" | 0 | nothing |
+  | panics with errVeto          | an error matching errVeto, containing "scope starting hook panicked" | 0 | nothing  |
 ```
 
 <!-- cases: 1 default: the nil row -->
 <!-- cases: N/A 2 overrides: veto is the override -->
 <!-- cases: N/A 3 zero values, 4 boundaries: one hook per row -->
-<!-- cases: 5 errors: veto error and panic rows -->
+<!-- cases: 5 errors: veto error and panic rows; a panic message mirrors the container's -->
 <!-- cases: N/A 6 duplicates: a second Scope.Start starts nothing new and is covered in container-start -->
 <!-- cases: 7 lifecycle: Scope.Start before the root started is covered in container-start (ErrNotStarted, no hooks) -->
 <!-- cases: N/A 8 concurrency: covered in container-start -->
 <!-- cases: 9 panics: the panic row -->
+<!-- cases: N/A 10 compatibility: new API -->
+
+### Requirement: Scope Started hooks skip a scope that is shutting down
+`HookScopeStarted` hooks SHALL NOT run when the scope, or one of its ancestors, was shutting down when `Scope.Start` collected its services, so that nothing of it was started. `Scope.Start` SHALL still return nil then.
+
+#### Scenario: Scope.Start during the scope's shutdown fires no Started hook
+```gherkin
+Given a started root container and child scope "tenant" with lazy Starter "w", registered after Start
+And a counting HookScopeStarted hook
+And <shutting-down>.Shutdown() is running in another goroutine, blocked in a HookScopeClosing hook
+When the consumer calls tenant.Start()
+Then it returns nil
+And "w" was started 0 times
+And the Started hook ran 0 times
+
+Examples:
+  | shutting-down                                         |
+  | tenant                                                |
+  | "parent", the scope "tenant" was created under        |
+```
+
+<!-- cases: N/A 1 default, 2 overrides: there is no option -->
+<!-- cases: N/A 3 zero values: covered by the veto requirement -->
+<!-- cases: 4 boundaries: the scope itself and an ancestor -->
+<!-- cases: N/A 5 errors: Scope.Start returns nil -->
+<!-- cases: N/A 6 duplicates: a later Scope.Start after the shutdown finds nothing to start -->
+<!-- cases: 7 lifecycle: the subject -->
+<!-- cases: 8 concurrency: the shutdown runs in another goroutine; runs under -race with goleak -->
+<!-- cases: N/A 9 panics: none -->
 <!-- cases: N/A 10 compatibility: new API -->
 
 ### Requirement: Scope hooks receive a non-nil context
@@ -119,7 +149,7 @@ Then every counting hook ran 0 times
 <!-- cases: N/A 10 compatibility: new API -->
 
 ### Requirement: Scope hook panics follow the container panic policy
-A panic in a `HookScopeStarted`, `HookScopeClosing` or `HookScopeClosed` hook SHALL be recovered so the operation completes, and then passed to `HookContainerPanic` with the point name `scope-started`, `scope-closing` or `scope-closed`; when `HookContainerPanic` is nil it SHALL re-panic with the original value after the operation completed.
+A panic in a `HookScopeStarted`, `HookScopeClosing` or `HookScopeClosed` hook SHALL be recovered so the operation completes, and then passed to `HookContainerPanic` with the point name `scope-started`, `scope-closing` or `scope-closed`; when `HookContainerPanic` is nil it SHALL re-panic with the original value after the operation completed. Later panics of the same operation SHALL be logged via `Logf` with their point name, as `scope-closing hook panicked`, without calling them container hooks.
 
 #### Scenario: Observer scope hook panics
 ```gherkin
@@ -135,12 +165,24 @@ Examples:
   | HookScopeClosing | nil                | tenant.Shutdown() | the call panics with "scope-boom"                           | had Shutdown called 1 time   |
   | HookScopeClosed  | a recording func   | tenant.Shutdown() | the call returns and the recorder saw "scope-closed", "scope-boom" | had Shutdown called 1 time |
   | HookScopeStarted | a recording func   | tenant.Start()    | the call returns nil and the recorder saw "scope-started", "scope-boom" | had Shutdown called 0 times |
+  | HookScopeClosing | a recording func   | tenant.Shutdown() | the call returns and the recorder saw "scope-closing", "scope-boom" | had Shutdown called 1 time |
+  | HookScopeStarted | nil                | tenant.Start()    | a second Started hook ran, then the call panics with "scope-boom" | had Shutdown called 0 times |
+```
+
+#### Scenario: Later scope hook panics are logged with their point
+```gherkin
+Given a started root container with a child scope "tenant", a Logf recorder and a recording HookContainerPanic
+And two HookScopeClosing hooks that panic with "first" and "second"
+When the consumer calls tenant.Shutdown()
+Then the recorder saw "scope-closing", "first"
+And Logf received a message containing "DI: scope-closing hook panicked: second"
+And no Logf message contains "container scope-closing"
 ```
 
 <!-- cases: N/A 2 overrides: HookContainerPanic is the override -->
 <!-- cases: N/A 3 zero values, 4 boundaries: one panicking hook per row -->
 <!-- cases: N/A 5 errors: a Starting hook panic is a veto (previous requirement) -->
-<!-- cases: N/A 6 duplicates: one panic per operation -->
+<!-- cases: 6 duplicates: the first panic is dispatched, later ones are logged with their point -->
 <!-- cases: 7 lifecycle: the operation completes before the panic is dispatched -->
 <!-- cases: N/A 8 concurrency: dispatch happens on the caller's goroutine -->
 <!-- cases: 9 panics: the subject of this requirement -->

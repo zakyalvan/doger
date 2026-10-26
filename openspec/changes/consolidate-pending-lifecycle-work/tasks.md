@@ -475,3 +475,109 @@ Rules:
 
 - [x] 71.1 Full run: `make test`, `make lint`, per-module `go vet ./... && go test -race ./...` in every `go.work` module, the docs lint and build, and `openspec validate consolidate-pending-lifecycle-work --strict`
 - [x] 71.2 Stress: run the Part V and V2 lifecycle tests with `-race -count=2000`; verify no failure
+
+## 72. Each invocation copies its invoker chain (live-collections; design V23)
+
+- [ ] 72.1 RED: add `TestCollection_HolderAfterSiblings` to `collection_test.go`; verify `go test -race -run TestCollection_HolderAfterSiblings .` fails because the map holds "d" and lacks "e"
+- [ ] 72.2 GREEN: extend the chain with `append(slices.Clip(chain), name)` in `invokeAnyByNameAs` and `invokeByName`; verify the 72.1 command passes and `make test` is green
+- [ ] 72.3 REFACTOR: none needed (V36 replaces the slice); verify `make test` and `make lint` pass
+
+## 73. An invocation is over once it returned (live-collections; design V24)
+
+- [ ] 73.1 RED: add `TestCollection_InvocationsWithoutProvider` (2 rows) to `collection_test.go`; verify `go test -race -run TestCollection_InvocationsWithoutProvider .` fails with `ErrCircularDependency` on both rows
+- [ ] 73.2 GREEN: mark the virtual scope `returned` once `getInstance` returns, at the three sites that create one; verify the 73.1 command passes, `TestCollection_*` pass unchanged, and `make test` is green
+- [ ] 73.3 REFACTOR: *Extract Function* for the create-invoke-mark sequence if the three sites repeat it; verify `make test` and `make lint` pass
+
+## 74. A failure returned after Shutdown began carries the abort cause (container-start; design V25)
+
+- [ ] 74.1 RED: add `TestStart_FailureThenShutdown` (2 rows) to `root_start_test.go`; verify `go test -race -run TestStart_FailureThenShutdown .` fails because the errors do not match `ErrStartAfterShutdown`
+- [ ] 74.2 GREEN: in `finishStart` and `finishIncremental`, wrap a failure that does not match the abort cause with `withAbortCause` once the close phase is not open; verify the 74.1 command passes, the Part H and V tables pass unchanged, and `make test` is green
+- [ ] 74.3 REFACTOR: *Extract Function* the shared "abort outcome" rule of `finishStart` and `finishIncremental`; verify `make test` and `make lint` pass
+
+## 75. StartError tolerates nil fields (container-start; design V26)
+
+- [ ] 75.1 RED: add `TestStartError_ConsumerBuilt` (4 rows) to `errors_test.go`; verify `go test -race -run TestStartError_ConsumerBuilt .` fails with a nil pointer panic
+- [ ] 75.2 GREEN: read a nil `Scope` as an empty name and a nil `Cause` as `<nil>` in `Error()`; verify the 75.1 command passes, `TestStartError_*` pass unchanged, and `make test` is green
+- [ ] 75.3 REFACTOR: *Extract Function* `scopeName()` and `causeText()`; verify `make test` and `make lint` pass
+
+## 76. InvokeAs skips the invoking service (type-resolution; design V27)
+
+- [ ] 76.1 RED: add `TestInvokeAs_SkipsInvoker` (3 rows) and `TestInvokeStruct_FallbackSkipsInvoker` to `invoke_test.go`; verify `go test -race -run 'TestInvokeAs_SkipsInvoker|TestInvokeStruct_FallbackSkipsInvoker' .` fails with `ErrCircularDependency`
+- [ ] 76.2 GREEN: skip the name `invokingServiceName` returns in `selectByType`; verify the 76.1 command passes, `TestInvokeAs_*` and `TestInvokeStruct_*` pass unchanged, and `make test` is green
+- [ ] 76.3 REFACTOR: none needed if it is one check; update the `InvokeAs` godoc and the upgrading page (flagged); verify `make test`, `make lint` and the docs lint and build pass
+
+## 77. A pipeline panic runs Failed hooks before it is re-raised (container-lifecycle-hooks; design V28)
+
+- [ ] 77.1 RED: add `TestContainerFailedHook_PipelinePanic` (3 rows) and `TestContainerFailedHook_PanicDuringPipelinePanic` (2 rows) to `container_hooks_test.go`; verify `go test -race -run 'TestContainerFailedHook_Pipeline|TestContainerFailedHook_PanicDuring' .` fails because the Failed hook did not run
+- [ ] 77.2 GREEN: recover the pipeline panic in `StartWithContext`, run the Failed hooks with `recoverAsError(value)`, route a Failed hook panic to `HookContainerPanic` or `Logf`, then re-panic; verify the 77.1 command passes, `TestStart_ParallelHookPanic` passes unchanged, and `make test` is green
+- [ ] 77.3 REFACTOR: *Extract Function* the panic branch of `StartWithContext`; update the `StartWithContext` and `HookContainerFailed` godoc, the container-hooks page and the upgrading page (flagged); verify `make test`, `make lint` and the docs lint and build pass
+
+## 78. A failed Starter or handler is tried again (container-start, component-kinds; design V29)
+
+- [ ] 78.1 Add `TestRefresh_RetriesFailedStarter` (2 rows) to `root_refresh_test.go`, `TestKind_RetriesFailedHandler` and `TestKind_ScopeStartSubtree` to `kind_test.go`; verify they pass on arrival, and that each fails under a temporary mutation (reverted) recorded in notes.md
+- [ ] 78.2 Document the retry in the `RefreshWithContext`, `Scope.StartWithContext` and `Kind.Handle` godoc and the starter page; verify `make test`, `make lint` and the docs lint and build pass
+
+## 79. Scope Started hooks skip a scope that is shutting down (scope-lifecycle-hooks; design V30)
+
+- [ ] 79.1 RED: add `TestScopeStartedHook_SkippedWhileClosing` (2 rows) to `scope_hooks_test.go`; verify `go test -race -run TestScopeStartedHook_SkippedWhileClosing .` fails because the Started hook ran
+- [ ] 79.2 GREEN: report from `runPipeline` whether its roots were closing at claim time, pass it up from `startIncremental`, and skip `HookScopeStarted` then; verify the 79.1 command passes, `TestScopeShutdown_*` pass unchanged, and `make test` is green
+- [ ] 79.3 REFACTOR: none needed if the flag is one return value; update the `HookScopeStarted` godoc; verify `make test` and `make lint` pass
+
+## 80. Messages (collection-ordering, scope-lifecycle-hooks; design V31)
+
+- [ ] 80.1 RED: assert the exact `Order()` panic message in `TestInvokeAll_OrderPanic`, add the scope Starting panic rows to `TestScopeStartingHook_Veto`, and add `TestScopeHooks_LaterPanicLogged` to `scope_hooks_test.go`; verify `go test -race -run 'TestInvokeAll_OrderPanic|TestScopeStartingHook_Veto|TestScopeHooks_LaterPanicLogged' .` fails on the three messages
+- [ ] 80.2 GREEN: wrap the `Order()` panic without `recoverAsError`, give `startingHookPanicError` the subject, and name the point in the later-panic log line; verify the 80.1 command passes and `make test` is green
+- [ ] 80.3 REFACTOR: none needed; verify `make test` and `make lint` pass
+
+## 81. Test strengthening (design V32)
+
+Each test below that passes on arrival is checked with a temporary mutation (reverted), recorded in notes.md.
+
+- [ ] 81.1 `TestRefresh_ShutdownCancels`: assert that Shutdown returns only after the cancelled Refresh returned (1s of bubble time); verify it fails when `beginClose` stops waiting for incremental runs
+- [ ] 81.2 Give `buildReq` and `buildDB` a field; verify the "same instance" rows of `TestAfterBuildHook_*` fail when the transient wrapper passes another instance to the hook
+- [ ] 81.3 Add `TestExplain_EdgeSourceStrongest` (2 rows: declared then invoked; depends-on and declared on one edge) to `dependency_test.go`, and pre-set a non-zero `Source` in the `invoked` row of `TestDependencySource_UnmarshalText`; verify they fail when the DAG keeps the first source, and when `UnmarshalText` never assigns invoked
+- [ ] 81.4 Add `TestContainerHooks_ObserverContexts` (5 rows) to `container_hooks_test.go`, and assert exact counts in `TestContainerHooks_NilContext`; verify they fail when the observer hooks receive `context.Background()`
+- [ ] 81.5 Collections: `InvokeAllMap` failure, self-exclusion, edges and alias exclusion; `WithOrder` and `Ordered` on a `do:"*"` slice field; built members stay built after a failure; caller mutation of a map; construction order ignores `WithOrder`; the results of `TestCollection_ConcurrentReads`
+- [ ] 81.6 Kinds: `TestKind_CloneReplaceIsolated` covers the clone row and the slot order (component-kinds "Replacing a handler on the clone leaves the source unchanged")
+- [ ] 81.7 Hooks:
+  - the `scope-closing` point with a recording policy;
+  - `Same` and per-row step errors in `TestContainerHooks_ShutdownInterruptsLateStep`;
+  - a child scope shut down through a provider's injector fires no container hook;
+  - `PhaseClosing` while Shutdown waits for Start;
+  - the default-policy `HookScopeStarted` panic re-raised after Scope.Start finished.
+- [ ] 81.8 Start:
+  - an explicit not-a-Starter assertion in `TestStart_DependencyOrder`;
+  - a child scope created after Start is not started by it;
+  - `errors.As` and `Op` for a recovered Start panic, in sequential and parallel mode;
+  - `MustInvokeAs` determinism;
+  - build-hook panics for eager and transient services;
+  - a typed-nil instance passed to the build hook as is;
+  - shadowing through an intermediate scope.
+- [ ] 81.9 Verify `make test` and `make lint` pass
+
+## 82. Documentation (design V33)
+
+- [ ] 82.1 Document the two live-collection hazards on `Collection` and the collections page
+- [ ] 82.2 Fix the `RootScope.StartWithContext` godoc on child scopes and wrap `root_start.go:56`. Name the `scope-*` points in the `HookContainerPanic` godoc, and the panic policy on the scope observer fields. State on the `Add*Hook` methods that lists are copied before they run and that the adders are configuration-time only, and on the container adders that a nil hook is ignored. Mirror both in `container-hooks.md`
+- [ ] 82.3 Upgrading page: the unkeyed-literal break, the explain output change, and the V27 and V28 behavior changes
+- [ ] 82.4 Verify the docs lint and build pass
+
+## 83. Examples (design V34)
+
+- [ ] 83.1 Add `ExampleRootScope_AddScopeStartingHook`, `ExampleRootScope_AddScopeStartedHook`, `ExampleRootScope_Refresh_notStarted`, `ExampleMustInvokeAllMap` and `ExampleDependencySource_UnmarshalText`; verify `go test -race -run Example .` passes
+
+## 84. Code-review cleanups (design V36; refactors, behavior unchanged)
+
+Each step runs `make test` and `make lint` after it; no test input or assertion changes, except the white-box chain accessor in 84.6.
+
+- [ ] 84.1 *Remove Dead Code*: the non-Starter check in `startStarters`
+- [ ] 84.2 *Replace Temp with Query* / *Inline Variable*: `collectionMember.order` with `slices.SortStableFunc` in `invokeCollection`; drop the no-op key `Convert` in `injectCollectionField`
+- [ ] 84.3 *Parameterize Function*: one observer loop with a call adapter, used by the Failed and Closed loops
+- [ ] 84.4 *Extract Function* `placement.compare` for the three default-order comparators; `Scope.Ancestors` calls `scopeDepth`
+- [ ] 84.5 *Substitute Algorithm*: `root.kinds` starts as the shared `defaultKinds` slice; `Kind.Handle` copies before writing; `runStage` and `Handle` lose their Runnable special cases; verify `BenchmarkNew` stays at 11 allocs/op
+- [ ] 84.6 *Replace Data Value with Object*: the virtual scope stores its name and invoker link, and the chain is derived by walking up; scopes built from a chain keep it as a base. Run the bench suite against `52bb53d` with `benchstat` (20 runs) and record it in notes.md
+
+## 85. Integration checks after the third verification
+
+- [ ] 85.1 Full run: `make test`, `make lint`, per-module `go vet ./... && go test -race ./...` in every `go.work` module, the docs lint and build, and `openspec validate consolidate-pending-lifecycle-work --strict`
+- [ ] 85.2 Stress: run the Part V, V2 and V3 lifecycle and collection tests with `-race -count=2000`; verify no failure

@@ -68,10 +68,36 @@ Examples:
 <!-- cases: 7 lifecycle: child scope and clone rows -->
 <!-- cases: 8 concurrency: the stable scenario replaces the former random pick; runs under -race -->
 <!-- cases: N/A 9 panics: unchanged -->
-<!-- cases: 10 compatibility: BEHAVIOR CHANGE (flagged) - the pick was random, so no consumer could rely on a specific one; hooks still receive the requested type name. BEHAVIOR CHANGE (flagged) - a shadowed ancestor service is no longer returned -->
+<!-- cases: 10 compatibility: BEHAVIOR CHANGE (flagged) - the pick was random, so no consumer could rely on a specific one; hooks still receive the requested type name. BEHAVIOR CHANGE (flagged) - a shadowed ancestor service is no longer returned. -->
+
+### Requirement: InvokeAs skips the invoking service
+When `InvokeAs[T]` or `MustInvokeAs[T]` is called from a provider, the service that provider builds SHALL NOT be a candidate, as for collections, so a decorator can resolve the service it wraps. When it is the only match, the result SHALL be an error matching `ErrServiceNotMatch`.
+
+#### Scenario: The invoking service is not a candidate
+```gherkin
+Given a root scope with lazy "decor" implementing "Logger", whose provider calls InvokeAs[Logger] and wraps the result
+And <others>
+When the consumer calls InvokeNamed for "decor"
+Then the result is <result>
+
+Examples:
+  | others                                            | result                                               |
+  | lazy "base" implementing Logger, registered after "decor" | "decor" wrapping "base", nil error                  |
+  | lazy "base" implementing Logger, registered before "decor" | "decor" wrapping "base", nil error                 |
+  | no other service implementing Logger              | an error matching ErrServiceNotMatch, not ErrCircularDependency |
+```
+
+<!-- cases: 1 default: the first row -->
+<!-- cases: N/A 2 overrides: InvokeNamed selects a specific service, including the provider's own -->
+<!-- cases: 3 zero values: no other match gives ErrServiceNotMatch -->
+<!-- cases: 4 boundaries: zero and one other match -->
+<!-- cases: 5 errors: ErrServiceNotMatch instead of ErrCircularDependency -->
+<!-- cases: N/A 6 duplicates: registration order no longer matters for self-selection -->
+<!-- cases: N/A 7 lifecycle, 8 concurrency, 9 panics: unchanged -->
+<!-- cases: 10 compatibility: BEHAVIOR CHANGE (flagged) - a decorator calling InvokeAs for its own interface no longer fails with ErrCircularDependency; a lone self-match fails with ErrServiceNotMatch -->
 
 ### Requirement: Implicit-aliasing struct injection uses the same selection
-When `InvokeStruct` falls back to type-based resolution for an empty tag (`do:""`) because no service has the field type's name, it SHALL select the candidate by the same rule as `InvokeAs`.
+When `InvokeStruct` falls back to type-based resolution for an empty tag (`do:""`) because no service has the field type's name, it SHALL select the candidate by the same rule as `InvokeAs`, including skipping the service whose provider calls it.
 
 #### Scenario: Struct fallback selects deterministically
 ```gherkin
@@ -86,6 +112,14 @@ Then field G is service "b" every time
 <!-- cases: N/A 3 zero values: an empty tag is the subject -->
 <!-- cases: N/A 4 boundaries: covered by the InvokeAs requirement -->
 <!-- cases: N/A 5 errors: unchanged -->
+#### Scenario: Struct fallback skips the invoking service
+```gherkin
+Given a root scope with lazy "decor" implementing "Greeter", whose provider calls InvokeStruct for a struct with field `G Greeter \`do:""\``
+And lazy "base" implementing "Greeter", registered after "decor"
+When the consumer calls InvokeNamed for "decor"
+Then the provider's field G is service "base"
+```
+
 <!-- cases: N/A 6 duplicates, 7 lifecycle: covered by the InvokeAs requirement -->
 <!-- cases: 8 concurrency: 100 repetitions -->
 <!-- cases: N/A 9 panics: unchanged -->

@@ -53,8 +53,8 @@ Facts verified for the new parts (scratch probes on a copy of the repo at `e116a
 **F3. `TestMixedServiceTypesPerformance`.** Resolved by #5, which runs it on `synctest` bubble time. Re-measured on the merged branch: 0 failures in 200 runs. No task.
 
 **F4. The default `Runnable` handler is implicit.**
-- `NewWithOpts` no longer calls `runnableKind.Handle`. Instead `runStage` treats a container without a `runnableKind` entry as if the package-level `defaultRunnableEntry` (built once) occupied the **first** `StageAfterStart` slot, exactly where `NewWithOpts` used to register it.
-- `Runnable.Handle` appends a real entry, which replaces the implicit one. Clones copy entries (Q1), and the absence of an entry is copied as absence.
+- `NewWithOpts` no longer calls `runnableKind.Handle`. Instead `root.kinds` starts as a shared, package-level one-entry slice holding `defaultRunnableEntry` (built once), in the **first** slot, exactly where `NewWithOpts` used to register it (V36; before, `runStage` and `Handle` special-cased its absence).
+- `Runnable.Handle` replaces that entry in place, on a copy of the list, so the shared slice is never written. Clones copy entries (Q1).
 - Verified with `BenchmarkNew` allocs/op equal to 11, not by a unit test: alloc counts vary across Go versions.
 
 **F5. The `healthCheckPool` race is investigated, not fixed.**
@@ -183,7 +183,7 @@ Found by `/opsx:verify` and a code review, each reproduced by a failing test bef
 - Only runs with candidates in the scope are waited for, so a scope created and shut down by a provider during Start does not deadlock. Shutting a scope down synchronously from code of a run that is starting it deadlocks, as for root; documented.
 - The root's own scope keeps root Shutdown's model (start-lifecycle D6).
 
-**V5. Live-collection reads drop a returned provider's chain (user decision).** `virtualScope` gets a `returned atomic.Bool`, set by `invokeAnyByNameAs` once the wrapper's `getInstance` returned. A read on a returned virtual scope resolves from its underlying `*Scope`, excludes only the holder (the chain's last name), and records no edge. Reads while the provider runs keep the chain.
+**V5. Live-collection reads drop a returned provider's chain (user decision).** `virtualScope` gets a `returned atomic.Bool`, set by `handleProviderPanic` once the provider returned (and, since V24, by the invoking site once `getInstance` returned). A read on a returned virtual scope resolves from its underlying `*Scope`, excludes only the holder (the chain's last name), and records no edge. Reads while the provider runs keep the chain.
 
 **V6. The `*` tag requires `map[string]E` exactly (user decision).** The key check compares the key type with `reflect.TypeFor[string]()`, matching the spec and S3.
 
@@ -218,6 +218,58 @@ A second `/opsx:verify` found four defects, each reproduced by a probe test, plu
 **V21. Bookkeeping skips services that left their scope.** `startCandidate` marks a Starter started, and the kind stage marks a component handled, only while its scope still holds that wrapper. After a bounded child shutdown gave up waiting, a run finishing later no longer re-adds the shut-down wrapper.
 
 **V22. A scope's shutdown covers its descendants (user decision, "apply suggestions").** `claimCandidates` drops a candidate when its scope or any ancestor scope is closing, so a scope created under a scope that is shutting down is not started.
+
+### Part V3 — Third verification
+
+A third `/opsx:verify` and a `/code-review` reproduced five defects with probe tests, and one more turned up while planning the fixes (V23). The user chose the recommended option for each open decision (V25, V27–V31), asked to fix V23 in this round, and to apply every suggestion, including the code-review cleanups (V36).
+
+**V23. Each invocation copies its invoker chain (user decision: fix in this round).** `invokeAnyByNameAs` and `invokeByName` extend the chain with `append(slices.Clip(chain), name)`, as `invokeServiceInstance` already does. A plain `append` reused spare capacity, so a sibling invocation overwrote the last name of a stored injector's chain. A live collection then took the sibling for its holder, and cycle detection and edges recorded through a stored injector used the wrong name.
+
+**V24. An invocation is over once it returned.** The three sites that create a provider's virtual scope mark it `returned` once `getInstance` returns, whether or not a provider ran: an eager value resolving its `DependsOn`, or an attempt that failed before its provider ran. `handleProviderPanic` still marks it as soon as the provider returns, so reads from the holder's own `HookAfterBuild` are already detached, as before.
+
+**V25. A failure returned after Shutdown began carries the abort cause (user decision).** `finishStart` and `finishIncremental` run under `lifecycleMu` after V1 set the cause. When the close phase is no longer open and the error does not already match the cause, they wrap it with `withAbortCause`. This covers the wait of a parallel start after its first failure, and the short window after a sequential failure. An error that already carries the cause is not wrapped twice, so existing messages are unchanged.
+
+**V26. `StartError.Error` tolerates nil fields.** A nil `Scope` reads as an empty scope name and a nil `Cause` as `<nil>`, through small helpers, so a consumer-built value never panics.
+
+**V27. `InvokeAs` skips the invoking service (user decision).** `selectByType` skips the name `invokingServiceName` returns, as collections do, so the struct fallback skips it too. A decorator resolves the service it wraps; a lone self-match is `ErrServiceNotMatch`.
+
+**V28. A pipeline panic runs Failed hooks before it is re-raised (user decision).** `StartWithContext` runs `runStart` through `callHookSafely`. On a panic, `finishStart` has already marked the phase failed; the Failed hooks run with `recoverAsError(value)`, and `Start` re-panics with the original value. A Failed hook panic then goes to `HookContainerPanic` when set, and is logged otherwise, so the pipeline panic is the one re-raised. Refresh and Scope.Start fire no container hook and are unchanged.
+
+**V29. A failed Starter or handler is tried again (user decision).** The existing behavior is kept and specified: `markStarted` and `markHandled` run only on success. Tests pin it.
+
+**V30. Scope Started hooks skip a scope that is shutting down (user decision).** `runPipeline` reports whether `claimCandidates` found its roots closing (`closingInLine`) under `lifecycleMu`; `startIncremental` passes that up, and `Scope.StartWithContext` then skips `HookScopeStarted`. `Scope.Start` still returns nil.
+
+**V31. Messages.**
+- `Order()` panics read `` DI: Order() of collection member `x` panicked: <value> ``, wrapping an error value (K D4), without the `recovered panic` prefix.
+- Scope Starting hook panics read `` DI: scope `x` start aborted: DI: scope starting hook panicked: <value> ``, like the container's: `startingHookPanicError` takes the subject.
+- A later observer panic is logged as `DI: container <point> hook panicked` for container points and `DI: <point> hook panicked` for `scope-*` points.
+
+**V32. Tests.** Tests that pass on arrival are each checked with a temporary mutation, recorded in notes.md:
+- `TestRefresh_ShutdownCancels` measures that Shutdown waits for the cancelled Refresh.
+- The build-hook fixtures have a field, so `assert.Same` can fail.
+- Edge sources: declared then invoked, and depends-on with declared on one edge.
+- Hook contexts: the Started, Ready, Failed, Closing and Closed rows.
+- The suggestion tests: `InvokeAllMap` rules, `*` slice ordering, built members staying built, map mutation, the `invoked` `UnmarshalText` row, clone replacement and slot order, kind handlers under `Scope.Start`, exact nil-context counts, the `scope-closing` point, `Same` and per-row step errors in `ShutdownInterruptsLateStep`, child scope shutdown through a provider's injector, `PhaseClosing` while Shutdown waits for Start, the default-policy scope Started panic, the explicit not-a-Starter check, a child scope created after Start, `errors.As` for a recovered Start panic, `MustInvokeAs` determinism, build-hook panics for eager and transient services, a typed-nil instance, shadowing through an intermediate scope, the concurrent-read results, and construction order.
+
+**V33. Documentation.**
+- The two live-collection hazards go on `Collection` and the collections page.
+- The `RootScope.StartWithContext` godoc no longer says child scopes have no Start.
+- The `HookContainerPanic` godoc and the scope observer fields name the `scope-*` points.
+- The `Add*Hook` methods say that each list is copied before it runs and that they are configuration-time only, and the container adders that a nil hook is ignored.
+- The upgrading page covers the unkeyed-literal break, the explain output change and the V27/V28 behavior changes.
+- The proposal's Impact list and F4 are corrected.
+
+**V34. Examples** for `AddScopeStartingHook`, `AddScopeStartedHook`, `ErrNotStarted`, `MustInvokeAllMap` and `DependencySource.UnmarshalText`.
+
+**V35. Out of scope.** The `/code-review` finding that a child scope could shut down between `discoverCandidates` and `claimCandidates` was not reproduced; no change is made (CLAUDE.md rule 5). Wrapping the AsStarter-without-Start error with the abort cause was suggested for consistency only, and its probe was invalid; it is now covered by V25.
+
+**V36. Code-review cleanups (refactors, behavior unchanged).**
+- The unreachable non-Starter check in `startStarters` goes.
+- `collectionMember` carries its order, and `invokeCollection` sorts members directly with `slices.SortStableFunc`; the no-op key `Convert` goes.
+- One observer loop takes a call adapter (an `observerHook` type-set constraint keeps the nil check), so the Failed and Closed loops reuse it.
+- One `placement` comparator (depth, registration index, name) serves start discovery, parallel scheduling and collections. The name never decides for start, because registration indexes are unique in a container. `Scope.Ancestors` reuses `scopeDepth`.
+- `root.kinds` starts as a shared one-entry slice holding `defaultRunnableEntry` (no allocation; `New` stays at 11 allocs). `Kind.Handle` copies the list before writing, so `Handle` and `runStage` lose their special cases.
+- A virtual scope stores its own name and a link to its invoker's virtual scope, and derives the invoker chain by walking up. A scope built from an explicit chain (`newVirtualScope`, a detached read) stores that chain as its base. Each invocation then allocates one object instead of two, and a stored injector retains O(depth) memory instead of O(depth²). White-box tests read the chain through an accessor; their expected values are unchanged.
 
 ### Part H — Container lifecycle hooks (folded from `add-container-lifecycle-hooks`)
 

@@ -62,7 +62,7 @@ And "late" was started 0 times
 ## ADDED Requirements
 
 ### Requirement: Refresh starts what is not started yet
-`RootScope.Refresh()` / `RefreshWithContext(ctx)` SHALL run the start pipeline over the services and scopes not yet started or handled: build them, run kind handlers for their new components, and start their Starters, with the same order, context, error and per-service hook rules as `Start`. A service SHALL be started at most once per container.
+`RootScope.Refresh()` / `RefreshWithContext(ctx)` SHALL run the start pipeline over the services and scopes not yet started or handled: build them, run kind handlers for their new components, and start their Starters, with the same order, context, error and per-service hook rules as `Start`. A service SHALL be started successfully at most once per container: a Starter whose build or Start failed is not recorded as started, so the next Refresh or Scope.Start that covers it SHALL try it again.
 
 #### Scenario: Refresh starts late registrations and new scopes once
 ```gherkin
@@ -87,12 +87,28 @@ Then Refresh returns nil
 And "a" was started 1 time
 ```
 
+#### Scenario: A Starter that failed is tried again
+```gherkin
+Given a started root container and lazy Starter "late", registered after Start in <scope>, whose Start returns errBoom on its first call and nil afterwards
+When the consumer calls <operation> twice
+Then the first call returns an error matching errBoom and the second returns nil
+And "late"'s Start was called 2 times
+When the consumer calls <operation> again
+Then it returns nil
+And "late"'s Start was called 2 times
+
+Examples:
+  | scope                                     | operation      |
+  | the root                                  | root.Refresh() |
+  | child scope "tenant", created after Start | tenant.Start() |
+```
+
 <!-- cases: 1 default: Refresh after Start -->
 <!-- cases: N/A 2 overrides: StartParallelism and context apply as for Start -->
 <!-- cases: 3 zero values: nothing new; a nil context is treated as context.Background(), as for Start -->
 <!-- cases: 4 boundaries: zero, one and several new services; repeated Refresh -->
-<!-- cases: 5 errors: failures are wrapped as for Start ("Refresh failures") -->
-<!-- cases: 6 duplicates: a second Refresh starts nothing again -->
+<!-- cases: 5 errors: failures are wrapped as for Start ("Incremental start failures are StartError values"); a failed Starter is tried again ("A Starter that failed is tried again") -->
+<!-- cases: 6 duplicates: a second Refresh starts nothing again; only a successful Start counts -->
 <!-- cases: 7 lifecycle: before Start and after Shutdown are covered by "Incremental start needs a started container" -->
 <!-- cases: 8 concurrency: covered by "Concurrent Refresh calls are serialized" -->
 <!-- cases: 9 panics: a panicking Start method is recovered as for Start -->
@@ -288,12 +304,39 @@ Examples:
 <!-- cases: 2 overrides: n > 1 rows -->
 <!-- cases: 3 zero values: StartParallelism 0 -->
 <!-- cases: 4 boundaries: n = 1, 2, number of independent Starters, more than that, the maximum uint -->
-<!-- cases: 5 errors: the first failure is returned; running Starters are awaited -->
+<!-- cases: 5 errors: the first failure is returned; running Starters are awaited; a Shutdown during that wait has its own requirement -->
 <!-- cases: N/A 6 duplicates: each Starter starts once -->
 <!-- cases: 7 lifecycle: dependency order is kept ("d" after "a") -->
 <!-- cases: 8 concurrency: per-service hooks may run concurrently and must synchronize their own state; runs under -race with goleak -->
 <!-- cases: 9 panics: a recovered Start panic is a failure as in "Start errors and panics"; hook panics have their own requirement -->
 <!-- cases: 10 compatibility: the default stays sequential -->
+
+### Requirement: A failure returned after Shutdown began matches ErrStartAfterShutdown
+When root Shutdown began before Start, Refresh or Scope.Start returns a service failure (for example while a parallel start waits for its running Starters after the first failure), that failure SHALL also match `ErrStartAfterShutdown`, as every start failure after Shutdown began does, and keep matching its own cause.
+
+#### Scenario: A failure followed by Shutdown under parallel start
+```gherkin
+Given a root container inside synctest.Test created with StartParallelism 2
+And lazy Starters "a" (returns errBoom after 1s) and "b" (returns its context's error once cancelled, or nil after 10s), without dependencies, registered <when>
+And root Shutdown() is called in another goroutine at 1.5s of bubble time
+When the consumer calls <operation>
+Then it returns an error matching both errBoom and ErrStartAfterShutdown
+And "b"'s context was cancelled
+
+Examples:
+  | when                         | operation |
+  | before Start                 | Start()   |
+  | after Start() returned nil   | Refresh() |
+```
+
+<!-- cases: N/A 1 default, 2 overrides: there is no option -->
+<!-- cases: N/A 3 zero values, 4 boundaries: one failure and one Shutdown -->
+<!-- cases: 5 errors: the failure matches both its cause and ErrStartAfterShutdown -->
+<!-- cases: N/A 6 duplicates: an error already carrying the abort cause is not wrapped again -->
+<!-- cases: 7 lifecycle: Start and Refresh rows -->
+<!-- cases: 8 concurrency: synctest bubble time; runs under -race with goleak -->
+<!-- cases: N/A 9 panics: a panic is re-raised as before -->
+<!-- cases: N/A 10 compatibility: completes the existing "Shutdown cancels a running Start" rule for parallel start -->
 
 ### Requirement: Start hook panics under parallel start reach the caller
 With `StartParallelism` n > 1, a panic in a per-service start hook (`HookBeforeStart`, `HookAfterStart`) SHALL be re-raised on the goroutine that called Start, Refresh or Scope.Start once the running Starters have returned, exactly as in sequential mode.
@@ -325,7 +368,7 @@ Examples:
 <!-- cases: N/A 10 compatibility: new API -->
 
 ### Requirement: Start failures are StartError values
-Every failure of a service or kind handler that Start, Refresh or Scope.Start returns SHALL be a `*StartError{Scope, Service, Kind, Op, Cause}` (`Op` is `build`, `start` or `handle`; `Kind` is empty unless `Op` is `handle`) whose `Error()` keeps the existing message and whose `Unwrap()` returns `Cause`.
+Every failure of a service or kind handler that Start, Refresh or Scope.Start returns SHALL be a `*StartError{Scope, Service, Kind, Op, Cause}` (`Op` is `build`, `start` or `handle`; `Kind` is empty unless `Op` is `handle`) whose `Error()` keeps the existing message and whose `Unwrap()` returns `Cause`. Because its fields are exported, `Error()` SHALL NOT panic on a value built by the consumer: a nil `Scope` reads as an empty scope name and a nil `Cause` as `<nil>`.
 
 #### Scenario: StartError fields per failure point
 ```gherkin
@@ -359,6 +402,21 @@ Examples:
   | kind "k"'s handler returns errBoom for lazy "j"   | root.Refresh() | j       | k    | handle | errBoom  |
 ```
 
+#### Scenario: StartError values built by the consumer
+```gherkin
+Given a *StartError built by the consumer with <fields>
+When the consumer calls Error()
+Then it does not panic
+And it returns "<message>"
+
+Examples:
+  | fields                                                   | message                                                   |
+  | Service "db", Op start, Cause errors.New("boom"), no Scope | DI: failed to start service `db` in scope ``: boom        |
+  | Service "db", Op build, Scope the root's, no Cause         | DI: failed to build service `db` in scope `[root]`: <nil> |
+  | Service "j", Kind "k", Op handle, no Scope, no Cause       | DI: kind `k` failed for service `j` in scope ``: <nil>    |
+  | all fields zero                                          | DI: failed to build service `` in scope ``: <nil>         |
+```
+
 #### Scenario: Errors that are not service failures are not StartError
 ```gherkin
 Given a root scope where <failure>
@@ -374,7 +432,7 @@ Examples:
 ```
 
 <!-- cases: N/A 2 overrides: the error type is fixed -->
-<!-- cases: N/A 3 zero values: a nil error on success -->
+<!-- cases: 3 zero values: a nil error on success; a StartError with a nil Scope or Cause, or all fields zero ("StartError values built by the consumer") -->
 <!-- cases: N/A 4 boundaries: one failure per Start -->
 <!-- cases: 5 errors: every failure point and the non-service errors -->
 <!-- cases: N/A 6 duplicates: covered by the one-shot requirement -->
@@ -415,6 +473,16 @@ Then Refresh returns nil
 And "w" was started 0 times
 ```
 
+#### Scenario: A scope created under a shutting-down scope is skipped
+```gherkin
+Given a started root container and child scope "tenant"
+And tenant.Shutdown() is running in another goroutine, blocked in a HookScopeClosing hook
+And the consumer then creates grandchild "jobs" under "tenant" with lazy Starter "w"
+When the consumer calls root.Refresh()
+Then Refresh returns nil
+And "w" was started 0 times
+```
+
 #### Scenario: A scope created during a running start does not wait
 ```gherkin
 Given a root container with lazy Starter "a" whose provider creates child scope "tmp", registers and invokes lazy "x" in it, and calls tmp.Shutdown()
@@ -436,16 +504,6 @@ And tmp.Shutdown() returned a successful report while Start was running
 
 ### Requirement: A child shutdown wait is bounded by its context
 If the context of a child scope's `ShutdownWithContext` ends while it waits for a running start, the report SHALL fail with an error keyed by the scope with an empty service name wrapping `ctx.Err()`, and the shutdown SHALL proceed.
-
-#### Scenario: A scope created under a shutting-down scope is skipped
-```gherkin
-Given a started root container and child scope "tenant"
-And tenant.Shutdown() is running in another goroutine, blocked in a HookScopeClosing hook
-And the consumer then creates grandchild "jobs" under "tenant" with lazy Starter "w"
-When the consumer calls root.Refresh()
-Then Refresh returns nil
-And "w" was started 0 times
-```
 
 #### Scenario: A child shutdown bounded by its context
 ```gherkin

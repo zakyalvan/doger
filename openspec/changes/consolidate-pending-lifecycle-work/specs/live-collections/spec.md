@@ -113,8 +113,54 @@ And ExplainNamedService(root, "bus") lists dependency console
 <!-- cases: N/A 2 overrides: there is no option -->
 <!-- cases: N/A 3 zero values, 4 boundaries: covered by the main requirement -->
 <!-- cases: N/A 5 errors: member failures are returned as for InvokeAll -->
-<!-- cases: 6 duplicates: the holder stays excluded -->
+<!-- cases: 6 duplicates: the holder stays excluded ("The holder is the service its provider builds") -->
 <!-- cases: 7 lifecycle: during versus after the provider; an outer provider still running keeps cycle detection -->
-<!-- cases: N/A 8 concurrency: covered by "Concurrent reads are race-free" -->
+<!-- cases: N/A 8 concurrency: covered by "Concurrent reads are race-free". Two hazards are documented on Collection, not specified as behavior, because a read cannot know its goroutine or build chain: a goroutine outside the build chain that reads while an outer provider of the holder still runs gets ErrCircularDependency for that provider's service; a read from inside a member's provider, by code not on the holder's build chain, waits for that member's own build and never returns -->
 <!-- cases: N/A 9 panics: as for InvokeAll -->
+<!-- cases: N/A 10 compatibility: new API -->
+
+### Requirement: An invocation that ran no provider is over once it returned
+An invocation SHALL stop counting as a running provider of the build chain once it has returned, even when no provider ran in it: the resolution of an eager value's declared dependencies, or an attempt that failed before its provider ran. A later read of a collection created below it SHALL NOT report a circular dependency on it.
+
+#### Scenario: Invocations that ran no provider are not running
+```gherkin
+Given lazy "bus" implementing "EventHandler" whose provider stores c := InvokeCollection[EventHandler](i)
+And <dependent> implementing "EventHandler", registered with DependsOnNamed("bus")
+And <steps>
+When the bus calls c.Map()
+Then the result has keys <keys> and a nil error
+
+Examples:
+  | dependent    | steps                                                                                  | keys   |
+  | eager value "e" | the consumer invoked "e"                                                             | {"e"}  |
+  | lazy "l", also with DependsOnNamed("missing") | the consumer invoked "l", which failed, then registered lazy "missing" (not an EventHandler) and invoked "l" again | {"l"} |
+```
+
+<!-- cases: 1 default: the eager row -->
+<!-- cases: N/A 2 overrides: there is no option -->
+<!-- cases: N/A 3 zero values, 4 boundaries: one dependent per row -->
+<!-- cases: 5 errors: the failed-attempt row -->
+<!-- cases: N/A 6 duplicates: a second invocation is over as well -->
+<!-- cases: 7 lifecycle: the read happens after the dependent's invocation returned -->
+<!-- cases: N/A 8 concurrency, 9 panics: as for the main requirement -->
+<!-- cases: N/A 10 compatibility: new API -->
+
+### Requirement: The holder is the service its provider builds
+The holder a live collection excludes SHALL be the service whose provider received `i`, whatever that provider's invoker builds afterwards from the same depth of the build chain.
+
+#### Scenario: The holder stays excluded after its invoker builds siblings
+```gherkin
+Given lazy "a", "b", "c", "d" and "e", each implementing "EventHandler", where "a" invokes "b", "b" invokes "c", and "c" invokes "d" and then "e"
+And "d"'s provider stores c := InvokeCollection[EventHandler](i)
+And the consumer has invoked "a"
+When "d" calls c.Map()
+Then the result has keys {"a", "b", "c", "e"} and a nil error
+```
+
+<!-- cases: 1 default: the scenario -->
+<!-- cases: N/A 2 overrides: there is no option -->
+<!-- cases: 4 boundaries: a chain three deep, where the invoker chain's backing array has spare capacity -->
+<!-- cases: N/A 3 zero values, 5 errors, 8 concurrency, 9 panics: as for the main requirement -->
+<!-- cases: 6 duplicates: a sibling built after the holder ("e") stays a member -->
+<!-- cases: 7 lifecycle: the read happens after the whole chain returned -->
 <!-- cases: N/A 10 compatibility: new API -->

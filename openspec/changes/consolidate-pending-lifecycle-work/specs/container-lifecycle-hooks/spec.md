@@ -74,6 +74,22 @@ Examples:
   | Closing, Closed           | ShutdownWithContext |
 ```
 
+#### Scenario: Observer hooks receive the operation's context
+```gherkin
+Given a root container with a <hook> hook that records the "trace-id" value of its context
+And <setup>
+When the consumer calls <operation> with a context carrying "trace-id" = "abc"
+Then the hook recorded "abc"
+
+Examples:
+  | hook    | setup                                         | operation           |
+  | Started | nothing else                                  | StartWithContext    |
+  | Ready   | nothing else                                  | StartWithContext    |
+  | Failed  | a Starting hook that returns errVeto          | StartWithContext    |
+  | Closing | nothing else                                  | ShutdownWithContext |
+  | Closed  | nothing else                                  | ShutdownWithContext |
+```
+
 <!-- cases: N/A 2 overrides: contexts are not configurable -->
 <!-- cases: N/A 4 boundaries, 5 errors, 6 duplicates: context passing has no limits or failure modes -->
 <!-- cases: N/A 7 lifecycle, 8 concurrency: cancellation of the Starting context by Shutdown is covered by "Shutdown during an in-flight Start" -->
@@ -155,8 +171,55 @@ Examples:
 <!-- cases: N/A 6 duplicates: covered by the ordering requirement -->
 <!-- cases: N/A 7 lifecycle: Shutdown from a Failed hook is covered by "Post-start and Closed hooks may shut the container down" -->
 <!-- cases: N/A 8 concurrency: covered by "Shutdown during an in-flight Start" -->
-<!-- cases: N/A 9 panics: covered by "Observer hook panics are recovered and re-raised" -->
+<!-- cases: N/A 9 panics: a pipeline panic has its own requirement; Failed hook panics are covered by "Observer hook panics are recovered and re-raised" -->
 <!-- cases: N/A 10 compatibility: new API -->
+
+### Requirement: A pipeline panic runs Failed hooks before it is re-raised
+When a panic escapes the start pipeline (from a per-service hook such as `HookBeforeStart`, `HookAfterStart` or `HookAfterBuild`; a Starter's or handler's own panic is already an error), `Start` SHALL release the running Start and run each Failed hook with an error wrapping the panic value, as a recovered Start panic does, and then re-raise the original value on the calling goroutine. A Failed hook panic then SHALL go to `HookContainerPanic` when set, and be logged otherwise.
+
+#### Scenario: A pipeline panic runs Failed hooks before it is re-raised
+```gherkin
+Given a root container created with StartParallelism <n> and a <hook> hook that panics with <value>
+And one hook registered for each of Starting, Started, Ready and Failed
+And lazy Starter "a"
+When the consumer calls Start
+Then Start panics on the calling goroutine with <value>
+And the hooks that ran, in order, are "starting, failed"
+And the Failed hook received an error <check>
+And Phase() is PhaseFailed afterwards
+
+Examples:
+  | n | hook            | value   | check                                  |
+  | 1 | HookBeforeStart | errBoom | for which errors.Is(err, errBoom) is true |
+  | 1 | HookAfterBuild  | "boom"  | whose message contains "boom"          |
+  | 4 | HookAfterStart  | errBoom | for which errors.Is(err, errBoom) is true |
+```
+
+#### Scenario: A Failed hook panic does not replace the pipeline panic
+```gherkin
+Given a root container with a HookBeforeStart hook that panics with "pipeline"
+And a Failed hook that panics with "failed-hook"
+And HookContainerPanic <policy>
+And lazy Starter "a"
+When the consumer calls Start
+Then Start panics with "pipeline"
+And <outcome>
+
+Examples:
+  | policy                             | outcome                                              |
+  | nil                                | the logger received a line containing "failed-hook" |
+  | set to a function recording panics | the policy recorded point "failed" with "failed-hook" |
+```
+
+<!-- cases: 1 default: the n = 1 rows; the nil-policy row -->
+<!-- cases: 2 overrides: HookContainerPanic receives a Failed hook panic -->
+<!-- cases: N/A 3 zero values, 4 boundaries: one panicking hook per row -->
+<!-- cases: 5 errors: Failed receives an error wrapping the panic value -->
+<!-- cases: 6 duplicates: the pipeline panic wins over a Failed hook panic -->
+<!-- cases: 7 lifecycle: the phase is failed and Started/Ready do not run -->
+<!-- cases: 8 concurrency: the parallel row re-raises on the calling goroutine -->
+<!-- cases: 9 panics: the subject -->
+<!-- cases: 10 compatibility: BEHAVIOR CHANGE (flagged) - before, Failed hooks did not run when a per-service hook panicked during Start -->
 
 ### Requirement: Post-start and Closed hooks may shut the container down
 A Started, Ready, Failed or Closed hook SHALL be able to call root `Shutdown` synchronously without deadlocking, because the running Start or Shutdown is released before those hooks run (start-lifecycle D6). That call SHALL return a report, Closing and Closed SHALL each fire exactly once in total, and the outer operation SHALL still return its own result.

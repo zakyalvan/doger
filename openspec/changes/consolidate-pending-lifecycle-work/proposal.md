@@ -82,8 +82,8 @@ These capabilities come from `add-start-lifecycle-and-kinds` and exist under `op
 ## Impact
 
 - Code:
-  - Core package: `root_scope.go`, `root_start.go`, `scope.go`, `kind.go`, `runnable.go`, `dag.go`, `di_explain.go`, `invoke.go`, `di.go`, `injector.go`, `options.go`, `errors.go`, `service_alias.go`, `utils.go`, `service_lazy.go`, `service_eager.go`, `service_transient.go`.
-  - New files: `collection.go`, `phase.go`.
+  - Core package: `root_scope.go`, `root_start.go`, `scope.go`, `kind.go`, `runnable.go`, `dag.go`, `dependency.go`, `di_explain.go`, `di_lifecycle.go`, `invoke.go`, `di.go`, `injector.go`, `options.go`, `ordering.go`, `errors.go`, `service_alias.go`, `service_lazy.go`, `service_eager.go`, `service_transient.go`, `virtual_scope.go`.
+  - New files: `collection.go`, `phase.go`, `root_refresh.go`.
 - Dependencies: none new. `github.com/jonboulle/clockwork` is already a dependency since #5.
 - Docs: health-check, options, starter, component-kinds, container-hooks (new), collection-invocation (new), struct injection, and the upgrading page for every flagged behavior change.
 - **Prerequisite:** PR #4 merged and `add-start-lifecycle-and-kinds` archived. Until then, `openspec validate --strict` cannot resolve the MODIFIED deltas.
@@ -113,6 +113,9 @@ These capabilities come from `add-start-lifecycle-and-kinds` and exist under `op
 | Child scope shutdown during a start | Waits for a run that is starting the scope's services | Bound the wait with `ShutdownWithContext` |
 | Live collection after its provider returned | Resolves from the provider's scope without its chain; no edges | Use `InvokeAll` inside the provider for recorded edges |
 | `InvokeAs` and shadowing | A shadowed ancestor service is not a candidate | Invoke the ancestor by name from its own scope |
+| `InvokeAs` from a provider | The provider's own service is not a candidate | Use `InvokeNamed` to resolve a specific service |
+| Per-service hook panic during Start | Failed hooks run, then the panic is re-raised | Recover the panic in the hook |
+| Failed Starter or kind handler on `Refresh` | Tried again by the next `Refresh`/`Scope.Start` | Remove or fix the service before the next run |
 | Post-build hook and locking | Runs after the wrapper lock is released | None needed |
 
 ### Assumptions to confirm in review

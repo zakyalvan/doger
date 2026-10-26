@@ -171,7 +171,7 @@ And no error occurs
 <!-- cases: N/A 10 compatibility: alias registrations (As/Bind) accept no options and are excluded from collections, so WithOrder cannot be attached to them -->
 
 ### Requirement: Order() panic is reported
-If `Order()` panics, `InvokeAll[T]` SHALL return no collection and an error naming the member. When the panic value is an error it SHALL be wrapped, so `errors.Is` matches it.
+If `Order()` panics, `InvokeAll[T]` SHALL return no collection and an error reading ``DI: Order() of collection member `<name>` panicked: <value>``. When the panic value is an error it SHALL be wrapped, so `errors.Is` matches it.
 
 #### Scenario: Panicking Order()
 ```gherkin
@@ -185,7 +185,7 @@ And <match>
 Examples:
   | panic                       | match                                     |
   | error ErrOrderBroken        | errors.Is(err, ErrOrderBroken) is true    |
-  | string "boom"               | the error message contains "boom"         |
+  | string "boom"               | the error message is "DI: Order() of collection member `bad` panicked: boom" |
   | Order() on a nil *Handler   | the error message contains "nil pointer"  |
 ```
 
