@@ -182,9 +182,9 @@ Rules:
 
 ## 26. Dependency edges, hooks and snapshot semantics (Part K)
 
-- [ ] 26.1 RED: add `TestInvokeAll_EdgesOrderShutdown`, `TestInvokeAll_HooksPerMember`, `TestInvokeAll_NoEdgesOutsideProvider`, `TestInvokeAll_TransientFresh`, `TestInvokeAll_Snapshot`, `TestInvokeAll_CallerMutation` and `TestInvokeAll_AfterShutdown` (scenarios "Dependency edges order shutdown", "Invocation hooks per member", "No edges when invoked outside a provider", "Transient and singleton members across calls", "Later registration is not visible in an earlier snapshot", "Caller mutation does not leak", "Collections after shutdown"); verify `go test -race -run 'TestInvokeAll_(Edges|Hooks|NoEdges|TransientFresh|Snapshot|CallerMutation|AfterShutdown)' .`; these pass on arrival through `invokeServiceInstance`, so record that and show EdgesOrderShutdown and HooksPerMember can fail by temporarily skipping `addDependency` and passing the type name as hookName (not committed)
-- [ ] 26.2 GREEN: no production change expected; fix only what 26.1 reports; verify the 26.1 command passes and `make test` is green
-- [ ] 26.3 REFACTOR: none needed if 26.2 changed nothing, otherwise *Inline Function* any helper made redundant; verify `make test` and `make lint` pass
+- [x] 26.1 RED: add `TestInvokeAll_EdgesOrderShutdown`, `TestInvokeAll_HooksPerMember`, `TestInvokeAll_NoEdgesOutsideProvider`, `TestInvokeAll_TransientFresh`, `TestInvokeAll_Snapshot`, `TestInvokeAll_CallerMutation` and `TestInvokeAll_AfterShutdown` (scenarios "Dependency edges order shutdown", "Invocation hooks per member", "No edges when invoked outside a provider", "Transient and singleton members across calls", "Later registration is not visible in an earlier snapshot", "Caller mutation does not leak", "Collections after shutdown"); verify `go test -race -run 'TestInvokeAll_(Edges|Hooks|NoEdges|TransientFresh|Snapshot|CallerMutation|AfterShutdown)' .`; these pass on arrival through `invokeServiceInstance`, so record that and show EdgesOrderShutdown and HooksPerMember can fail by temporarily skipping `addDependency` and passing the type name as hookName (not committed)
+- [x] 26.2 GREEN: no production change expected; fix only what 26.1 reports; verify the 26.1 command passes and `make test` is green
+- [x] 26.3 REFACTOR: none needed if 26.2 changed nothing, otherwise *Inline Function* any helper made redundant; verify `make test` and `make lint` pass
 
 ## 27. Concurrent collection callers (Part K)
 

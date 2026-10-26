@@ -546,3 +546,161 @@ func TestInvokeAll_DeeperCycle(t *testing.T) {
 	assert.ErrorIs(t, err, ErrCircularDependency)
 	assert.ErrorContains(t, err, "`x` -> `bus` -> `x`")
 }
+
+// shutdownHandler is an EventHandler recording "shutdown <name>".
+type shutdownHandler struct {
+	handlerBase
+	rec *callRecorder
+}
+
+func (h *shutdownHandler) Shutdown() error {
+	h.rec.record("shutdown " + h.name)
+	return nil
+}
+
+// shutdownBus collects EventHandlers and records "shutdown bus".
+type shutdownBus struct {
+	rec *callRecorder
+}
+
+func (b *shutdownBus) Shutdown() error {
+	b.rec.record("shutdown bus")
+	return nil
+}
+
+func TestInvokeAll_EdgesOrderShutdown(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+	is := assert.New(t)
+
+	root := New()
+	rec := &callRecorder{}
+	for _, name := range []string{"console", "audit"} {
+		ProvideNamed(root, name, func(Injector) (*shutdownHandler, error) {
+			return &shutdownHandler{handlerBase: handlerBase{name}, rec: rec}, nil
+		})
+	}
+	ProvideNamed(root, "bus", func(i Injector) (*shutdownBus, error) {
+		_, err := InvokeAll[EventHandler](i)
+		return &shutdownBus{rec: rec}, err
+	})
+
+	_, err := InvokeNamed[*shutdownBus](root, "bus")
+	require.NoError(t, err)
+	is.Equal([]string{"audit", "console"}, explainedNames(t, root, "bus", false))
+
+	root.Shutdown()
+
+	events := rec.list()
+	is.Less(indexOf(events, "shutdown bus"), indexOf(events, "shutdown console"))
+	is.Less(indexOf(events, "shutdown bus"), indexOf(events, "shutdown audit"))
+}
+
+func TestInvokeAll_HooksPerMember(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	after := &callRecorder{}
+	root := NewWithOpts(&InjectorOpts{
+		HookAfterInvocation: []func(*Scope, string, error){func(_ *Scope, name string, _ error) { after.record(name) }},
+	})
+	provideHandler(root, "console", newConsole)
+	provideHandler(root, "audit", newAudit)
+
+	_, err := InvokeAll[EventHandler](root)
+
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"console", "audit"}, after.list())
+}
+
+func TestInvokeAll_NoEdgesOutsideProvider(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	provideHandler(root, "console", newConsole)
+	provideHandler(root, "audit", newAudit)
+
+	_, err := InvokeAll[EventHandler](root)
+
+	require.NoError(t, err)
+	assert.Empty(t, explainedNames(t, root, "console", true))
+	assert.Empty(t, explainedNames(t, root, "audit", true))
+}
+
+func TestInvokeAll_TransientFresh(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+	is := assert.New(t)
+
+	root := New()
+	ProvideNamedTransient(root, "req", func(Injector) (*ReqHandler, error) { return &ReqHandler{handlerBase{"req"}}, nil })
+	provideHandler(root, "console", newConsole)
+
+	byName := func() map[string]EventHandler {
+		handlers, err := InvokeAll[EventHandler](root)
+		require.NoError(t, err)
+		named := map[string]EventHandler{}
+		for _, h := range handlers {
+			named[h.HandlerName()] = h
+		}
+		return named
+	}
+	first, second := byName(), byName()
+
+	is.NotSame(first["req"], second["req"])
+	is.Same(first["console"], second["console"])
+}
+
+func TestInvokeAll_Snapshot(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	provideHandler(root, "console", newConsole)
+	r1, err := InvokeAll[EventHandler](root)
+	require.NoError(t, err)
+
+	provideHandler(root, "audit", newAudit)
+	r2, err := InvokeAll[EventHandler](root)
+	require.NoError(t, err)
+
+	assert.Len(t, r1, 1)
+	assert.Len(t, r2, 2)
+}
+
+func TestInvokeAll_CallerMutation(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	provideHandler(root, "console", newConsole)
+	provideHandler(root, "audit", newAudit)
+	first, err := InvokeAll[EventHandler](root)
+	require.NoError(t, err)
+	for i := range first {
+		first[i] = nil
+	}
+
+	second, err := InvokeAll[EventHandler](root)
+
+	require.NoError(t, err)
+	assert.NotContains(t, second, nil)
+	assert.Len(t, second, 2)
+}
+
+func TestInvokeAll_AfterShutdown(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	provideHandler(root, "console", newConsole)
+	_, err := InvokeAll[EventHandler](root)
+	require.NoError(t, err)
+	root.Shutdown()
+
+	handlers, err := InvokeAll[EventHandler](root)
+
+	require.NoError(t, err)
+	assert.Empty(t, handlers)
+}
