@@ -673,25 +673,41 @@ func TestKind_CloneCopiesHandlers(t *testing.T) {
 
 func TestKind_CloneReplaceIsolated(t *testing.T) {
 	t.Parallel()
-	testWithTimeout(t, time.Second)
 
-	root := New()
-	events := &callRecorder{}
-	k := NewKind[Job, Spec]("k")
-	ProvideNamed(root, "job", func(Injector) (*CleanupJob, error) { return &CleanupJob{name: "job"}, nil }, k.With(Spec{}))
-	k.Handle(root, StageBeforeStart, func(context.Context, Component[Job, Spec]) error {
-		events.record("source")
-		return nil
-	})
+	tests := []struct {
+		name   string
+		start  func(root, clone *RootScope) error
+		events []string
+	}{
+		{name: "root", start: func(root, _ *RootScope) error { return root.Start() }, events: []string{"k source", "j"}},
+		{name: "clone", start: func(_, clone *RootScope) error { return clone.Start() }, events: []string{"k clone", "j"}},
+	}
 
-	clone := root.Clone()
-	k.Handle(clone, StageBeforeStart, func(context.Context, Component[Job, Spec]) error {
-		events.record("clone")
-		return nil
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
 
-	require.NoError(t, root.Start())
-	assert.Equal(t, []string{"source"}, events.list())
+			root := New()
+			events := &callRecorder{}
+			k := NewKind[Job, Spec]("k")
+			j := NewKind[Job, Spec]("j")
+			ProvideNamed(root, "job", func(Injector) (*CleanupJob, error) { return &CleanupJob{name: "job"}, nil },
+				k.With(Spec{}), j.With(Spec{}))
+			record := func(event string) func(context.Context, Component[Job, Spec]) error {
+				return func(context.Context, Component[Job, Spec]) error { events.record(event); return nil }
+			}
+			k.Handle(root, StageBeforeStart, record("k source"))
+			j.Handle(root, StageBeforeStart, record("j"))
+
+			clone := root.Clone()
+			// replacing k on the clone keeps its slot, before j
+			k.Handle(clone, StageBeforeStart, record("k clone"))
+
+			require.NoError(t, tt.start(root, clone))
+			assert.Equal(t, tt.events, events.list())
+		})
+	}
 }
 
 func TestKind_RefreshHandlesNew(t *testing.T) {
