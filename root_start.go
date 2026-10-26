@@ -174,9 +174,15 @@ func (s *RootScope) dispatchHookPanic(point string, value any) {
 // runObserverHooks runs container hooks in order, on a copy of the list,
 // skipping nil entries.
 func (s *RootScope) runObserverHooks(ctx context.Context, point string, hooks []func(context.Context, *RootScope), first *hookPanic) {
+	runObserverHooksWith(ctx, s, point, hooks, s, first)
+}
+
+// runObserverHooksWith calls each non-nil observer hook with arg, in order,
+// recovering their panics into first under point.
+func runObserverHooksWith[T any](ctx context.Context, root *RootScope, point string, hooks []func(context.Context, T), arg T, first *hookPanic) {
 	for _, hook := range slices.Clone(hooks) {
 		if hook != nil {
-			s.callObserver(first, point, func() { hook(ctx, s) })
+			root.callObserver(first, point, func() { hook(ctx, arg) })
 		}
 	}
 }

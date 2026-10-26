@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"maps"
-	"slices"
 	"sync"
 	"time"
 
@@ -467,11 +466,7 @@ func (s *Scope) endClosing() {
 // runScopeObserverHooks runs scope observer hooks for s in order, recovering
 // their panics into first.
 func (s *Scope) runScopeObserverHooks(ctx context.Context, point string, hooks []func(context.Context, *Scope), first *hookPanic) {
-	for _, hook := range slices.Clone(hooks) {
-		if hook != nil {
-			s.rootScope.callObserver(first, point, func() { hook(ctx, s) })
-		}
-	}
+	runObserverHooksWith(ctx, s.rootScope, point, hooks, s, first)
 }
 
 // shutdownChildrenInParallel runs a parallel shutdown of children scopes.
