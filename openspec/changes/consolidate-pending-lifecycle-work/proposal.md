@@ -101,7 +101,6 @@ These capabilities come from `add-start-lifecycle-and-kinds` and exist under `op
 
 | Behavior | Zero-config default | Override / opt-out |
 |---|---|---|
-| Per-service `HealthCheck*` | Unbounded unless `HealthCheckTimeout` is set; then bounded by it | Leave `HealthCheckTimeout` at 0 |
 | Container hooks | None registered | `HookContainer*` fields / `AddContainer*Hook` |
 | Observer hook panic | Recovered, operation completes, then re-panics | `HookContainerPanic` |
 | Scope hooks | None registered | `HookScope*` fields / `AddScope*Hook` |
@@ -120,7 +119,7 @@ These capabilities come from `add-start-lifecycle-and-kinds` and exist under `op
 | Incremental start during Start | Fails fast with `ErrNotStarted` | Call `Refresh` after `Start` returned |
 | Child scope shutdown during a start | Waits for a run that is starting the scope's services | Bound the wait with `ShutdownWithContext` |
 | Live collection read | Follows the reader's injector: a provider passes its own (edges, self-exclusion, cycles); nil records nothing | Pass the injector of the code that reads |
-| Single-service health checks | Bounded by `HealthCheckTimeout` | `HealthCheckSingleTimeout`: positive for its own bound, negative for none |
+| Single-service health checks (`HealthCheck[T]`, `HealthCheckNamed` and their `WithContext` forms) | Unbounded unless `HealthCheckTimeout` is set; then bounded by it | `HealthCheckSingleTimeout`: positive for its own bound, negative for none; or leave `HealthCheckTimeout` at 0 |
 | `InvokeAs` and shadowing | A shadowed ancestor service is not a candidate | Invoke the ancestor by name from its own scope |
 | `InvokeAs` from a provider | The provider's own service, and its aliases, are not candidates | Use `InvokeNamed` to resolve a specific service |
 | `Scope.Start` while the scope shuts down | Starts nothing, runs no scope hook, returns nil | Call `Scope.Start` after the shutdown returned |

@@ -82,7 +82,7 @@ Facts verified for the new parts (scratch probes on a copy of the repo at `e116a
 **Q3. Edge source in the DAG.**
 - `DAG` maps become `map[ServiceDescription]map[ServiceDescription]DependencySource`. `addDependency` takes a source and keeps the strongest: invoked (0) < depends-on (1) < declared (2), lower wins.
 - `invokeAnyByName` records `invoked`; `resolveDeclaredDependencies` records `depends-on`, through an internal variant `invokeAnyByNameAs(source)`; `DeclareDependency` records `declared`.
-- `explainService` returns sources. `ExplainServiceDependencyOutput.Source` is a `DependencySource` int enum with `String()` and `MarshalText`, so JSON shows `"invoked"`. Its zero value is `DependencySourceInvoked`, so existing literals keep their meaning.
+- `explainService` keeps its signature; each dependency's source is looked up per edge with `dag.edgeSource` (`di_explain.go`). `ExplainServiceDependencyOutput.Source` is a `DependencySource` int enum with `String()` and `MarshalText`, so JSON shows `"invoked"`. Its zero value is `DependencySourceInvoked`, so existing literals keep their meaning.
 - *Alternative:* a string type. Rejected: its zero value `""` would not mean invoked.
 
 ### Part P — Phase 2 of the start lifecycle
@@ -674,7 +674,7 @@ All tests run under `go test -race` with goleak (`TestMain`). Tests that could h
 | type-resolution | Struct fallback selects deterministically | `invoke_test.go: TestInvokeStruct_ImplicitAliasingDeterministic` | unit |
 | collection-struct-injection | Collection fields (4 rows) | `invoke_all_struct_test.go: TestInvokeStruct_CollectionFields/<row>` | table |
 | collection-struct-injection | Custom struct tag key | `invoke_all_struct_test.go: TestInvokeStruct_CollectionCustomTag` | unit |
-| collection-struct-injection | Invalid collection fields (2 rows) | `invoke_all_struct_test.go: TestInvokeStruct_CollectionInvalidField/<row>` | table |
+| collection-struct-injection | Invalid collection fields (3 rows) | `invoke_all_struct_test.go: TestInvokeStruct_CollectionInvalidField/<row>` | table |
 | collection-struct-injection | A failing member fails the struct | `invoke_all_struct_test.go: TestInvokeStruct_CollectionMemberFailure` | unit |
 | collection-struct-injection | Struct collections inside a provider exclude the invoking service | `invoke_all_struct_test.go: TestInvokeStruct_CollectionExcludesSelf` | unit |
 | live-collections | Later registrations are visible (2 rows) | `collection_test.go: TestCollection_LaterRegistrations/<read>` | table |
