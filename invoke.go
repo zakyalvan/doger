@@ -228,18 +228,24 @@ func invokeAllByGenericType[T any](i Injector) ([]T, error) {
 		order  int
 	}
 
+	type builtMember struct {
+		candidate collectionCandidate
+		member    T
+	}
+
 	candidates := collectionCandidates[T](injector)
-	members := make([]orderedMember, 0, len(candidates))
-	err := buildMembers(injector, candidates, func(_ string, member T) {
-		members = append(members, orderedMember{member: member})
+	built := make([]builtMember, 0, len(candidates))
+	err := buildMembers(injector, candidates, func(candidate collectionCandidate, member T) {
+		built = append(built, builtMember{candidate: candidate, member: member})
 	})
 	if err != nil {
 		return nil, err
 	}
 
 	// a separate pass once every member is built, stable over the default order
-	for index := range members {
-		members[index].order = orderValue(members[index].member)
+	members := make([]orderedMember, 0, len(built))
+	for _, b := range built {
+		members = append(members, orderedMember{member: b.member, order: orderValue(b.member, b.candidate.options())})
 	}
 	slices.SortStableFunc(members, func(a, b orderedMember) int { return cmp.Compare(a.order, b.order) })
 
@@ -251,9 +257,14 @@ func invokeAllByGenericType[T any](i Injector) ([]T, error) {
 	return result, nil
 }
 
-// orderValue returns the collection order of a built member: its Order()
-// when it implements Ordered, 0 otherwise.
-func orderValue(instance any) int {
+// orderValue returns the collection order of a built member: its WithOrder
+// value when set (Order() is then not called), otherwise its Order() when it
+// implements Ordered, otherwise 0.
+func orderValue(instance any, opts *serviceOptions) int {
+	if opts != nil && opts.order != nil {
+		return *opts.order
+	}
+
 	if ordered, ok := instance.(Ordered); ok {
 		return ordered.Order()
 	}
@@ -268,8 +279,8 @@ func invokeAllMapByGenericType[T any](i Injector) (map[string]T, error) {
 
 	candidates := collectionCandidates[T](injector)
 	result := make(map[string]T, len(candidates))
-	err := buildMembers(injector, candidates, func(name string, member T) {
-		result[name] = member
+	err := buildMembers(injector, candidates, func(candidate collectionCandidate, member T) {
+		result[candidate.name] = member
 	})
 	if err != nil {
 		return nil, err
@@ -280,7 +291,7 @@ func invokeAllMapByGenericType[T any](i Injector) (map[string]T, error) {
 
 // buildMembers builds the candidates in order and passes each member to
 // add. It stops at the first failure, naming the member.
-func buildMembers[T any](injector Injector, candidates []collectionCandidate, add func(name string, member T)) error {
+func buildMembers[T any](injector Injector, candidates []collectionCandidate, add func(candidate collectionCandidate, member T)) error {
 	vScope, _ := injector.(*virtualScope)
 
 	for _, candidate := range candidates {
@@ -290,7 +301,16 @@ func buildMembers[T any](injector Injector, candidates []collectionCandidate, ad
 		}
 
 		typed, _ := instance.(T)
-		add(candidate.name, typed)
+		add(candidate, typed)
+	}
+
+	return nil
+}
+
+// options returns the registration options of the candidate, or nil.
+func (c collectionCandidate) options() *serviceOptions {
+	if service, ok := c.service.(serviceWrapperAny); ok {
+		return service.getOptions()
 	}
 
 	return nil

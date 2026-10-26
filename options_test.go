@@ -182,6 +182,7 @@ type optIns struct {
 	starter   bool
 	dependsOn []string
 	kinds     []kindOptIn
+	order     *int // collection order set by WithOrder
 }
 
 // kindOptIn is a kind binding, by kind name and metadata.
@@ -209,7 +210,7 @@ func optInsOf(t *testing.T, scope Injector, name string) optIns {
 		kinds = append(kinds, kindOptIn{name: binding.id.name, meta: binding.meta})
 	}
 
-	return optIns{starter: opts.starter, dependsOn: opts.dependsOn, kinds: kinds}
+	return optIns{starter: opts.starter, dependsOn: opts.dependsOn, kinds: kinds, order: opts.order}
 }
 
 func TestProvideOptions_Registration(t *testing.T) {
@@ -357,6 +358,7 @@ func TestProvideOptions_Constructors(t *testing.T) {
 			option: NewKind[Job, Spec]("scheduled").With(Spec{Every: time.Minute}),
 			want:   optIns{kinds: []kindOptIn{{name: "scheduled", meta: Spec{Every: time.Minute}}}},
 		},
+		{name: "with_order", option: WithOrder(-10), want: optIns{order: new(-10)}},
 	}
 
 	for _, tt := range tests {

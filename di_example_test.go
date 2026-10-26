@@ -554,3 +554,23 @@ func ExampleOrdered() {
 	// auth 0
 	// logging 10
 }
+
+// exampleVendorFilter stands for a third-party type you cannot edit to add
+// an Order method.
+type exampleVendorFilter struct{ name string }
+
+func (f *exampleVendorFilter) Notify(msg string) string { return f.name + ": " + msg }
+
+func ExampleWithOrder() {
+	injector := New()
+	ProvideNamedValue(injector, "audit", &exampleVendorFilter{name: "audit"})
+	ProvideNamedValue(injector, "ratelimit", &exampleVendorFilter{name: "ratelimit"}, WithOrder(-1))
+
+	// WithOrder positions a registration without touching its type.
+	for _, notifier := range MustInvokeAll[exampleNotifier](injector) {
+		fmt.Println(notifier.Notify("hello"))
+	}
+	// Output:
+	// ratelimit: hello
+	// audit: hello
+}

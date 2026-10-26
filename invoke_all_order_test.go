@@ -187,3 +187,115 @@ func TestInvokeAll_OrderedTransient(t *testing.T) {
 		})
 	}
 }
+
+func TestInvokeAll_WithOrderPrecedence(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		aOpts []ProvideOption
+		bOpts []ProvideOption
+		order []string
+	}{
+		{name: "no options", order: []string{"b", "c", "a"}},
+		{name: "a WithOrder(-1)", aOpts: []ProvideOption{WithOrder(-1)}, order: []string{"a", "b", "c"}},
+		{name: "b WithOrder(20)", bOpts: []ProvideOption{WithOrder(20)}, order: []string{"c", "a", "b"}},
+		{name: "a and b WithOrder(0)", aOpts: []ProvideOption{WithOrder(0)}, bOpts: []ProvideOption{WithOrder(0)}, order: []string{"a", "b", "c"}},
+		{name: "a WithOrder(5), WithOrder(-5)", aOpts: []ProvideOption{WithOrder(5), WithOrder(-5)}, order: []string{"a", "b", "c"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+
+			root := New()
+			provideHandler(root, "a", func(n string) *orderedHandler { return &orderedHandler{handlerBase: handlerBase{n}, order: 10} }, tt.aOpts...)
+			provideHandler(root, "b", newConsole, tt.bOpts...)
+			provideHandler(root, "c", func(n string) *orderedHandler { return &orderedHandler{handlerBase: handlerBase{n}} })
+
+			assert.Equal(t, tt.order, collectNames(t, root))
+		})
+	}
+}
+
+func TestInvokeAll_WithOrderHelpers(t *testing.T) {
+	t.Parallel()
+
+	second := func(Injector) (*AuditHandler, error) { return newAudit("second"), nil }
+	value := newAudit("second")
+	o := WithOrder(-1)
+
+	tests := []struct {
+		name     string
+		register func(root *RootScope)
+	}{
+		{name: "Provide", register: func(root *RootScope) { Provide(root, second, o) }},
+		{name: "ProvideNamed", register: func(root *RootScope) { ProvideNamed(root, "second", second, o) }},
+		{name: "ProvideValue", register: func(root *RootScope) { ProvideValue(root, value, o) }},
+		{name: "ProvideNamedValue", register: func(root *RootScope) { ProvideNamedValue(root, "second", value, o) }},
+		{name: "ProvideTransient", register: func(root *RootScope) { ProvideTransient(root, second, o) }},
+		{name: "ProvideNamedTransient", register: func(root *RootScope) { ProvideNamedTransient(root, "second", second, o) }},
+		{name: "Override", register: func(root *RootScope) { Override(root, second, o) }},
+		{name: "OverrideNamed", register: func(root *RootScope) { OverrideNamed(root, "second", second, o) }},
+		{name: "OverrideValue", register: func(root *RootScope) { OverrideValue(root, value, o) }},
+		{name: "OverrideNamedValue", register: func(root *RootScope) { OverrideNamedValue(root, "second", value, o) }},
+		{name: "OverrideTransient", register: func(root *RootScope) { OverrideTransient(root, second, o) }},
+		{name: "OverrideNamedTransient", register: func(root *RootScope) { OverrideNamedTransient(root, "second", second, o) }},
+		{name: "Package(Lazy)", register: func(root *RootScope) { Package(Lazy(second, o))(root) }},
+		{name: "Package(LazyNamed)", register: func(root *RootScope) { Package(LazyNamed("second", second, o))(root) }},
+		{name: "Package(Eager)", register: func(root *RootScope) { Package(Eager(value, o))(root) }},
+		{name: "Package(EagerNamed)", register: func(root *RootScope) { Package(EagerNamed("second", value, o))(root) }},
+		{name: "Package(Transient)", register: func(root *RootScope) { Package(Transient(second, o))(root) }},
+		{name: "Package(TransientNamed)", register: func(root *RootScope) { Package(TransientNamed("second", second, o))(root) }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+
+			root := New()
+			provideHandler(root, "first", newConsole)
+			tt.register(root)
+
+			assert.Equal(t, []string{"second", "first"}, collectNames(t, root))
+		})
+	}
+}
+
+// panickingOrder is an EventHandler whose Order() panics.
+type panickingOrder struct {
+	handlerBase
+	value any
+}
+
+func (h *panickingOrder) Order() int { panic(h.value) }
+
+func TestInvokeAll_WithOrderSkipsOrderMethod(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	provideHandler(root, "a", func(n string) *panickingOrder {
+		return &panickingOrder{handlerBase: handlerBase{n}, value: "must not be called"}
+	}, WithOrder(1))
+
+	handlers, err := InvokeAll[EventHandler](root)
+
+	require.NoError(t, err)
+	assert.Len(t, handlers, 1)
+}
+
+func TestWithOrder_NoEffectOnInvoke(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	provideHandler(root, "a", newConsole, WithOrder(-100))
+
+	handler, err := InvokeNamed[*ConsoleHandler](root, "a")
+
+	require.NoError(t, err)
+	assert.Equal(t, "a", handler.HandlerName())
+}

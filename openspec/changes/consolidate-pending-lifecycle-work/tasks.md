@@ -208,10 +208,10 @@ Rules:
 
 ## 30. WithOrder is a registration option for every registration style (Part K)
 
-- [ ] 30.1 RED: add `TestInvokeAll_WithOrderPrecedence` (scenario "Precedence", 5 rows), `TestInvokeAll_WithOrderHelpers` (scenario "WithOrder on every registration helper", 18 rows), `TestInvokeAll_WithOrderSkipsOrderMethod` (scenario "Order() is not called when WithOrder is set") and `TestWithOrder_NoEffectOnInvoke` (scenario "WithOrder outside collections has no effect"); verify `go test -race -run 'TestInvokeAll_WithOrder|TestWithOrder_' .` fails to compile only on the missing `WithOrder`
-- [ ] 30.2 GREEN: add `WithOrder(n int) ProvideOption` storing `*int` in the service metadata, last one wins, and read it first in `orderValue` (precedence WithOrder > Ordered > 0, design D4, D5); verify the 30.1 command passes and `make test` is green
-- [ ] 30.3 REFACTOR: none needed, since 30.2 only adds one branch to `orderValue`; verify `make test` and `make lint` pass
-- [ ] 30.4 Add `ExampleWithOrder` (third-party type ordered without editing it), godoc on `WithOrder`, and the ordering section of the docs page; verify `go test -run ExampleWithOrder .` passes and `npm --prefix docs run build` succeeds
+- [x] 30.1 RED: add `TestInvokeAll_WithOrderPrecedence` (scenario "Precedence", 5 rows), `TestInvokeAll_WithOrderHelpers` (scenario "WithOrder on every registration helper", 18 rows), `TestInvokeAll_WithOrderSkipsOrderMethod` (scenario "Order() is not called when WithOrder is set") and `TestWithOrder_NoEffectOnInvoke` (scenario "WithOrder outside collections has no effect"); verify `go test -race -run 'TestInvokeAll_WithOrder|TestWithOrder_' .` fails to compile only on the missing `WithOrder`
+- [x] 30.2 GREEN: add `WithOrder(n int) ProvideOption` storing `*int` in the service metadata, last one wins, and read it first in `orderValue` (precedence WithOrder > Ordered > 0, design D4, D5); verify the 30.1 command passes and `make test` is green
+- [x] 30.3 REFACTOR: none needed, since 30.2 only adds one branch to `orderValue`; verify `make test` and `make lint` pass
+- [x] 30.4 Add `ExampleWithOrder` (third-party type ordered without editing it), godoc on `WithOrder`, and the ordering section of the docs page; verify `go test -run ExampleWithOrder .` passes and `npm --prefix docs run build` succeeds
 
 ## 31. Order() panic and map-collection independence (Part K)
 

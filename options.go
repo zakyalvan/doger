@@ -12,6 +12,7 @@ type serviceOptions struct {
 	starterDeferred bool // registered under an interface type: checked on the instance at Start
 	dependsOn       []string
 	kinds           []kindBinding
+	order           *int // collection order set by WithOrder; nil when unset
 }
 
 // ProvideOption attaches an opt-in to a registration. Values come only from
@@ -52,6 +53,17 @@ func DependsOnNamed(name string) ProvideOption {
 		if !slices.Contains(o.dependsOn, name) {
 			o.dependsOn = append(o.dependsOn, name)
 		}
+	}
+}
+
+// WithOrder sets the registration's position in the slices returned by
+// InvokeAll: lower values come first. It takes precedence over the
+// instance's Order() method, which is then not called. Given more than
+// once, the last one wins. It affects only collections, never construction,
+// start or shutdown order, and has no effect on Invoke.
+func WithOrder(n int) ProvideOption {
+	return func(o *serviceOptions) {
+		o.order = &n
 	}
 }
 

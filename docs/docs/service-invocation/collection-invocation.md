@@ -83,3 +83,33 @@ doger.Provide(injector, func(i doger.Injector) (*CompositeHandler, error) {
 ```
 
 Only the service whose provider is running is excluded. A deeper cycle still fails with `doger.ErrCircularDependency`: if `x`'s provider invokes `bus`, and `bus`'s provider collects every `EventHandler`, `x` is a member of that collection and the call fails with `` `x` -> `bus` -> `x` ``.
+
+## Order {#order}
+
+`InvokeAll` returns members in a deterministic order. By default, members come **ancestors first**: by scope depth from the root scope down to the invoking scope, then by registration order within a scope. An `Override` keeps the position of the registration it replaces. The order is the same across calls and in clones.
+
+### Ordered {#ordered}
+
+A member whose instance implements `doger.Ordered` is positioned by its `Order()` value, lowest first. A member that does not implement it counts as `0`. The sort is stable: members with equal values keep the default order.
+
+```go
+type Middleware struct{ order int }
+
+func (m *Middleware) Order() int { return m.order }
+```
+
+For a transient member, `Order()` is read from the instance of each call.
+
+### WithOrder {#with-order}
+
+`doger.WithOrder(n)` is a registration option that sets a member's order without touching its type, for example for a third-party type. It takes precedence over `Order()`, which is then not called, and when given more than once the last one wins. Every `Provide*`, `Override*` and `Package` helper accepts it:
+
+```go
+doger.ProvideValue(injector, vendor.NewRateLimiter(), doger.WithOrder(-1))
+```
+
+`WithOrder` has no effect outside collections: `Invoke` ignores it.
+
+### Maps are unordered {#maps-are-unordered}
+
+`InvokeAllMap` never calls `Order()`: a map has no order.
