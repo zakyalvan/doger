@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -180,4 +181,36 @@ func TestPhase_CloneIdle(t *testing.T) {
 
 	assert.Equal(t, PhaseIdle, root.Clone().Phase())
 	assert.Equal(t, PhaseReady, root.Phase())
+}
+
+func TestPhase_ClosingWhileShutdownWaitsForStart(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		root := New()
+		entered := make(chan struct{})
+		provideLazy(root, "slow", &ctxStarter{fn: func(context.Context) error {
+			close(entered)
+			time.Sleep(time.Second) // ignores the cancellation
+			return nil
+		}})
+		startDone := make(chan struct{})
+		go func() {
+			defer close(startDone)
+			_ = root.Start()
+		}()
+		<-entered
+		shutdownDone := make(chan struct{})
+		go func() {
+			defer close(shutdownDone)
+			root.Shutdown()
+		}()
+		synctest.Wait() // Shutdown is blocked, waiting for Start
+
+		assert.Equal(t, PhaseClosing, root.Phase())
+
+		<-startDone
+		<-shutdownDone
+		assert.Equal(t, PhaseClosed, root.Phase())
+	})
 }

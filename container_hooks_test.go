@@ -1479,6 +1479,32 @@ func TestContainerHooks_ChildScopeShutdown(t *testing.T) {
 	is.Equal(int32(0), closed.Load())
 }
 
+func TestContainerHooks_ChildScopeShutdownThroughInjector(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+	is := assert.New(t)
+
+	root := New()
+	require.NoError(t, root.Start())
+	var closing, closed atomic.Int32
+	root.AddContainerClosingHook(func(context.Context, *RootScope) { closing.Add(1) })
+	root.AddContainerClosedHook(func(context.Context, *RootScope, *ShutdownReport) { closed.Add(1) })
+	request := root.Scope("request")
+	var injector Injector
+	ProvideNamed(request, "session", func(i Injector) (*recordingShutdowner, error) {
+		injector = i
+		return &recordingShutdowner{name: "session", rec: &callRecorder{}}, nil
+	})
+	_, err := InvokeNamed[*recordingShutdowner](request, "session")
+	require.NoError(t, err)
+
+	report := injector.Shutdown()
+
+	is.True(report.Succeed, report.Error())
+	is.Equal(int32(0), closing.Load())
+	is.Equal(int32(0), closed.Load())
+}
+
 func TestContainerHooks_NoHooksUnchanged(t *testing.T) {
 	t.Parallel()
 
@@ -1623,9 +1649,11 @@ func TestContainerHooks_ShutdownInterruptsLateStep(t *testing.T) {
 	tests := []struct {
 		name  string
 		setup func(root *RootScope, shutdowns *sync.WaitGroup)
+		step  func(t *testing.T, err error) // the row fails at its own step
 	}{
 		{
 			name: "Starting hook waiting for ctx",
+			step: func(t *testing.T, err error) { t.Helper(); assert.ErrorIs(t, err, context.Canceled) },
 			setup: func(root *RootScope, shutdowns *sync.WaitGroup) {
 				root.AddContainerStartingHook(func(ctx context.Context, r *RootScope) error {
 					shutdowns.Go(func() { r.Shutdown() })
@@ -1636,6 +1664,7 @@ func TestContainerHooks_ShutdownInterruptsLateStep(t *testing.T) {
 		},
 		{
 			name: "deferred kind binding",
+			step: func(t *testing.T, err error) { t.Helper(); assert.ErrorContains(t, err, "does not implement") },
 			setup: func(root *RootScope, shutdowns *sync.WaitGroup) {
 				k := NewKind[Job, Spec]("k")
 				ProvideNamed[any](root, "x", func(Injector) (any, error) {
@@ -1647,6 +1676,7 @@ func TestContainerHooks_ShutdownInterruptsLateStep(t *testing.T) {
 		},
 		{
 			name: "cycle check",
+			step: func(t *testing.T, err error) { t.Helper(); assert.ErrorIs(t, err, ErrCircularDependency) },
 			setup: func(root *RootScope, shutdowns *sync.WaitGroup) {
 				ProvideNamed(root, "scheduler", func(Injector) (*startWithErr, error) { return &startWithErr{}, nil })
 				ProvideNamed(root, "job", func(i Injector) (*startWithErr, error) {
@@ -1683,7 +1713,8 @@ func TestContainerHooks_ShutdownInterruptsLateStep(t *testing.T) {
 				shutdowns.Wait()
 
 				is.ErrorIs(err, ErrStartAfterShutdown)
-				is.Equal(err, failedErr)
+				is.Same(err, failedErr)
+				tt.step(t, err)
 			})
 		})
 	}

@@ -305,6 +305,14 @@ func TestScopeHooks_ObserverPanic(t *testing.T) {
 			shutdowns:  1,
 		},
 		{
+			name:       "HookScopeClosing, recording policy, tenant.Shutdown()",
+			register:   func(root *RootScope) { root.AddScopeClosingHook(func(context.Context, *Scope) { panic("scope-boom") }) },
+			recordPol:  true,
+			operation:  func(tenant *Scope) error { tenant.Shutdown(); return nil },
+			dispatched: []dispatched{{point: "scope-closing", value: "scope-boom"}},
+			shutdowns:  1,
+		},
+		{
 			name:       "HookScopeStarted, recording policy, tenant.Start()",
 			register:   func(root *RootScope) { root.AddScopeStartedHook(func(context.Context, *Scope) { panic("scope-boom") }) },
 			recordPol:  true,
@@ -346,6 +354,26 @@ func TestScopeHooks_ObserverPanic(t *testing.T) {
 			is.Equal(tt.shutdowns, svc.shutdowns.Load())
 		})
 	}
+}
+
+func TestScopeStartedHook_PanicDefault(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+	is := assert.New(t)
+
+	root := New()
+	require.NoError(t, root.Start())
+	tenant := root.Scope("tenant")
+	starts := &countingStarters{}
+	provideCountedStarter(tenant, starts, "worker")
+	var second atomic.Int32
+	root.AddScopeStartedHook(func(context.Context, *Scope) { panic("scope-boom") })
+	root.AddScopeStartedHook(func(context.Context, *Scope) { second.Add(1) })
+
+	is.PanicsWithValue("scope-boom", func() { _ = tenant.Start() })
+
+	is.Equal(int32(1), second.Load(), "the second Started hook ran before the panic was re-raised")
+	is.Equal(1, starts.count("worker"))
 }
 
 // TestScopeHooks_ObserverPanicThroughParent pins that a child scope hook
