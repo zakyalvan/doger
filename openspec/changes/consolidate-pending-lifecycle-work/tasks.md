@@ -268,10 +268,10 @@ Rules:
 
 ## 39. HookAfterBuild (service-build-hooks; design P5)
 
-- [ ] 39.1 RED: add `build_hooks_test.go` with `TestAfterBuildHook_Fires` (6 rows), `TestAfterBuildHook_Order`, `TestAfterBuildHook_RegistrationOrder`, `TestAfterBuildHook_Scopes` (2 rows) and `TestAfterBuildHook_Panic`; verify `go test -race -run TestAfterBuildHook_ .` fails to compile only on `HookAfterBuild` and `AddAfterBuildHook`
-- [ ] 39.2 GREEN: add the field (nil-to-empty init, `copy()`, nil-skipping) and the adder, and fire it in `serviceLazy.build`, `serviceTransient.getInstance` and once in `serviceEager.getInstance` outside provider recovery (design P5); verify the 39.1 command passes and `make test` is green
-- [ ] 39.3 REFACTOR: *Extract Function* `onAfterBuild(i Injector, name string, instance any)` resolving the scope from the virtual scope, shared by the three wrappers; verify `make test`, `make lint` and `bench` invoke results `~` against 0.2 (`benchstat`)
-- [ ] 39.4 Add `ExampleRootScope_AddAfterBuildHook` and the build hook in `docs/docs/container/options.md`; verify the example and the docs lint and build pass
+- [x] 39.1 RED: add `build_hooks_test.go` with `TestAfterBuildHook_Fires` (6 rows), `TestAfterBuildHook_Order`, `TestAfterBuildHook_RegistrationOrder`, `TestAfterBuildHook_Scopes` (2 rows) and `TestAfterBuildHook_Panic`; verify `go test -race -run TestAfterBuildHook_ .` fails to compile only on `HookAfterBuild` and `AddAfterBuildHook`
+- [x] 39.2 GREEN: add the field (nil-to-empty init, `copy()`, nil-skipping) and the adder, and fire it in `serviceLazy.build`, `serviceTransient.getInstance` and once in `serviceEager.getInstance` outside provider recovery (design P5); verify the 39.1 command passes and `make test` is green
+- [x] 39.3 REFACTOR: *Extract Function* `onAfterBuild(i Injector, name string, instance any)` resolving the scope from the virtual scope, shared by the three wrappers; verify `make test`, `make lint` and `bench` invoke results `~` against 0.2 (`benchstat`)
+- [x] 39.4 Add `ExampleRootScope_AddAfterBuildHook` and the build hook in `docs/docs/container/options.md`; verify the example and the docs lint and build pass
 
 ## 40. Scope hooks: registration and Scope.Start veto (scope-lifecycle-hooks; design S1)
 

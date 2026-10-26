@@ -168,3 +168,21 @@ func ExampleRootScope_ShutdownOnSignalsWithContext() {
 	// fmt.Println(signal)
 	// fmt.Println(errors.Len())
 }
+
+type exampleBuiltCache struct{}
+
+func ExampleRootScope_AddAfterBuildHook() {
+	root := New()
+	ProvideNamed(root, "cache", func(Injector) (*exampleBuiltCache, error) { return &exampleBuiltCache{}, nil })
+
+	// Observe each instance right after the container builds it, for example
+	// to register metrics, without wrapping every provider.
+	root.AddAfterBuildHook(func(scope *Scope, serviceName string, instance any) {
+		fmt.Printf("built %s (%T) in %s\n", serviceName, instance, scope.Name())
+	})
+
+	_ = MustInvokeNamed[*exampleBuiltCache](root, "cache")
+	_ = MustInvokeNamed[*exampleBuiltCache](root, "cache") // cached: no build
+	// Output:
+	// built cache (*doger.exampleBuiltCache) in [root]
+}

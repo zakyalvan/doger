@@ -31,6 +31,8 @@ type serviceEager[T any] struct {
 	// declared dependencies, resolved on the first successful invocation
 	depsMu       sync.Mutex
 	depsResolved bool
+
+	built atomic.Bool // the after-build hook ran
 }
 
 func newServiceEager[T any](name string, instance T) *serviceEager[T] {
@@ -92,6 +94,11 @@ func (s *serviceEager[T]) getInstance(i Injector) (T, error) {
 			}
 			s.depsResolved = true
 		}
+	}
+
+	// the first successful invocation counts as the build of an eager value
+	if s.built.CompareAndSwap(false, true) {
+		onAfterBuild(i, s.name, s.instance)
 	}
 
 	return s.instance, nil

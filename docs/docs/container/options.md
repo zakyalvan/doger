@@ -67,6 +67,7 @@ injector := doger.NewWithOpts(&doger.InjectorOpts{
     HookAfterRegistration:  []func(scope *doger.Scope, serviceName string){},
     HookBeforeInvocation:   []func(scope *doger.Scope, serviceName string){},
     HookAfterInvocation:    []func(scope *doger.Scope, serviceName string, err error){},
+    HookAfterBuild:         []func(scope *doger.Scope, serviceName string, instance any){},
     HookBeforeShutdown:     []func(scope *doger.Scope, serviceName string){},
     HookAfterShutdown:      []func(scope *doger.Scope, serviceName string, err error){},
     HookBeforeStart:        []func(scope *doger.Scope, serviceName string){},
@@ -82,6 +83,7 @@ injector := doger.NewWithOpts(&doger.InjectorOpts{
 
     Clock: nil, // nil: the real clock
     DisableStarterAutoDetection: false, // true: Start only starts AsStarter() services
+    StartParallelism: 0, // 0 or 1: sequential; n > 1: up to n Starters at a time
 })
 ```
 
@@ -113,6 +115,16 @@ With a fake clock, a context the container creates for a health check blocks on 
 ### Start hooks {#start-hooks}
 
 `HookBeforeStart` and `HookAfterStart` run around each service's `Start` method when the container [starts](../service-lifecycle/starter.md), in the order they were added. `HookAfterStart` receives the error the method returned, **unwrapped**: `nil` on success, or the recovered panic as an error. No start hook runs for an `AsStarter()` service whose instance has no `Start` method, since no method is called. A panicking hook propagates out of `Start`, as a panicking shutdown hook does.
+
+### Build hook {#build-hook}
+
+`HookAfterBuild` receives each instance the container builds, with its scope and service name: after every successful provider call (each transient instance included) and after an eager value's first successful invocation. It runs between the before- and after-invocation hooks. It does not run for a failed build, a cached lazy instance or an alias (the alias's target reports its own build). A panicking hook propagates to the caller.
+
+```go
+injector.AddAfterBuildHook(func(scope *doger.Scope, serviceName string, instance any) {
+    metrics.ServicesBuilt.WithLabelValues(serviceName).Inc()
+})
+```
 
 ### Add hooks at runtime {#add-hooks-at-runtime}
 

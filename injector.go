@@ -122,6 +122,14 @@ type InjectorOpts struct {
 	// This hook can be used for logging, metrics collection, or error handling.
 	HookAfterInvocation []func(scope *Scope, serviceName string, err error)
 
+	// HookAfterBuild is called with each instance the container builds:
+	// after every successful provider call (each transient instance
+	// included) and after an eager value's first successful invocation. It
+	// is not called for a failed build, a cached lazy instance or an alias,
+	// and runs between the before- and after-invocation hooks. A panic
+	// propagates to the caller, as for the other per-service hooks.
+	HookAfterBuild []func(scope *Scope, serviceName string, instance any)
+
 	// HookBeforeShutdown is called before a service is shut down.
 	// This hook can be used for cleanup preparation or logging.
 	HookBeforeShutdown []func(scope *Scope, serviceName string)
@@ -268,6 +276,7 @@ func (o *InjectorOpts) copy() *InjectorOpts {
 		HookAfterRegistration:    append([]func(*Scope, string){}, o.HookAfterRegistration...),
 		HookBeforeInvocation:     append([]func(*Scope, string){}, o.HookBeforeInvocation...),
 		HookAfterInvocation:      append([]func(*Scope, string, error){}, o.HookAfterInvocation...),
+		HookAfterBuild:           append([]func(*Scope, string, any){}, o.HookAfterBuild...),
 		HookBeforeShutdown:       append([]func(*Scope, string){}, o.HookBeforeShutdown...),
 		HookAfterShutdown:        append([]func(*Scope, string, error){}, o.HookAfterShutdown...),
 		HookBeforeStart:          append([]func(*Scope, string){}, o.HookBeforeStart...),
@@ -303,6 +312,7 @@ func (o *InjectorOpts) initDefaults() {
 	emptyIfNil(&o.HookAfterRegistration)
 	emptyIfNil(&o.HookBeforeInvocation)
 	emptyIfNil(&o.HookAfterInvocation)
+	emptyIfNil(&o.HookAfterBuild)
 	emptyIfNil(&o.HookBeforeShutdown)
 	emptyIfNil(&o.HookAfterShutdown)
 	emptyIfNil(&o.HookBeforeStart)
@@ -347,6 +357,14 @@ func (o *InjectorOpts) onBeforeInvocation(scope *Scope, serviceName string) {
 func (o *InjectorOpts) onAfterInvocation(scope *Scope, serviceName string, err error) {
 	for _, fn := range o.HookAfterInvocation {
 		fn(scope, serviceName, err)
+	}
+}
+
+func (o *InjectorOpts) onAfterBuild(scope *Scope, serviceName string, instance any) {
+	for _, fn := range o.HookAfterBuild {
+		if fn != nil {
+			fn(scope, serviceName, instance)
+		}
 	}
 }
 

@@ -509,6 +509,15 @@ func (s *RootScope) AddAfterInvocationHook(hook func(*Scope, string, error)) {
 	s.opts.HookAfterInvocation = append(s.opts.HookAfterInvocation, hook)
 }
 
+// AddAfterBuildHook adds a hook that will be called with each instance the
+// container builds. A nil hook is ignored. See [InjectorOpts.HookAfterBuild].
+func (s *RootScope) AddAfterBuildHook(hook func(*Scope, string, any)) {
+	if hook == nil {
+		return
+	}
+	s.opts.HookAfterBuild = append(s.opts.HookAfterBuild, hook)
+}
+
 // AddBeforeShutdownHook adds a hook that will be called before a service is shutdown.
 //
 // Play: https://go.dev/play/p/FFKDcV0hMJx

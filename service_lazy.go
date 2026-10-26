@@ -117,7 +117,32 @@ func (s *serviceLazy[T]) build(i Injector) (err error) {
 	s.built = true
 	s.buildTime = clock.Since(start)
 
+	onAfterBuild(i, s.name, instance)
+
 	return nil
+}
+
+// onAfterBuild runs the after-build hooks for an instance a wrapper built,
+// with the scope behind the injector the wrapper received.
+func onAfterBuild(i Injector, name string, instance any) {
+	if scope := injectorScope(i); scope != nil {
+		scope.RootScope().opts.onAfterBuild(scope, name, instance)
+	}
+}
+
+// injectorScope returns the *Scope behind an injector a wrapper receives
+// (usually a provider's virtual scope), or nil.
+func injectorScope(i Injector) *Scope {
+	switch injector := i.(type) {
+	case *virtualScope:
+		return injectorScope(injector.self)
+	case *Scope:
+		return injector
+	case *RootScope:
+		return injector.self
+	default:
+		return nil
+	}
 }
 
 // injectorClock returns the clock of the injector's root scope, or the real
