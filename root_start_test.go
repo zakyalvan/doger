@@ -1761,7 +1761,11 @@ func TestStart_ParallelIncrementalDependencyOrder(t *testing.T) {
 								return nil, err
 							}
 						}
-						return &sleepingStarter{name: name, d: time.Second, rec: rec}, nil
+						d := time.Second
+						if name == "a" {
+							d = 2 * time.Second // b's or c's slot frees before a returns
+						}
+						return &sleepingStarter{name: name, d: d, rec: rec}, nil
 					})
 				}
 
@@ -1769,7 +1773,7 @@ func TestStart_ParallelIncrementalDependencyOrder(t *testing.T) {
 				is.NoError(run())
 
 				// a, b and c start together; d waits for a
-				is.Equal(2*time.Second, time.Since(begin))
+				is.Equal(3*time.Second, time.Since(begin))
 				events := rec.list()
 				is.Less(indexOf(events, "a returned"), indexOf(events, "d start"))
 			})
