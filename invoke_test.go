@@ -976,6 +976,21 @@ func TestInvokeAs_Deterministic(t *testing.T) {
 			provideGreeter(clone, "a")
 			return clone
 		}, selected: "b"},
+		{name: "clone keeps each registration index", setup: func(root *RootScope) Injector {
+			provideGreeter(root, "b")
+			provideGreeter(root, "a")
+			return root.Clone()
+		}, selected: "b"},
+		{name: "an alias is a candidate", setup: func(root *RootScope) Injector {
+			provideGreeter(root, "x")
+			provideGreeter(root, "a")
+			request := root.Scope("request")
+			// the only match in the nearest scope
+			if err := AsNamed[*greeterImpl, Greeter](request, "a", "g"); err != nil {
+				panic(err)
+			}
+			return request
+		}, selected: "a"},
 	}
 
 	for _, tt := range tests {
