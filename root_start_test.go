@@ -1832,6 +1832,57 @@ func TestStart_ParallelFailure(t *testing.T) {
 	}
 }
 
+func TestStart_ParallelCancelStopsScheduling(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		incremental bool // the Starters are registered after Start and started by Refresh
+	}{
+		{name: "Start"},
+		{name: "Refresh", incremental: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+			is := assert.New(t)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			root := NewWithOpts(&InjectorOpts{StartParallelism: 2})
+			run := root.StartWithContext
+			if tt.incremental {
+				require.NoError(t, root.Start())
+				run = root.RefreshWithContext
+			}
+			aDone := make(chan struct{})
+			var cStarts atomic.Int32
+			// "a" cancels and succeeds; "b" succeeds once "a" returned, so no
+			// Starter fails and only the scheduler's own check can stop "c"
+			provideLazy(root, "a", &ctxStarter{fn: func(context.Context) error {
+				cancel()
+				close(aDone)
+				return nil
+			}})
+			provideLazy(root, "b", &ctxStarter{fn: func(context.Context) error {
+				<-aDone
+				return nil
+			}})
+			provideLazy(root, "c", &ctxStarter{fn: func(context.Context) error {
+				cStarts.Add(1)
+				return nil
+			}})
+
+			err := run(ctx)
+
+			is.ErrorIs(err, context.Canceled)
+			is.Equal(int32(0), cStarts.Load(), "c was scheduled after the cancel")
+		})
+	}
+}
+
 func TestStart_FailureThenShutdown(t *testing.T) {
 	t.Parallel()
 
