@@ -39,7 +39,7 @@ func TestInvokeAnyByName(t *testing.T) {
 		// check we received a virtualScope
 		vs, ok := ivs.(*virtualScope)
 		is.True(ok)
-		is.Equal([]string{"hello"}, vs.invokerChain)
+		is.Equal([]string{"hello"}, vs.invokerChain())
 		is.NotEqual(i, ivs)
 
 		// create a dependency/dependent relationship
@@ -166,7 +166,7 @@ func TestInvokeByName(t *testing.T) {
 		// check we received a virtualScope
 		vs, ok := ivs.(*virtualScope)
 		is.True(ok)
-		is.Equal([]string{"hello"}, vs.invokerChain)
+		is.Equal([]string{"hello"}, vs.invokerChain())
 		is.NotEqual(i, ivs)
 
 		// create a dependency/dependent relationship
@@ -303,7 +303,7 @@ func TestInvokeByGenericType(t *testing.T) {
 		// check we received a virtualScope
 		vs, ok := ivs.(*virtualScope)
 		is.True(ok)
-		is.Equal([]string{"*github.com/kartaladev/doger.eagerTest"}, vs.invokerChain)
+		is.Equal([]string{"*github.com/kartaladev/doger.eagerTest"}, vs.invokerChain())
 		is.NotEqual(i, ivs)
 
 		// create a dependency/dependent relationship

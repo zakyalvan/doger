@@ -59,7 +59,8 @@ func (c Collection[T]) reader() Injector {
 		return detachedInjector{Injector: vScope.self, holder: holder}
 	}
 
-	read := newChildVirtualScope(vScope.parent, vScope.self, running)
+	read := newVirtualScope(vScope.self, running)
+	read.parent = vScope.parent
 	read.detached = true
 	return detachedInjector{Injector: read, holder: holder}
 }

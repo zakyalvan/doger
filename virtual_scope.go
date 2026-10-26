@@ -9,6 +9,8 @@ import (
 
 var _ Injector = (*virtualScope)(nil)
 
+// newVirtualScope returns a virtual scope over predecessor whose whole
+// invoker chain is invokerChain.
 func newVirtualScope(predecessor Injector, invokerChain []string) *virtualScope {
 	if predecessor == nil {
 		panic("DI: predecessor cannot be nil")
@@ -18,8 +20,8 @@ func newVirtualScope(predecessor Injector, invokerChain []string) *virtualScope 
 	}
 
 	return &virtualScope{
-		self:         predecessor,
-		invokerChain: invokerChain,
+		self: predecessor,
+		base: invokerChain,
 	}
 }
 
@@ -35,21 +37,51 @@ func newVirtualScope(predecessor Injector, invokerChain []string) *virtualScope 
 //
 // Fields:
 //   - self: The underlying injector being wrapped
-//   - invokerChain: The chain of service names that have been invoked, used for circular dependency detection
+//   - name, parent, base: The chain of service names that have been invoked,
+//     used for circular dependency detection: name follows the chain of
+//     parent, unless base holds the whole chain
+//
+// The chain is not copied into each virtual scope: an invocation allocates
+// one virtual scope, and a stored injector keeps O(depth) memory alive.
 type virtualScope struct {
-	self         Injector
-	invokerChain []string
-	returned     atomic.Bool   // its provider returned, or its invocation is over
-	parent       *virtualScope // the virtual scope of the invoking provider, if any
-	detached     bool          // a live-collection read after its provider returned: records no edge
+	self     Injector
+	name     string        // the service this invocation builds; unused when base is set
+	parent   *virtualScope // the virtual scope of the invoking provider, if any
+	base     []string      // the whole invoker chain, for a scope not built by an invocation
+	returned atomic.Bool   // its provider returned, or its invocation is over
+	detached bool          // a live-collection read after its provider returned: records no edge
 }
 
-// newChildVirtualScope is newVirtualScope for an invocation made through
-// parent (nil outside a provider), which it links to.
-func newChildVirtualScope(parent *virtualScope, predecessor Injector, invokerChain []string) *virtualScope {
-	child := newVirtualScope(predecessor, invokerChain)
-	child.parent = parent
-	return child
+// newChildVirtualScope returns the virtual scope of an invocation of name
+// made through parent (nil outside a provider): its chain is parent's,
+// followed by name.
+func newChildVirtualScope(parent *virtualScope, predecessor Injector, name string) *virtualScope {
+	return &virtualScope{self: predecessor, name: name, parent: parent}
+}
+
+// invokerChain returns a copy of the invoker chain, outermost first.
+func (s *virtualScope) invokerChain() []string {
+	var names []string
+	v := s
+	for ; v != nil && v.base == nil; v = v.parent {
+		names = append(names, v.name)
+	}
+	slices.Reverse(names)
+	if v != nil {
+		names = append(slices.Clone(v.base), names...)
+	}
+
+	return names
+}
+
+// chainTo returns the invoker chain of vScope (nil outside a provider)
+// followed by name, for error messages.
+func chainTo(vScope *virtualScope, name string) []string {
+	if vScope == nil {
+		return []string{name}
+	}
+
+	return append(vScope.invokerChain(), name)
 }
 
 // runningChain returns, outermost first, the names of the providers above
@@ -142,10 +174,25 @@ func (s *virtualScope) onServiceInvoke(name string) { s.self.onServiceInvoke(nam
 // The method checks if the service name already exists in the invoker chain,
 // which would indicate a circular dependency.
 func (s *virtualScope) detectCircularDependency(name string) error {
-	if contains(s.invokerChain, name) {
-		return fmt.Errorf("%w: %s", ErrCircularDependency, humanReadableInvokerChain(append(s.invokerChain, name)))
+	if s.chainContains(name) {
+		return fmt.Errorf("%w: %s", ErrCircularDependency, humanReadableInvokerChain(chainTo(s, name)))
 	}
 	return nil
+}
+
+// chainContains reports whether name is in the invoker chain, without
+// building it.
+func (s *virtualScope) chainContains(name string) bool {
+	for v := s; v != nil; v = v.parent {
+		if v.base != nil {
+			return contains(v.base, name)
+		}
+		if v.name == name {
+			return true
+		}
+	}
+
+	return false
 }
 
 // addDependency adds a dependency to the DAG in the virtualScope.
@@ -187,8 +234,11 @@ func (s *virtualScope) addDependency(injector Injector, name string, serviceScop
 // The invoker chain represents the path of service invocations, where each service
 // in the chain depends on the next service in the chain.
 func (s *virtualScope) getLastInvokerName() (output string, ok bool) {
-	if len(s.invokerChain) > 0 {
-		return s.invokerChain[len(s.invokerChain)-1], true
+	if s.base == nil {
+		return s.name, true
+	}
+	if len(s.base) > 0 {
+		return s.base[len(s.base)-1], true
 	}
 
 	// This should never happen, but we'll handle it gracefully

@@ -31,25 +31,18 @@ func invokeAnyByName(i Injector, name string) (any, error) {
 // invokeAnyByNameAs is invokeAnyByName recording the dependency edge, when
 // invoked from a provider, with the given source.
 func invokeAnyByNameAs(i Injector, name string, source DependencySource) (any, error) {
-	var invokerChain []string
-
 	injector := getInjectorOrDefault(i)
 
 	vScope, isVirtualScope := injector.(*virtualScope)
 	if isVirtualScope {
-		invokerChain = vScope.invokerChain
-
 		if err := vScope.detectCircularDependency(name); err != nil {
 			return nil, err
 		}
 	}
 
-	// a copy: siblings must not share the backing array of a stored chain
-	invokerChain = append(slices.Clip(invokerChain), name)
-
 	serviceAny, serviceScope, found := injector.serviceGetRec(name)
 	if !found {
-		return nil, serviceNotFound(injector, ErrServiceNotFound, invokerChain)
+		return nil, serviceNotFound(injector, ErrServiceNotFound, chainTo(vScope, name))
 	}
 
 	if isVirtualScope {
@@ -58,11 +51,11 @@ func invokeAnyByNameAs(i Injector, name string, source DependencySource) (any, e
 
 	service, ok := serviceAny.(serviceWrapperAny)
 	if !ok {
-		return nil, serviceNotFound(injector, ErrServiceNotFound, invokerChain)
+		return nil, serviceNotFound(injector, ErrServiceNotFound, chainTo(vScope, name))
 	}
 
 	injector.RootScope().opts.onBeforeInvocation(serviceScope, name)
-	child := newChildVirtualScope(vScope, serviceScope, invokerChain)
+	child := newChildVirtualScope(vScope, serviceScope, name)
 	instance, err := service.getInstanceAny(child)
 	// the invocation is over, even when no provider ran with child
 	child.returned.Store(true)
@@ -91,25 +84,18 @@ func invokeAnyByNameAs(i Injector, name string, source DependencySource) (any, e
 // This function is used internally by the DI container for type-safe service resolution.
 // It ensures that the returned service matches the expected type T.
 func invokeByName[T any](i Injector, name string) (T, error) {
-	var invokerChain []string
-
 	injector := getInjectorOrDefault(i)
 
 	vScope, isVirtualScope := injector.(*virtualScope)
 	if isVirtualScope {
-		invokerChain = vScope.invokerChain
-
 		if err := vScope.detectCircularDependency(name); err != nil {
 			return empty[T](), err
 		}
 	}
 
-	// a copy: siblings must not share the backing array of a stored chain
-	invokerChain = append(slices.Clip(invokerChain), name)
-
 	serviceAny, serviceScope, found := injector.serviceGetRec(name)
 	if !found {
-		return empty[T](), serviceNotFound(injector, ErrServiceNotFound, invokerChain)
+		return empty[T](), serviceNotFound(injector, ErrServiceNotFound, chainTo(vScope, name))
 	}
 
 	if isVirtualScope {
@@ -122,7 +108,7 @@ func invokeByName[T any](i Injector, name string) (T, error) {
 	}
 
 	injector.RootScope().opts.onBeforeInvocation(serviceScope, name)
-	child := newChildVirtualScope(vScope, serviceScope, invokerChain)
+	child := newChildVirtualScope(vScope, serviceScope, name)
 	instance, err := service.getInstance(child)
 	// the invocation is over, even when no provider ran with child
 	child.returned.Store(true)
@@ -153,16 +139,11 @@ func invokeByGenericType[T any](i Injector) (T, error) {
 	injector := getInjectorOrDefault(i)
 	serviceAliasName := inferServiceName[T]()
 
-	var invokerChain []string
-
-	vScope, isVirtualScope := injector.(*virtualScope)
-	if isVirtualScope {
-		invokerChain = vScope.invokerChain
-	}
+	vScope, _ := injector.(*virtualScope)
 
 	selected, ok := selectByType(injector, reflect.TypeFor[T]())
 	if !ok {
-		return empty[T](), serviceNotFound(injector, ErrServiceNotMatch, append(invokerChain, serviceAliasName))
+		return empty[T](), serviceNotFound(injector, ErrServiceNotMatch, chainTo(vScope, serviceAliasName))
 	}
 
 	instance, err := invokeServiceInstance(injector, vScope, serviceAliasName, selected.name, selected.scope, selected.service)
@@ -179,17 +160,14 @@ func invokeByGenericType[T any](i Injector) (T, error) {
 // type name there would break cycle detection. vScope is nil outside a
 // provider. The edge is recorded only after a successful build.
 func invokeServiceInstance(injector Injector, vScope *virtualScope, hookName, realName string, scope *Scope, service any) (any, error) {
-	var invokerChain []string
 	if vScope != nil {
-		invokerChain = vScope.invokerChain
-
 		if err := vScope.detectCircularDependency(realName); err != nil {
 			return nil, err
 		}
 	}
 
 	injector.RootScope().opts.onBeforeInvocation(scope, hookName)
-	child := newChildVirtualScope(vScope, scope, append(slices.Clip(invokerChain), realName))
+	child := newChildVirtualScope(vScope, scope, realName)
 	instance, err := service.(serviceWrapperGetInstanceAny).getInstanceAny(child) //nolint:errcheck,forcetypeassert
 	// the invocation is over, even when no provider ran with child
 	child.returned.Store(true)
