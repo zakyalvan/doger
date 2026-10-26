@@ -234,7 +234,7 @@ func TestCollection_InvocationsWithoutProvider(t *testing.T) {
 				DependsOnNamed("bus"), DependsOnNamed("missing"))
 			_, err := InvokeNamed[*ConsoleHandler](root, "l")
 			require.ErrorIs(t, err, ErrServiceNotFound)
-			ProvideNamedValue(root, "missing", 42)
+			ProvideNamed(root, "missing", func(Injector) (int, error) { return 42, nil })
 			_, err = InvokeNamed[*ConsoleHandler](root, "l")
 			require.NoError(t, err)
 			return "l"
