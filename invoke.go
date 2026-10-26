@@ -44,7 +44,8 @@ func invokeAnyByNameAs(i Injector, name string, source DependencySource) (any, e
 		}
 	}
 
-	invokerChain = append(invokerChain, name)
+	// a copy: siblings must not share the backing array of a stored chain
+	invokerChain = append(slices.Clip(invokerChain), name)
 
 	serviceAny, serviceScope, found := injector.serviceGetRec(name)
 	if !found {
@@ -100,7 +101,8 @@ func invokeByName[T any](i Injector, name string) (T, error) {
 		}
 	}
 
-	invokerChain = append(invokerChain, name)
+	// a copy: siblings must not share the backing array of a stored chain
+	invokerChain = append(slices.Clip(invokerChain), name)
 
 	serviceAny, serviceScope, found := injector.serviceGetRec(name)
 	if !found {

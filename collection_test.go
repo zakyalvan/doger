@@ -164,6 +164,65 @@ func TestCollection_ReadDuringOuterProvider(t *testing.T) {
 	assert.ErrorContains(t, err, "app")
 }
 
+func TestCollection_HolderAfterSiblings(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		invoke func(i Injector, name string) error
+	}{
+		{name: "untyped, as InvokeStruct", invoke: func(i Injector, name string) error {
+			_, err := invokeAnyByName(i, name)
+			return err
+		}},
+		{name: "typed, as InvokeNamed", invoke: func(i Injector, name string) error {
+			if name == "d" {
+				_, err := InvokeNamed[*busHandler](i, name)
+				return err
+			}
+			_, err := InvokeNamed[*ConsoleHandler](i, name)
+			return err
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+
+			// a -> b -> c, then c invokes d and e: at this depth the invoker
+			// chain has spare capacity, which e must not write into d's chain
+			root := New()
+			chain := func(name string, next ...string) {
+				ProvideNamed(root, name, func(i Injector) (*ConsoleHandler, error) {
+					for _, n := range next {
+						if err := tt.invoke(i, n); err != nil {
+							return nil, err
+						}
+					}
+					return newConsole(name), nil
+				})
+			}
+			chain("a", "b")
+			chain("b", "c")
+			chain("c", "d", "e")
+			chain("e")
+			ProvideNamed(root, "d", func(i Injector) (*busHandler, error) {
+				return &busHandler{handlerBase: handlerBase{"d"}, peers: InvokeCollection[EventHandler](i)}, nil
+			})
+			_, err := InvokeNamed[*ConsoleHandler](root, "a")
+			require.NoError(t, err)
+			d, err := InvokeNamed[*busHandler](root, "d")
+			require.NoError(t, err)
+
+			peers, err := d.peers.Map()
+
+			require.NoError(t, err)
+			assert.ElementsMatch(t, []string{"a", "b", "c", "e"}, slices.Collect(maps.Keys(peers)))
+		})
+	}
+}
+
 func TestCollection_ReadOutcomes(t *testing.T) {
 	t.Parallel()
 
