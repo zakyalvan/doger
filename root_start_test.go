@@ -1727,6 +1727,56 @@ func TestStart_ParallelIncremental(t *testing.T) {
 	}
 }
 
+func TestStart_ParallelIncrementalDependencyOrder(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		scope bool // the run is tenant.Start(), not root.Refresh()
+	}{
+		{name: "root.Refresh()"},
+		{name: "tenant.Start()", scope: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			synctest.Test(t, func(t *testing.T) {
+				is := assert.New(t)
+
+				root := NewWithOpts(&InjectorOpts{StartParallelism: 3})
+				require.NoError(t, root.Start())
+				var scope Injector = root
+				run := root.Refresh
+				if tt.scope {
+					tenant := root.Scope("tenant")
+					scope, run = tenant, tenant.Start
+				}
+				rec := &callRecorder{}
+				for _, name := range []string{"a", "b", "c", "d"} {
+					ProvideNamed(scope, name, func(i Injector) (*sleepingStarter, error) {
+						if name == "d" {
+							if _, err := InvokeNamed[*sleepingStarter](i, "a"); err != nil {
+								return nil, err
+							}
+						}
+						return &sleepingStarter{name: name, d: time.Second, rec: rec}, nil
+					})
+				}
+
+				begin := time.Now()
+				is.NoError(run())
+
+				// a, b and c start together; d waits for a
+				is.Equal(2*time.Second, time.Since(begin))
+				events := rec.list()
+				is.Less(indexOf(events, "a returned"), indexOf(events, "d start"))
+			})
+		})
+	}
+}
+
 // provideLazy registers value lazily under name, through a provider that
 // returns it, where a scenario says "lazy".
 func provideLazy[T any](scope Injector, name string, value T) {
