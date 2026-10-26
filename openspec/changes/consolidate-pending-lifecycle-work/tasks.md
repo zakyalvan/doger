@@ -248,9 +248,9 @@ Rules:
 
 ## 36. Kind handlers and runners on incremental start (component-kinds; design P1)
 
-- [ ] 36.1 RED: add `TestKind_RefreshHandlesNew` and `TestRunnable_RefreshRunsOnce`; verify `go test -race -run 'TestKind_RefreshHandlesNew|TestRunnable_RefreshRunsOnce' .` fails on duplicate handling ("a" handled twice, "migrate" run twice) unless 33.2 already skips handled pairs; if they pass on arrival, record it and show they fail with the `handled` check temporarily removed (not committed)
-- [ ] 36.2 GREEN: skip `(kind, wrapper)` pairs in `handled` in `runStage` and record new ones (design P1); verify the 36.1 command passes and `make test` is green
-- [ ] 36.3 REFACTOR: none needed, a guard in one loop; verify `make test` and `make lint` pass
+- [x] 36.1 RED: add `TestKind_RefreshHandlesNew` and `TestRunnable_RefreshRunsOnce`; verify `go test -race -run 'TestKind_RefreshHandlesNew|TestRunnable_RefreshRunsOnce' .` fails on duplicate handling ("a" handled twice, "migrate" run twice) unless 33.2 already skips handled pairs; if they pass on arrival, record it and show they fail with the `handled` check temporarily removed (not committed)
+- [x] 36.2 GREEN: skip `(kind, wrapper)` pairs in `handled` in `runStage` and record new ones (design P1); verify the 36.1 command passes and `make test` is green
+- [x] 36.3 REFACTOR: none needed, a guard in one loop; verify `make test` and `make lint` pass
 
 ## 37. Incremental start fires no container hooks (container-lifecycle-hooks; design X2)
 

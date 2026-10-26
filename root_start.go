@@ -388,6 +388,8 @@ func (s *RootScope) newStartCandidate(scope *Scope, name string, depth int, serv
 		// implicit binding, so a runner opted in explicitly still runs once
 		kinds = append(slices.Clone(kinds), kindBinding{id: runnableKind.id, meta: struct{}{}, target: runnableKind.target()})
 	}
+	// a component is handled at most once per kind per container
+	kinds = slices.DeleteFunc(slices.Clone(kinds), func(b kindBinding) bool { return s.isHandled(service, b.id) })
 	if !starter && len(kinds) == 0 {
 		return nil
 	}
@@ -575,6 +577,7 @@ func (s *RootScope) runStage(startCtx context.Context, stage Stage, candidates [
 				err = newStartError(StartOpHandle, component.scope, component.name, entry.id.name, err)
 				return withAbortCause(startCtx, err)
 			}
+			s.markHandled(component.service, entry.id)
 		}
 	}
 

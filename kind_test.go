@@ -693,3 +693,36 @@ func TestKind_CloneReplaceIsolated(t *testing.T) {
 	require.NoError(t, root.Start())
 	assert.Equal(t, []string{"source"}, events.list())
 }
+
+func TestKind_RefreshHandlesNew(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	k := NewKind[Job, Spec]("k")
+	rec := &componentRecorder[Job, Spec]{}
+	k.Handle(root, StageBeforeStart, rec.handler)
+	ProvideNamed(root, "a", func(Injector) (*CleanupJob, error) { return &CleanupJob{name: "a"}, nil }, k.With(Spec{}))
+	require.NoError(t, root.Start())
+
+	ProvideNamed(root, "b", func(Injector) (*CleanupJob, error) { return &CleanupJob{name: "b"}, nil }, k.With(Spec{}))
+	require.NoError(t, root.Refresh())
+	require.NoError(t, root.Refresh())
+
+	assert.Equal(t, []string{"a", "b"}, rec.names())
+}
+
+func TestRunnable_RefreshRunsOnce(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	events := &callRecorder{}
+	provideRunner(root, events, "migrate", nil, AsRunnable())
+	require.NoError(t, root.Start())
+
+	provideRunner(root, events, "seed", nil, AsRunnable())
+	require.NoError(t, root.Refresh())
+
+	assert.Equal(t, []string{"run migrate", "run seed"}, events.list())
+}

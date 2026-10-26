@@ -127,3 +127,26 @@ func (s *Scope) StartWithContext(ctx context.Context) error {
 
 	return s.rootScope.startIncremental(ctx, s)
 }
+
+// isHandled reports whether kind id already handled the service.
+func (s *RootScope) isHandled(service any, id *kindID) bool {
+	s.startedMu.Lock()
+	defer s.startedMu.Unlock()
+
+	_, ok := s.handled[service][id]
+	return ok
+}
+
+// markHandled records that kind id handled the service.
+func (s *RootScope) markHandled(service any, id *kindID) {
+	s.startedMu.Lock()
+	defer s.startedMu.Unlock()
+
+	if s.handled == nil {
+		s.handled = map[any]map[*kindID]struct{}{}
+	}
+	if s.handled[service] == nil {
+		s.handled[service] = map[*kindID]struct{}{}
+	}
+	s.handled[service][id] = struct{}{}
+}

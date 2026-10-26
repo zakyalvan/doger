@@ -135,8 +135,9 @@ type RootScope struct {
 	// is held across their user code; Shutdown never takes it, and nothing
 	// takes it while holding lifecycleMu.
 	pipelineMu sync.Mutex
-	startedMu  sync.Mutex       // guards started; never held across user code
-	started    map[any]struct{} // Starters already started, keyed by wrapper
+	startedMu  sync.Mutex                   // guards started and handled; never held across user code
+	started    map[any]struct{}             // Starters already started, keyed by wrapper
+	handled    map[any]map[*kindID]struct{} // kinds already handled, by wrapper
 }
 
 // closePhase is the shutdown state of a root container.
