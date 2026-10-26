@@ -59,18 +59,38 @@ func newStartError(op StartOp, scope *Scope, service, kind string, cause error) 
 	return &StartError{Scope: scope, Service: service, Kind: kind, Op: op, Cause: cause}
 }
 
-// Error returns the failure message, naming the service and its scope.
+// Error returns the failure message, naming the service and its scope. A
+// nil Scope reads as an empty scope name and a nil Cause as <nil>, so a
+// value built by hand never panics.
 func (e *StartError) Error() string {
 	switch {
 	case e.unprefixed:
-		return e.Cause.Error()
+		return e.causeText()
 	case e.Op == StartOpHandle:
-		return fmt.Sprintf("DI: kind `%s` failed for service `%s` in scope `%s`: %s", e.Kind, e.Service, e.Scope.Name(), e.Cause.Error())
+		return fmt.Sprintf("DI: kind `%s` failed for service `%s` in scope `%s`: %s", e.Kind, e.Service, e.scopeName(), e.causeText())
 	case e.Op == StartOpStart:
-		return fmt.Sprintf("DI: failed to start service `%s` in scope `%s`: %s", e.Service, e.Scope.Name(), e.Cause.Error())
+		return fmt.Sprintf("DI: failed to start service `%s` in scope `%s`: %s", e.Service, e.scopeName(), e.causeText())
 	default:
-		return fmt.Sprintf("DI: failed to build service `%s` in scope `%s`: %s", e.Service, e.Scope.Name(), e.Cause.Error())
+		return fmt.Sprintf("DI: failed to build service `%s` in scope `%s`: %s", e.Service, e.scopeName(), e.causeText())
 	}
+}
+
+// scopeName returns the name of Scope, or "" when it is nil.
+func (e *StartError) scopeName() string {
+	if e.Scope == nil {
+		return ""
+	}
+
+	return e.Scope.Name()
+}
+
+// causeText returns the message of Cause, or "<nil>" when it is nil.
+func (e *StartError) causeText() string {
+	if e.Cause == nil {
+		return "<nil>"
+	}
+
+	return e.Cause.Error()
 }
 
 // Unwrap returns Cause.
