@@ -350,6 +350,122 @@ func TestContainerFailedHook_GuardErrors(t *testing.T) {
 	}
 }
 
+func TestContainerFailedHook_PipelinePanic(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+
+	tests := []struct {
+		name  string
+		opts  func(panicFor func(name string)) *InjectorOpts
+		value any
+		check func(t *testing.T, failedErr error)
+	}{
+		{
+			name: "HookBeforeStart, sequential",
+			opts: func(panicFor func(string)) *InjectorOpts {
+				return &InjectorOpts{HookBeforeStart: []func(*Scope, string){func(_ *Scope, name string) { panicFor(name) }}}
+			},
+			value: errBoom,
+			check: func(t *testing.T, failedErr error) { t.Helper(); assert.ErrorIs(t, failedErr, errBoom) },
+		},
+		{
+			name: "HookAfterBuild, sequential",
+			opts: func(panicFor func(string)) *InjectorOpts {
+				return &InjectorOpts{HookAfterBuild: []func(*Scope, string, any){func(_ *Scope, name string, _ any) { panicFor(name) }}}
+			},
+			value: "boom",
+			check: func(t *testing.T, failedErr error) { t.Helper(); assert.ErrorContains(t, failedErr, "boom") },
+		},
+		{
+			name: "HookAfterStart, StartParallelism 4",
+			opts: func(panicFor func(string)) *InjectorOpts {
+				return &InjectorOpts{
+					StartParallelism: 4,
+					HookAfterStart:   []func(*Scope, string, error){func(_ *Scope, name string, _ error) { panicFor(name) }},
+				}
+			},
+			value: errBoom,
+			check: func(t *testing.T, failedErr error) { t.Helper(); assert.ErrorIs(t, failedErr, errBoom) },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+			is := assert.New(t)
+
+			root := NewWithOpts(tt.opts(func(name string) {
+				if name == "a" {
+					panic(tt.value)
+				}
+			}))
+			rec := &callRecorder{}
+			root.AddContainerStartingHook(func(context.Context, *RootScope) error { rec.record("starting"); return nil })
+			root.AddContainerStartedHook(func(context.Context, *RootScope) { rec.record("started") })
+			root.AddContainerReadyHook(func(context.Context, *RootScope) { rec.record("ready") })
+			var failedErr error
+			root.AddContainerFailedHook(func(_ context.Context, _ *RootScope, err error) {
+				rec.record("failed")
+				failedErr = err
+			})
+			provideLazy(root, "a", &errorStarter{})
+			provideLazy(root, "b", &errorStarter{})
+
+			is.PanicsWithValue(tt.value, func() { _ = root.Start() })
+
+			is.Equal([]string{"starting", "failed"}, rec.list())
+			tt.check(t, failedErr)
+			is.Equal(PhaseFailed, root.Phase())
+		})
+	}
+}
+
+func TestContainerFailedHook_PanicDuringPipelinePanic(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		policy bool
+	}{
+		{name: "nil policy logs it", policy: false},
+		{name: "policy receives it", policy: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+			is := assert.New(t)
+
+			logs := &callRecorder{}
+			panics := &callRecorder{}
+			opts := &InjectorOpts{
+				HookBeforeStart: []func(*Scope, string){func(*Scope, string) { panic("pipeline") }},
+				Logf:            func(format string, args ...any) { logs.record(fmt.Sprintf(format, args...)) },
+			}
+			if tt.policy {
+				opts.HookContainerPanic = func(_ *RootScope, point string, recovered any) {
+					panics.record(fmt.Sprintf("%s %v", point, recovered))
+				}
+			}
+			root := NewWithOpts(opts)
+			root.AddContainerFailedHook(func(context.Context, *RootScope, error) { panic("failed-hook") })
+			provideLazy(root, "a", &errorStarter{})
+
+			is.PanicsWithValue("pipeline", func() { _ = root.Start() })
+
+			if tt.policy {
+				is.Equal([]string{"failed failed-hook"}, panics.list())
+				return
+			}
+			is.True(slices.ContainsFunc(logs.list(), func(line string) bool { return strings.Contains(line, "failed-hook") }),
+				"logs: %v", logs.list())
+		})
+	}
+}
+
 // recordingShutdowner records "<name>.Shutdown" and returns err.
 type recordingShutdowner struct {
 	name string

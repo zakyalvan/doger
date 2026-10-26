@@ -85,14 +85,41 @@ func (s *RootScope) StartWithContext(ctx context.Context) error {
 		return err
 	}
 
-	err = s.runStart(startCtx)
+	recovered, panicked, err := s.runStartRecovering(startCtx)
 
 	// pointAfterStart: startDone is closed, so code here may call Shutdown().
 	var first hookPanic
+	if panicked {
+		s.dispatchAfterStart(ctx, recoverAsError(recovered), &first)
+		if first.panicked {
+			if s.opts.HookContainerPanic != nil {
+				s.opts.HookContainerPanic(s, first.point, first.value)
+			} else {
+				s.opts.Logf("DI: container %s hook panicked: %v", first.point, first.value)
+			}
+		}
+		panic(recovered)
+	}
 	s.dispatchAfterStart(ctx, err, &first)
 	s.dispatchFirstPanic(first)
 
 	return err
+}
+
+// runStartRecovering runs runStart, recovering a panic that escapes the
+// pipeline, such as one from a per-service hook.
+func (s *RootScope) runStartRecovering(startCtx context.Context) (recovered any, panicked bool, err error) {
+	panicked = true
+	defer func() {
+		if panicked {
+			recovered = recover()
+		}
+	}()
+
+	err = s.runStart(startCtx)
+	panicked = false
+
+	return nil, false, err
 }
 
 // dispatchAfterStart fires the pointAfterStart hooks from Start's local
