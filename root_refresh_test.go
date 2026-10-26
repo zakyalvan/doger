@@ -282,6 +282,103 @@ func TestScopeShutdown_LaterStartSkips(t *testing.T) {
 	is.True((<-shutdown).Succeed)
 }
 
+// countedShutdowner counts its Shutdown calls.
+type countedShutdowner struct{ calls atomic.Int32 }
+
+func (s *countedShutdowner) Shutdown() error {
+	s.calls.Add(1)
+	return nil
+}
+
+func TestScopeShutdown_ConcurrentShutdownsJoin(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		second func(root *RootScope, tenant *Scope) *ShutdownReport
+	}{
+		{name: "tenant.Shutdown twice", second: func(_ *RootScope, tenant *Scope) *ShutdownReport { return tenant.Shutdown() }},
+		{name: "tenant.Shutdown, then root.Shutdown", second: func(root *RootScope, _ *Scope) *ShutdownReport { return root.Shutdown() }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			synctest.Test(t, func(t *testing.T) {
+				is := assert.New(t)
+
+				entered, release := make(chan struct{}), make(chan struct{})
+				var closing, closed atomic.Int32
+				root := New()
+				root.AddScopeClosingHook(func(context.Context, *Scope) {
+					if closing.Add(1) == 1 {
+						close(entered)
+						<-release
+					}
+				})
+				root.AddScopeClosedHook(func(context.Context, *Scope) { closed.Add(1) })
+				tenant := root.Scope("tenant")
+				services := map[string]*countedShutdowner{}
+				for _, name := range []string{"a", "b", "c", "d"} {
+					services[name] = &countedShutdowner{}
+					ProvideNamedValue(tenant, name, services[name])
+				}
+
+				firstDone := make(chan *ShutdownReport, 1)
+				go func() { firstDone <- tenant.Shutdown() }()
+				<-entered
+				secondDone := make(chan *ShutdownReport, 1)
+				go func() { secondDone <- tt.second(root, tenant) }()
+				synctest.Wait() // the second shutdown reached tenant, or ended
+				close(release)
+				first, second := <-firstDone, <-secondDone
+
+				// one shutdown of the scope ran; the other joined it
+				is.True(first.Succeed, "first report: %v", first.Errors)
+				is.True(second.Succeed, "second report: %v", second.Errors)
+				is.Equal(int32(1), closing.Load(), "HookScopeClosing runs")
+				is.Equal(int32(1), closed.Load(), "HookScopeClosed runs")
+				for name, service := range services {
+					is.Equal(int32(1), service.calls.Load(), "%s shut down", name)
+				}
+			})
+		})
+	}
+}
+
+func TestScopeShutdown_JoinBoundedByContext(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		is := assert.New(t)
+
+		entered, release := make(chan struct{}), make(chan struct{})
+		root := New()
+		root.AddScopeClosingHook(func(context.Context, *Scope) {
+			close(entered)
+			<-release
+		})
+		tenant := root.Scope("tenant")
+		service := &countedShutdowner{}
+		ProvideNamedValue(tenant, "a", service)
+		firstDone := make(chan *ShutdownReport, 1)
+		go func() { firstDone <- tenant.Shutdown() }()
+		<-entered
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+
+		second := tenant.ShutdownWithContext(ctx)
+
+		// the joining shutdown gives up when its context ends; the first goes on
+		is.False(second.Succeed)
+		is.ErrorIs(second.Errors[newServiceDescription(tenant.ID(), tenant.Name(), "")], context.DeadlineExceeded)
+		close(release)
+		is.True((<-firstDone).Succeed)
+		is.Equal(int32(1), service.calls.Load())
+	})
+}
+
 func TestScopeShutdown_CreatedDuringStart(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, time.Second)

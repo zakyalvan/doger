@@ -73,6 +73,9 @@ type Scope struct {
 	orderedInvocationIndex int            // Counter for tracking invocation order
 
 	closing int // shutdowns of this scope in progress; guarded by rootScope.lifecycleMu
+	// closeRun is the shutdown of this child scope that others join while it
+	// runs, or nil; guarded by rootScope.lifecycleMu
+	closeRun *scopeCloseRun
 }
 
 // ID returns the unique identifier of the scope.
@@ -404,7 +407,7 @@ func (s *Scope) ShutdownWithContext(ctx context.Context) *ShutdownReport {
 
 // shutdownWithContext shuts the scope and its children down, keeping the
 // first scope hook panic in first instead of raising it.
-func (s *Scope) shutdownWithContext(ctx context.Context, first *hookPanic) *ShutdownReport {
+func (s *Scope) shutdownWithContext(ctx context.Context, first *hookPanic) (report *ShutdownReport) {
 	s.logf("requested shutdown")
 	start := s.clock().Now()
 
@@ -415,7 +418,12 @@ func (s *Scope) shutdownWithContext(ctx context.Context, first *hookPanic) *Shut
 	var waitErr error
 	if isChild {
 		defer s.endClosing()
-		waitErr = s.beginClosing(ctx)
+		run, winner := s.joinClose()
+		if !winner {
+			return s.waitForScopeClose(ctx, run)
+		}
+		defer func() { s.finishScopeClose(run, report) }()
+		waitErr = s.waitForStartingRun(ctx)
 	}
 
 	rep1 := s.shutdownChildrenInParallel(ctx, first)
@@ -431,7 +439,7 @@ func (s *Scope) shutdownWithContext(ctx context.Context, first *hookPanic) *Shut
 		s.runScopeObserverHooks(ctx, "scope-closed", s.rootScope.opts.HookScopeClosed, first)
 	}
 
-	report := mergeShutdownReports(rep1, rep2)
+	report = mergeShutdownReports(rep1, rep2)
 	if waitErr != nil {
 		report.Errors[newServiceDescription(s.id, s.name, "")] = waitErr
 	}
@@ -440,14 +448,67 @@ func (s *Scope) shutdownWithContext(ctx context.Context, first *hookPanic) *Shut
 	return report
 }
 
-// beginClosing marks the child scope as shutting down, so a Start, Refresh
-// or Scope.Start beginning now skips it, and waits, bounded by ctx, for one
-// that is running with candidates in this scope. It returns an error when ctx
-// ended first. Each call must be paired with endClosing.
-func (s *Scope) beginClosing(ctx context.Context) error {
+// scopeCloseRun is a running shutdown of a child scope: concurrent
+// shutdowns of the scope wait for it instead of walking the scope again.
+type scopeCloseRun struct {
+	done   chan struct{}
+	report *ShutdownReport // set before done is closed
+}
+
+// joinClose marks the child scope as shutting down, so a Start, Refresh or
+// Scope.Start beginning now skips it, and returns its running shutdown,
+// which this call runs when winner is true. Each call must be paired with
+// endClosing.
+func (s *Scope) joinClose() (run *scopeCloseRun, winner bool) {
 	root := s.rootScope
 	root.lifecycleMu.Lock()
+	defer root.lifecycleMu.Unlock()
+
 	s.closing++
+	if s.closeRun != nil {
+		return s.closeRun, false
+	}
+	s.closeRun = &scopeCloseRun{done: make(chan struct{})}
+
+	return s.closeRun, true
+}
+
+// finishScopeClose publishes the report of the winning shutdown and releases
+// the shutdowns that joined it.
+func (s *Scope) finishScopeClose(run *scopeCloseRun, report *ShutdownReport) {
+	root := s.rootScope
+	root.lifecycleMu.Lock()
+	defer root.lifecycleMu.Unlock()
+
+	run.report = report
+	s.closeRun = nil
+	close(run.done)
+}
+
+// waitForScopeClose waits, bounded by ctx, for the shutdown a concurrent
+// call is running, and returns a copy of its report.
+func (s *Scope) waitForScopeClose(ctx context.Context, run *scopeCloseRun) *ShutdownReport {
+	if awaitDone(run.done, ctx) {
+		s.rootScope.lifecycleMu.Lock()
+		defer s.rootScope.lifecycleMu.Unlock()
+		return cloneShutdownReport(run.report)
+	}
+
+	err := fmt.Errorf("DI: waiting for scope shutdown: %w", ctx.Err())
+	return &ShutdownReport{
+		Succeed:             false,
+		Services:            []ServiceDescription{},
+		Errors:              map[ServiceDescription]error{newServiceDescription(s.id, s.name, ""): err},
+		ServiceShutdownTime: map[ServiceDescription]time.Duration{},
+	}
+}
+
+// waitForStartingRun waits, bounded by ctx, for a Start, Refresh or
+// Scope.Start that is running with candidates in this scope. It returns an
+// error when ctx ended first.
+func (s *Scope) waitForStartingRun(ctx context.Context) error {
+	root := s.rootScope
+	root.lifecycleMu.Lock()
 	_, done, inFlight := root.inFlightRun()
 	_, starting := root.runScopes[s]
 	root.lifecycleMu.Unlock()
@@ -459,7 +520,7 @@ func (s *Scope) beginClosing(ctx context.Context) error {
 	return nil
 }
 
-// endClosing ends the shutdown that beginClosing marked.
+// endClosing ends the shutdown that joinClose marked.
 func (s *Scope) endClosing() {
 	s.rootScope.lifecycleMu.Lock()
 	defer s.rootScope.lifecycleMu.Unlock()
