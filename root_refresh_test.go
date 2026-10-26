@@ -514,21 +514,23 @@ func (s *flakyStarter) Start() error {
 func TestRefresh_RetriesFailedStarter(t *testing.T) {
 	t.Parallel()
 
+	refresh := func(root *RootScope, _ *Scope) error { return root.Refresh() }
+	scopeStart := func(_ *RootScope, scope *Scope) error { return scope.Start() }
+	inRoot := func(root *RootScope) *Scope { return root.self }
+	inTenant := func(root *RootScope) *Scope { return root.Scope("tenant") }
+
 	tests := []struct {
-		name  string
-		scope func(root *RootScope) *Scope // where "late" is registered
-		run   func(root *RootScope, scope *Scope) error
+		name       string
+		scope      func(root *RootScope) *Scope // where "late" is registered
+		run        func(root *RootScope, scope *Scope) error
+		buildFails bool // the provider fails on its first call, not Start
+		builds     int32
+		starts     int32
 	}{
-		{
-			name:  "root.Refresh",
-			scope: func(root *RootScope) *Scope { return root.self },
-			run:   func(root *RootScope, _ *Scope) error { return root.Refresh() },
-		},
-		{
-			name:  "tenant.Start",
-			scope: func(root *RootScope) *Scope { return root.Scope("tenant") },
-			run:   func(_ *RootScope, scope *Scope) error { return scope.Start() },
-		},
+		{name: "root.Refresh, Start fails", scope: inRoot, run: refresh, builds: 1, starts: 2},
+		{name: "tenant.Start, Start fails", scope: inTenant, run: scopeStart, builds: 1, starts: 2},
+		{name: "root.Refresh, build fails", scope: inRoot, run: refresh, buildFails: true, builds: 2, starts: 1},
+		{name: "tenant.Start, build fails", scope: inTenant, run: scopeStart, buildFails: true, builds: 2, starts: 1},
 	}
 
 	for _, tt := range tests {
@@ -541,15 +543,26 @@ func TestRefresh_RetriesFailedStarter(t *testing.T) {
 			root := New()
 			require.NoError(t, root.Start())
 			scope := tt.scope(root)
-			late := &flakyStarter{err: errBoom}
-			provideLazy(scope, "late", late)
+			late := &flakyStarter{}
+			if !tt.buildFails {
+				late.err = errBoom
+			}
+			var builds atomic.Int32
+			ProvideNamed(scope, "late", func(Injector) (*flakyStarter, error) {
+				if builds.Add(1) == 1 && tt.buildFails {
+					return nil, errBoom
+				}
+				return late, nil
+			})
 
 			is.ErrorIs(tt.run(root, scope), errBoom)
 			is.NoError(tt.run(root, scope))
-			is.Equal(int32(2), late.calls.Load())
+			is.Equal(tt.builds, builds.Load(), "builds")
+			is.Equal(tt.starts, late.calls.Load(), "starts")
 
 			is.NoError(tt.run(root, scope))
-			is.Equal(int32(2), late.calls.Load())
+			is.Equal(tt.builds, builds.Load(), "builds")
+			is.Equal(tt.starts, late.calls.Load(), "starts")
 		})
 	}
 }
