@@ -626,6 +626,11 @@ func MustAsNamed[Initial any, Alias any](i Injector, initial string, alias strin
 // T, so services of other types are never built. Eager values are members
 // as is. Beware InvokeAll[any]: every service matches, so every one is built.
 //
+// Members come ancestors first: by scope depth from the root scope down to
+// the invoking scope, then by registration order within a scope (an
+// override keeps the position of the registration it replaces). The order
+// is the same across calls and in clones.
+//
 // With no match, InvokeAll returns an empty, non-nil slice and a nil error,
 // never ErrServiceNotFound. When a member fails to build, it returns nil and
 // an error naming the member and wrapping its cause; members built before

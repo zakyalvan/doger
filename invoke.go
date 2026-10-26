@@ -1,6 +1,7 @@
 package doger
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"reflect"
@@ -316,6 +317,12 @@ func collectionCandidates[T any](injector Injector) []collectionCandidate {
 			service:  s,
 		})
 		return true
+	})
+
+	// ancestors first, then registration order; the name keeps the order
+	// total even if indexes ever collide
+	slices.SortFunc(candidates, func(a, b collectionCandidate) int {
+		return cmp.Or(cmp.Compare(a.depth, b.depth), cmp.Compare(a.regIndex, b.regIndex), cmp.Compare(a.name, b.name))
 	})
 
 	return candidates

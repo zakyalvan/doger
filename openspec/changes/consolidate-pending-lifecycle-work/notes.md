@@ -37,3 +37,18 @@ Each was shown to fail with a temporary, uncommitted mutation:
 - 20.1 `TestInvokeAs_HookReceivesTypeName` passes on arrival (characterization); passing the real name to `onBeforeInvocation` in `invokeByGenericType` fails it.
 - 22.1 `TestInvokeAll_ProviderScopeVisibility` passes on arrival through `virtualScope` delegation; registering "b" in the root scope fails it.
 - 23.1 the `InvokeAll` rows of `TestInvokeAll_Empty` pass on arrival: the group 21 pipeline already allocates its result with `make([]T, 0, n)`. A nil result fails them.
+- 25.1 `TestInvokeAll_DeeperCycle` passes on arrival; excluding every invoker-chain member fails it.
+- 26.1 tests pass on arrival through `invokeServiceInstance`; skipping `addDependency` fails `EdgesOrderShutdown`, and passing the type name as hook name fails `HooksPerMember`.
+- 27.1 tests pass on arrival; registering the members as transients makes the single-build counter assertion fail (100 calls instead of 1).
+- 28.1 `TestInvokeAll_OverrideKeepsPosition` passed on arrival in 20 runs (iteration over 3 small-map entries happened to yield a, b, c); giving overrides a fresh registration index fails it.
+
+### Benchmarks (task 28.4)
+
+`go test -run '^$' -bench BenchmarkInvokeAll -benchmem ./bench/` (half of the visible services match, all built):
+
+| Benchmark | ns/op | B/op | allocs/op |
+|---|---|---|---|
+| `BenchmarkInvokeAll/10` | 4,708 | 2,497 | 33 |
+| `BenchmarkInvokeAll/100` | 42,024 | 24,408 | 224 |
+| `BenchmarkInvokeAll/1000` | 594,513 | 293,626 | 2,424 |
+| `BenchmarkInvokeAllParallel` (100) | 46,748 | 24,406 | 224 |

@@ -194,10 +194,10 @@ Rules:
 
 ## 28. Default collection order (Part K)
 
-- [ ] 28.1 RED: add `TestInvokeAll_DefaultOrder` (scenario "Default order across scopes", 4 rows), `TestInvokeAll_DefaultOrderStable` (50 services × 20 calls), `TestInvokeAll_OverrideKeepsPosition` and `TestInvokeAll_DefaultOrderClone` (scenarios "Order is stable across repeated calls", "Override replaces a registration in place", "Default order in a clone"); verify `go test -race -count=10 -run 'TestInvokeAll_(DefaultOrder|OverrideKeepsPosition)' .` fails on order assertions (map iteration order)
-- [ ] 28.2 GREEN: sort candidates by (scope depth, registration index, name) before building (design D2); verify the 28.1 command passes with `-count=10` and `make test` is green
-- [ ] 28.3 REFACTOR: *Introduce Parameter Object*: make `collectionCandidate` carry `depth` and `index` explicitly if they are still loose values; verify `make test` and `make lint` pass
-- [ ] 28.4 Add `BenchmarkInvokeAll/{10,100,1000}` and `BenchmarkInvokeAllParallel` to `bench/do_bench_test.go`; verify `go test -run '^$' -bench BenchmarkInvokeAll -benchmem ./bench/` runs and record the results in the change notes
+- [x] 28.1 RED: add `TestInvokeAll_DefaultOrder` (scenario "Default order across scopes", 4 rows), `TestInvokeAll_DefaultOrderStable` (50 services × 20 calls), `TestInvokeAll_OverrideKeepsPosition` and `TestInvokeAll_DefaultOrderClone` (scenarios "Order is stable across repeated calls", "Override replaces a registration in place", "Default order in a clone"); verify `go test -race -count=10 -run 'TestInvokeAll_(DefaultOrder|OverrideKeepsPosition)' .` fails on order assertions (map iteration order)
+- [x] 28.2 GREEN: sort candidates by (scope depth, registration index, name) before building (design D2); verify the 28.1 command passes with `-count=10` and `make test` is green
+- [x] 28.3 REFACTOR: *Introduce Parameter Object*: make `collectionCandidate` carry `depth` and `index` explicitly if they are still loose values; verify `make test` and `make lint` pass
+- [x] 28.4 Add `BenchmarkInvokeAll/{10,100,1000}` and `BenchmarkInvokeAllParallel` to `bench/do_bench_test.go`; verify `go test -run '^$' -bench BenchmarkInvokeAll -benchmem ./bench/` runs and record the results in the change notes
 
 ## 29. Ordered members sort ascending and stably (Part K)
 

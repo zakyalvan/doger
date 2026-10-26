@@ -496,8 +496,8 @@ func ExampleInvokeAll() {
 	Provide(injector, func(Injector) (*exampleSMSNotifier, error) { return &exampleSMSNotifier{}, nil })
 	ProvideValue(injector, "not a notifier")
 
-	// Every service whose registered type implements exampleNotifier. With
-	// no match, the result is an empty slice.
+	// Every service whose registered type implements exampleNotifier, in
+	// registration order. With no match, the result is an empty slice.
 	notifiers, err := InvokeAll[exampleNotifier](injector)
 	if err != nil {
 		fmt.Println(err)
@@ -507,7 +507,7 @@ func ExampleInvokeAll() {
 	for _, notifier := range notifiers {
 		fmt.Println(notifier.Notify("deploy done"))
 	}
-	// Unordered output:
+	// Output:
 	// email: deploy done
 	// sms: deploy done
 }
