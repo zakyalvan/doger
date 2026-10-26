@@ -18,8 +18,10 @@ var (
 	// ErrAlreadyStarted is returned by a Start call after the first one, whether
 	// the first one succeeded or failed.
 	ErrAlreadyStarted = errors.New("DI: container already started")
-	// ErrStartAfterShutdown is returned by Start once root Shutdown has begun.
-	// It is also the cause Shutdown gives the context of a running Start.
+	// ErrStartAfterShutdown is returned by Start, Refresh and Scope.Start once
+	// root Shutdown has begun. It is also the cause Shutdown gives the context
+	// of a running Start, Refresh or Scope.Start, so the error a run that
+	// Shutdown interrupted returns matches it.
 	ErrStartAfterShutdown = errors.New("DI: container is shut down")
 	// ErrNotStarted is returned by Refresh and Scope.Start while the
 	// container's first Start has not succeeded.
@@ -39,9 +41,16 @@ const (
 	StartOpHandle StartOp = "handle"
 )
 
-// StartError is the error Start returns when a service or a kind handler
-// fails. Errors that are not tied to a service (a guard, a cancelled
-// context, a dependency cycle) are not StartError values.
+// StartError is the error Start, Refresh and Scope.Start return when a
+// service or a kind handler fails. Errors that are not tied to a service (a
+// guard, a cancelled context, a cycle among the dependency edges checked
+// before the build) are not StartError values; a cycle met while building a
+// service, for example through [DependsOnNamed], is that service's build
+// failure.
+//
+// When a service opted in with [AsStarter] implements no Starter interface,
+// Op is StartOpStart and Error returns Cause's message without the "failed
+// to start service" prefix, because that message names the service already.
 //
 // Use errors.As to inspect it; errors.Is reaches Cause through Unwrap.
 type StartError struct {
