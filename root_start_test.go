@@ -1993,13 +1993,17 @@ func TestStart_ParallelHookPanic(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name   string
-		n      uint
-		before bool
+		name        string
+		n           uint
+		before      bool
+		incremental bool // the Starters are registered after Start and started by Refresh
+		phase       ContainerPhase
 	}{
-		{name: "n=1, HookBeforeStart", n: 1, before: true},
-		{name: "n=4, HookBeforeStart", n: 4, before: true},
-		{name: "n=4, HookAfterStart", n: 4, before: false},
+		{name: "n=1, HookBeforeStart", n: 1, before: true, phase: PhaseFailed},
+		{name: "n=4, HookBeforeStart", n: 4, before: true, phase: PhaseFailed},
+		{name: "n=4, HookAfterStart", n: 4, before: false, phase: PhaseFailed},
+		{name: "n=4, HookBeforeStart, Refresh", n: 4, before: true, incremental: true, phase: PhaseReady},
+		{name: "n=4, HookAfterStart, Refresh", n: 4, before: false, incremental: true, phase: PhaseReady},
 	}
 
 	for _, tt := range tests {
@@ -2020,6 +2024,11 @@ func TestStart_ParallelHookPanic(t *testing.T) {
 					opts.HookAfterStart = []func(*Scope, string, error){func(_ *Scope, name string, _ error) { panicFor(name) }}
 				}
 				root := NewWithOpts(opts)
+				run := root.Start
+				if tt.incremental {
+					require.NoError(t, root.Start())
+					run = root.Refresh
+				}
 				var running atomic.Int32
 				// "b" returns at once, so its hooks fire while "a" and "c" still run
 				for _, name := range []string{"a", "b", "c"} {
@@ -2035,12 +2044,12 @@ func TestStart_ParallelHookPanic(t *testing.T) {
 						recovered = recover()
 						runningAtPanic = running.Load()
 					}()
-					_ = root.Start()
+					_ = run()
 				}()
 
 				is.Equal("hook-boom", recovered)
 				is.Zero(runningAtPanic, "Starters still inside Start when the panic was raised")
-				is.Equal(PhaseFailed, root.Phase())
+				is.Equal(tt.phase, root.Phase())
 			})
 		})
 	}
