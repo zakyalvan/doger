@@ -69,7 +69,7 @@ This change defines an SPI: a contract a third-party module implements once, so 
 | Repeat calls with the same identity | No-op if the extension value and the `ExtendOption`s are identical; `ErrExtensionConflict` otherwise | Use an instance key for a second instance |
 | `Extend` after `Start` | Allowed; call `Refresh` | – (rejected only after shutdown began, because nothing can start then) |
 | Extension enable/disable | Not provided by the library | The extension author may offer a toggle |
-| An extension that declines | `Extend` returns nil and logs one line; a flattened one keeps its registrations; a failed shutdown of what it built is returned as an `*ExtensionError` | Install it privately (the default) to have it leave nothing behind |
+| An extension that declines | `Extend` returns nil and logs one line; a flattened one keeps its registrations; a failed shutdown of what it built is returned as an `*ExtensionError`; a replacement of a required install that declines conflicts and keeps the required install | Install it privately (the default) to have it leave nothing behind |
 | Instance configuration | `<name>/<instance>.<key>`, environment `DOGER_<NAME>___<INSTANCE>_<KEY>` | Another `PropertySource` with its own naming |
 | A failing source provider | Every property unset; one log line with the error's type | `InjectorOpts.PropertySource`, or fix the provider |
 

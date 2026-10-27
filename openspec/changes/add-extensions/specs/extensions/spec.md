@@ -253,7 +253,7 @@ And invoking "*redis.Client" from the root returns "app-client"
 <!-- cases: N/A 10 compatibility: new API -->
 
 ### Requirement: An extension can decline to install
-When `ext.Extend` returns an error matching `ErrExtensionDisabled`, `Extend` SHALL return nil, log one line naming the extension and its instance key, install nothing, and record the identity as disabled. `Require` of a disabled extension, including one that declines during that `Require`, SHALL return an error matching `ErrRequiredExtensionDisabled`, which does not match `ErrExtensionDisabled`, so the requirer fails instead of being disabled.
+When `ext.Extend` returns an error matching `ErrExtensionDisabled`, `Extend` SHALL return nil, log one line naming the extension and its instance key, install nothing, and record the identity as disabled, except where "A declined install that cannot be rolled back cleanly" and "A declined replacement keeps the required install" specify otherwise.
 
 #### Scenario: A disabled extension installs nothing
 ```gherkin
@@ -270,6 +270,18 @@ Examples:
   | eu       | extension metrics/eu disabled |
 ```
 
+<!-- cases: N/A 2 overrides: whether to disable is the extension author's choice; Flatten is covered by "A declined install that cannot be rolled back cleanly" -->
+<!-- cases: N/A 3 zero values: no input -->
+<!-- cases: 4 boundaries: with and without an instance key -->
+<!-- cases: N/A 5 errors: a decline is not an error; the exceptions are their own requirements -->
+<!-- cases: 6 duplicate: a repeated Extend of a disabled identity follows "Identity and repeated installation" (disabled rows there) -->
+<!-- cases: 7 lifecycle: the declined attempt is shut down and removed -->
+<!-- cases: N/A 8 concurrency, 9 panics: as for any Extend -->
+<!-- cases: N/A 10 compatibility: new API -->
+
+### Requirement: Require of a disabled extension fails
+`Require` of a disabled extension, including one that declines during that `Require`, SHALL return an error matching `ErrRequiredExtensionDisabled`, which does not match `ErrExtensionDisabled`, so the requirer fails instead of being disabled.
+
 #### Scenario: Requiring a disabled extension fails
 ```gherkin
 Given a root scope where <metrics>
@@ -285,12 +297,12 @@ Examples:
   | the "metrics" extension is not installed and declines when installed |
 ```
 
-<!-- cases: N/A 2 overrides: whether to disable is the extension author's choice; Flatten is covered by "A declined install that cannot be rolled back cleanly" -->
+<!-- cases: N/A 2 overrides: Require takes no options -->
 <!-- cases: N/A 3 zero values: no input -->
-<!-- cases: 4 boundaries: with and without an instance key; disabled before or during the Require -->
-<!-- cases: 5 errors: the Require scenario -->
-<!-- cases: 6 duplicate: a repeated Extend of a disabled identity follows "Identity and repeated installation" (disabled rows there) -->
-<!-- cases: 7 lifecycle: the declined attempt is shut down and removed -->
+<!-- cases: 4 boundaries: disabled before or during the Require -->
+<!-- cases: 5 errors: ErrRequiredExtensionDisabled, not ErrExtensionDisabled -->
+<!-- cases: N/A 6 duplicate: covered by "Require installs dependency extensions" -->
+<!-- cases: 7 lifecycle: a decline during the Require is rolled back before the error is returned -->
 <!-- cases: N/A 8 concurrency, 9 panics: as for any Extend -->
 <!-- cases: N/A 10 compatibility: new API -->
 
