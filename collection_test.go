@@ -666,3 +666,18 @@ func TestCollection_MemberProviderReads(t *testing.T) {
 		})
 	}
 }
+
+func TestCollection_DefaultReplacedByType(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	provideEnvSourceAs[dfPropertySource](root)
+	c := InvokeCollection[dfPropertySource](root)
+	provideMySource(root, "mySource")
+
+	sources, err := c.All(nil)
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"mySource"}, sourceNames(sources))
+}

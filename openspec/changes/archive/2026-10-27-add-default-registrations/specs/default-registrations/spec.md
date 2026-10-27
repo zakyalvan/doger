@@ -371,11 +371,25 @@ When the consumer marshals doger.ExplainNamedService(ext, "*app.Dialer") to JSON
 Then the JSON has "default_state": "yielded", "default_yielded_to_scope_name": "[root]" and "default_yielded_to_service": "*app.Dialer"
 ```
 
+#### Scenario: Explaining does not resolve a default
+```gherkin
+Given a root scope
+And <form> "*app.Pool" registered in the root with doger.AsDefault(), never invoked, implementing Shutdown() error
+When the consumer calls doger.ExplainInjector on the root
+Then doger.ExplainNamedService(root, "*app.Pool") reports default state "unresolved"
+And registering an explicit lazy "*app.Pool" in the root succeeds
+
+Examples:
+  | form           |
+  | an eager value |
+  | a lazy service |
+```
+
 <!-- cases: N/A 2 overrides: explain has no options -->
 <!-- cases: 3 zero values: an unknown service returns ok=false as today; not-default omits the default fields from JSON -->
 <!-- cases: N/A 4 boundaries, 5 invalid input: no input -->
 <!-- cases: 6 duplicate: a superseded default is no longer registered, so explain reports the explicit service as not-default -->
-<!-- cases: 7 lifecycle: covered by the state rows -->
+<!-- cases: 7 lifecycle: covered by the state rows; explaining never fixes a decision, pinned by "Explaining does not resolve a default" for eager and lazy forms -->
 <!-- cases: N/A 8 concurrency: explain reads under the existing locks -->
 <!-- cases: N/A 9 panics: explain does not panic -->
 <!-- cases: 10 compatibility: existing fields are unchanged; the default fields are added and omitted when empty -->

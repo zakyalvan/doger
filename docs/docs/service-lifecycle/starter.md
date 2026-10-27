@@ -44,6 +44,8 @@ Unlike `Shutdowner`, which is detected on the built instance, a starter is detec
 | Registered under an interface type without `Start`  | no, unless registered with `doger.AsStarter()`    |
 | Transient                                           | never (a factory has no single instance to start) |
 | Alias (`As`, `Bind`)                                | no; the target is started once                    |
+| Default (`AsDefault()`) that yields                 | no; the service it yields to is started once      |
+| Default (`AsDefault()`) that does not yield         | as the same registration without `AsDefault()`    |
 
 ```go
 // The interface has no Start method: opt in explicitly.
@@ -51,6 +53,12 @@ doger.Provide(root, NewLifecycle, doger.AsStarter())
 ```
 
 With `AsStarter()` on an interface-typed registration, the instance is checked when `Start` runs.
+
+:::note Defaults are decided at Start
+
+`Start`, `Refresh` and `Scope.Start` decide every [default registration](../service-registration/default-registrations.md) they would start or hand to a kind: a default yields when an ancestor scope holds an explicit service of its name, and uses its own provider otherwise. The decision is final, so an explicit service of that name registered later in the same scope panics as a duplicate. Root shutdown decides an eager default that was never resolved the same way, and shuts its value down only when the default uses it. A value that was replaced or that yielded belongs to the code that created it.
+
+:::
 
 `Start` covers the root scope and every child scope that exists when it runs. Services registered after `Start`, and scopes created after it, are not started; they stay invokable as usual, and [`Refresh`](#refresh) starts them.
 

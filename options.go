@@ -13,6 +13,7 @@ type serviceOptions struct {
 	dependsOn       []string
 	kinds           []kindBinding
 	order           *int // collection order set by WithOrder; nil when unset
+	isDefault       bool // registered with AsDefault: replaceable by an explicit registration
 }
 
 // ProvideOption attaches an opt-in to a registration. Values come only from
@@ -64,6 +65,39 @@ func DependsOnNamed(name string) ProvideOption {
 func WithOrder(n int) ProvideOption {
 	return func(o *serviceOptions) {
 		o.order = &n
+	}
+}
+
+// AsDefault registers the service as a default: a fallback that a package or
+// an extension ships and the application may replace. Explicit registrations,
+// those without AsDefault, win over it whatever the registration order:
+//
+//   - An explicit registration of the same name in an ancestor scope wins: on
+//     its first resolution, the default yields to it and resolves to its
+//     instance, without calling its own provider.
+//   - In the same scope, an explicit registration of the same name replaces
+//     the default as long as the default was not resolved yet, and a default
+//     registered where an explicit service of the name exists is skipped.
+//
+// Every registration form accepts it: lazy, eager (ProvideValue), transient
+// and the Package helpers (Lazy, Eager, Transient and their named forms).
+// For an eager value, which exists at registration, it means "replaceable
+// until first resolved". Override* ignores it: an override is explicit.
+// Repeating it is the same as giving it once.
+//
+// The decision is made once and never changes. Besides an invocation, these
+// fix it: by-type selection or a collection picking the default, Start,
+// Refresh or Scope.Start considering it, a health check of its scope, and
+// root shutdown of an eager default never resolved. A default that yields behaves like an alias of its
+// target: it is not started, shut down, health-checked or handled by a kind
+// on its own, and its other options have no effect.
+//
+// The container shuts an eager default value down only when the default uses
+// it. A value that was replaced, or that yielded, is owned by the code that
+// created it.
+func AsDefault() ProvideOption {
+	return func(o *serviceOptions) {
+		o.isDefault = true
 	}
 }
 

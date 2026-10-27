@@ -266,6 +266,35 @@ func BenchmarkHealthCheck(b *testing.B) {
 	}
 }
 
+type benchStarter struct{}
+
+func (s *benchStarter) Start() {}
+
+func BenchmarkStart(b *testing.B) {
+	names := make([]string, 50)
+	for j := range 50 {
+		names[j] = fmt.Sprintf("bench-starter-%d", j)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for n := 0; n < b.N; n++ {
+		injector := doger.New()
+		for j := range 50 {
+			doger.ProvideNamed(injector, names[j], func(i doger.Injector) (*benchStarter, error) {
+				return &benchStarter{}, nil
+			})
+		}
+		if err := injector.Start(); err != nil {
+			b.Fatal(err)
+		}
+
+		b.StopTimer()
+		_ = injector.Shutdown()
+		b.StartTimer()
+	}
+}
+
 func BenchmarkShutdown(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()

@@ -995,6 +995,12 @@ func TestInvokeAs_Deterministic(t *testing.T) {
 			}
 			return request
 		}, selected: "a"},
+		{name: "default_in_request", setup: func(root *RootScope) Injector {
+			provideGreeter(root, "a")
+			request := root.Scope("request")
+			ProvideNamed(request, "z", func(Injector) (*greeterImpl, error) { return &greeterImpl{name: "z"}, nil }, AsDefault())
+			return request
+		}, selected: "a"},
 	}
 
 	for _, tt := range tests {
@@ -1570,4 +1576,109 @@ func TestInvokeAs_Shadowing(t *testing.T) {
 			tt.check(t, child)
 		})
 	}
+}
+
+func TestInvokeAs_PrefersNonDefault(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		setup    func(root *RootScope, ext *Scope)
+		selected string
+	}{
+		{name: "ext_vs_root", setup: func(root *RootScope, ext *Scope) {
+			provideEnvSource(ext, "envSource", AsDefault())
+			provideMySource(root, "mySource")
+		}, selected: "mySource"},
+		{name: "root_vs_root", setup: func(root *RootScope, _ *Scope) {
+			provideEnvSource(root, "envSource", AsDefault())
+			provideMySource(root, "mySource")
+		}, selected: "mySource"},
+		{name: "default_only", setup: func(_ *RootScope, ext *Scope) {
+			provideEnvSource(ext, "envSource", AsDefault())
+		}, selected: "envSource"},
+		{name: "unrelated_explicit", setup: func(root *RootScope, ext *Scope) {
+			provideEnvSource(ext, "envSource", AsDefault())
+			ProvideNamed(root, "other", func(Injector) (*dfOther, error) { return &dfOther{}, nil })
+		}, selected: "envSource"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+
+			root := New()
+			ext := root.Scope("ext")
+			tt.setup(root, ext)
+
+			source, err := InvokeAs[dfPropertySource](ext)
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.selected, source.Source())
+		})
+	}
+}
+
+func TestInvokeAs_ChosenDefaultKeepsRank(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	ext := root.Scope("ext")
+	provideEnvSource(ext, "envSource", AsDefault())
+	_, err := InvokeNamed[*dfEnvSource](ext, "envSource")
+	require.NoError(t, err)
+	provideMySource(root, "mySource")
+
+	source, err := InvokeAs[dfPropertySource](ext)
+
+	require.NoError(t, err)
+	assert.Equal(t, "envSource", source.Source())
+}
+
+func TestInvokeAs_DefaultDoesNotShadow(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	ext := root.Scope("ext")
+	provideMySource(root, "source")
+	provideEnvSource(ext, "source", AsDefault())
+
+	source, err := InvokeAs[dfPropertySource](ext)
+
+	require.NoError(t, err)
+	assert.Same(t, MustInvokeNamed[*dfMySource](root, "source"), source)
+}
+
+func TestInvokeAs_TwoDefaultsNearestFirst(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	ext := root.Scope("ext")
+	provideEnvSource(root, "rootSource", AsDefault())
+	provideEnvSource(ext, "extSource", AsDefault())
+
+	source, err := InvokeAs[dfPropertySource](ext)
+
+	require.NoError(t, err)
+	assert.Equal(t, "extSource", source.Source())
+}
+
+func TestInvokeStruct_PrefersNonDefault(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	provideEnvSource(root, "envSource", AsDefault())
+	provideMySource(root, "mySource")
+
+	injected, err := InvokeStruct[struct {
+		Src dfPropertySource `do:""`
+	}](root)
+
+	require.NoError(t, err)
+	assert.Equal(t, "mySource", injected.Src.Source())
 }

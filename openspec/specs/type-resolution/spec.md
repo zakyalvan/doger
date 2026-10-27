@@ -26,6 +26,7 @@ Examples:
   | "b" in root, then root cloned, "a" in the clone's root     | the clone | b        |
   | "b" in root, "a" in root, then root cloned                 | the clone | b        |
   | "x" in root, "a" in root, alias "g" of "a" as Greeter in "request" | "request" | g, which resolves "a" |
+  | "a" in root, "z" with doger.AsDefault() in "request"       | "request" | a        |
 ```
 
 #### Scenario: A shadowed service is not a candidate
@@ -70,7 +71,7 @@ Examples:
 <!-- cases: 7 lifecycle: child scope and clone rows -->
 <!-- cases: 8 concurrency: the stable scenario replaces the former random pick; runs under -race -->
 <!-- cases: N/A 9 panics: unchanged -->
-<!-- cases: 10 compatibility: BEHAVIOR CHANGE (flagged) - the pick was random, so no consumer could rely on a specific one; hooks still receive the requested type name. BEHAVIOR CHANGE (flagged) - a shadowed ancestor service is no longer returned. -->
+<!-- cases: 10 compatibility: BEHAVIOR CHANGE (flagged) - the pick was random, so no consumer could rely on a specific one; hooks still receive the requested type name. BEHAVIOR CHANGE (flagged) - a shadowed ancestor service is no longer returned. The default row applies only to registrations given AsDefault(). -->
 
 ### Requirement: InvokeAs skips the invoking service
 When `InvokeAs[T]` or `MustInvokeAs[T]` is called from a provider, the service that provider builds SHALL NOT be a candidate, as for collections, and neither SHALL an alias whose target chain resolves to it, so a decorator can resolve the service it wraps. When it is the only match, the result SHALL be an error matching `ErrServiceNotMatch`.
@@ -197,3 +198,69 @@ Examples:
 <!-- cases: N/A 8 concurrency: the test is not parallel, as every DefaultRootScope test (design V50) -->
 <!-- cases: 9 panics: the health-check row -->
 <!-- cases: 10 compatibility: fixes a nil-pointer error; InvokeAs following alias targets made it reachable from a provider -->
+
+### Requirement: InvokeAs prefers non-default services over defaults
+By-type selection (`InvokeAs[T]` and implicit-aliasing struct injection) SHALL consider unresolved defaults only if no other visible candidate is assignable to `T`. A default that already chose its own provider SHALL rank, and shadow, as a non-default; a yielded default SHALL NOT be a candidate. An unresolved or yielded default SHALL NOT hide a same-name non-default in an ancestor.
+
+#### Scenario: Selection by type with defaults
+```gherkin
+Given a root scope with child scope "ext"
+And a lazy "envSource" (an *app.EnvSource) registered in <default_in> with doger.AsDefault(), never invoked
+And <explicit>
+When the consumer calls doger.InvokeAs[app.PropertySource] from scope "ext"
+Then the selected service is "<selected>"
+
+Examples:
+  | default_in | explicit                                                     | selected   |
+  | ext        | a lazy "mySource" (an *app.MySource) registered in root      | mySource   |
+  | root       | a lazy "mySource" (an *app.MySource) registered in root      | mySource   |
+  | ext        | nothing                                                      | envSource  |
+  | ext        | a lazy "other" (an *app.Other, not a PropertySource) in root | envSource  |
+```
+
+#### Scenario: A default that chose its own provider keeps its rank
+```gherkin
+Given a root scope with child scope "ext"
+And a lazy "envSource" (an *app.EnvSource) registered in scope "ext" with doger.AsDefault()
+And "envSource" was invoked from scope "ext"
+And a lazy "mySource" (an *app.MySource) registered in the root afterwards
+When the consumer calls doger.InvokeAs[app.PropertySource] from scope "ext"
+Then the selected service is "envSource"
+```
+
+#### Scenario: A same-name default does not hide the ancestor's service
+```gherkin
+Given a root scope with child scope "ext"
+And a lazy "source" (an *app.MySource) registered in the root
+And a lazy "source" (an *app.EnvSource) registered in scope "ext" with doger.AsDefault()
+When the consumer calls doger.InvokeAs[app.PropertySource] from scope "ext"
+Then the result is the root's *app.MySource instance
+```
+
+#### Scenario: Two defaults are ordered as before
+```gherkin
+Given a root scope with child scope "ext"
+And a lazy "rootSource" registered in the root with doger.AsDefault()
+And a lazy "extSource" registered in scope "ext" with doger.AsDefault(), both *app.EnvSource
+When the consumer calls doger.InvokeAs[app.PropertySource] from scope "ext"
+Then the selected service is "extSource"
+```
+
+#### Scenario: Struct injection by type prefers non-default services
+```gherkin
+Given a root scope
+And a lazy "envSource" (an *app.EnvSource) registered with doger.AsDefault()
+And a lazy "mySource" (an *app.MySource) registered without options
+When the consumer calls doger.InvokeStruct[struct{ Src app.PropertySource `do:""` }]
+Then field Src holds the "mySource" instance
+```
+
+<!-- cases: 2 overrides: invoking by name selects a default explicitly; registering an explicit service is the override -->
+<!-- cases: 3 zero values: no match yields the existing ErrServiceNotMatch -->
+<!-- cases: 4 boundaries: zero, one and two defaults -->
+<!-- cases: N/A 5 invalid input: unchanged InvokeAs errors -->
+<!-- cases: 6 duplicate: the same-name scenario -->
+<!-- cases: 7 lifecycle: the chosen-default scenario pins the frozen decision -->
+<!-- cases: N/A 8 concurrency: selection runs under the existing locks; decide() is covered in default-registrations -->
+<!-- cases: N/A 9 panics: selection does not panic -->
+<!-- cases: 10 compatibility: without defaults, selection is unchanged -->

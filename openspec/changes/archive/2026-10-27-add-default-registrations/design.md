@@ -55,7 +55,9 @@ See proposal.md (Why) and the specs of this change for the required behavior. Th
   - by-type selection picking the default;
   - a collection including it;
   - Start, Refresh or `Scope.Start` considering it as a candidate (a starter or a kind opt-in);
+  - a health check of the default's scope or of a descendant (D6), which decides without building;
   - shutdown of an unresolved eager default (D6).
+- Explain (`ExplainInjector`, `ExplainService`, `ExplainNamedService`) never decides: introspection leaves a default replaceable (D6).
 - **By-type selection uses two tiers.** Tier 1 holds non-defaults plus *chosen* defaults. Tier 2 holds *unresolved* defaults, and is used only if tier 1 is empty; picking one calls `decide()`. *Yielded* defaults are never candidates, since their target is the real service. Each tier keeps the existing order: nearest scope, then registration index, then name.
 - **Collections:**
   - drop *unresolved* defaults whose registered type a non-default member is assignable to;
@@ -68,11 +70,12 @@ See proposal.md (Why) and the specs of this change for the required behavior. Th
 `provide` (and, in `add-scope-export`, `Export`) registers through one helper, `registerLocked(scope, name, incoming) (registerOutcome, error)`, with outcomes stored, replaced or skipped. `provide` panics on the error, and `Export` returns it.
 - **Hooks:** `HookBeforeRegistration` runs before the helper, so before the duplicate check, as its public contract says ("called before a service is registered"), and also for a registration that turns out to be a skipped default. `HookAfterRegistration` runs after the helper and only when the outcome is stored or replaced.
 - **Registration index:** computed inside the helper from the map directly, not through `serviceGet`, which would take the read lock the helper already holds as a writer.
+- **Explicit over explicit is unchanged:** an explicit registration whose name the scope already holds as a non-default panics with the duplicate message before the before-registration hook and before option validation, exactly as before this change, so registrations without `AsDefault()` behave as before (spec "Registrations without AsDefault are unchanged"). The order of this section (validate, hook, helper) applies only when a default is involved. `Export` (`add-scope-export`) calls `registerLocked` directly and always gets the helper's outcome.
 
 The helper runs with the scope's write lock held:
 1. If the name is free, store the wrapper (unchanged path).
 2. If the existing entry is a `serviceDefault` and the new registration is explicit: take the default's `mu`. If the default is unresolved, set it superseded and store the new wrapper *before releasing either lock*. Otherwise release and panic with the existing duplicate message.
-3. If the new registration is a default and the existing entry is non-default: skip, with no hooks run.
+3. If the new registration is a default and the existing entry is non-default: skip. The after-registration hook does not run; the before-registration hook already ran (spec "Registration hooks around defaults").
 4. Default over default: panic with the duplicate message.
 
 - **Options are validated first** (`validateServiceOptions`), so an invalid combination panics even when the default would be skipped.
@@ -86,13 +89,14 @@ The helper runs with the scope's write lock held:
 | State | getServiceType | isShutdowner/shutdown | isHealthchecker/healthcheck | Start candidate |
 |---|---|---|---|---|
 | unresolved (lazy/transient) | inner's | `false` / no-op (nothing built) | inner's (nothing built) | decide first |
-| unresolved (eager) | inner's | `decide()`, then as chosen or yielded | inner's | decide first |
+| unresolved (eager) | inner's | `isShutdowner`: inner's, without deciding / `shutdown`: `decide()`, then as chosen or yielded | inner's | decide first |
 | chosen | inner's | inner's | inner's | as inner |
 | yielded | inner's | `false` / no-op | `false` / nil | never |
 | superseded | not in the map | – | – | – |
 
 - **Health check:** `Scope.asyncHealthCheckWithContext` first calls `decide()` on each unresolved default it holds (deciding builds nothing), then skips yielded defaults when it queues the scope's own services. The name then keeps the ancestor's result, and the target's error is reported. Without the decision, an unresolved lazy default would report nil and hide the ancestor's result.
 - **Eager defaults:** an unresolved eager default is decided at shutdown, and only a chosen eager value is shut down (the spec's "Who shuts an eager default value down"). A superseded eager value is no longer in the map, so it is never shut down by the container.
+- **Introspection never decides:** `isShutdowner` and `isHealthchecker` read the current state only. `ExplainInjector` calls them, and must leave a default replaceable (spec "Explaining does not resolve a default", `TestExplainInjector_DoesNotDecideDefault`).
 
 ### D7. Unresolved and yielded defaults never shadow non-defaults
 - `shadowedBetween` and the per-name `seen` set of collections ignore a `serviceDefault` that is unresolved or yielded *when the shadowed entry is a non-default*. A chosen default shadows like a non-default, and a default always shadows a farther default of the same name.
@@ -100,7 +104,11 @@ The helper runs with the scope's write lock held:
 
 ### D8. Zero cost when unused
 - Each scope keeps an atomic count of the default wrappers it holds.
-- The tier-2 pass, the default filters, the shadowing exception, the health-check skip and the Start `decide()` call all run only when a count on the walked chain is non-zero.
+- The guards, as built (measured against the base commit, task 10.4):
+  - **By-type selection** reads `typeMatch.isDefault`, a flag the per-scope `matchesFor` cache records when it is built (it is rebuilt whenever the scope's services change). The no-defaults path is the original single loop; a default match takes the side path `firstTierDefault`, and tier 2 is `selectUnresolvedDefault`. Walking the chain's counts on every call cost more than the type assertions it saved.
+  - **Collections** dispatch once per read on `chainHasDefaults`: without defaults on the chain they use the original walk, otherwise `collectionCandidatesWithDefaults` applies D3 and D7.
+  - **The health-check skip and the Start `decide()` call** are guarded by the count of the scope they walk (`isYieldedDefaultIn`).
+- **Layout:** the count grows `Scope` from 120 to 128 bytes, and `RootScope`, which embeds it, from 352 to 360 bytes, past its 352-byte allocation size class, which slowed the parallel invocation benchmarks (the effect V66 of `consolidate-pending-lifecycle-work` recorded). `startPhase` and `closePhase` are `int32` and share a word, keeping `RootScope` at 352 bytes.
 - `serviceDefault` exists only with the option.
 - `Scope.clone` writes the cloned map directly, bypassing `serviceSet`, so it also sets the clone's counts from the wrappers it copies. Otherwise every guarded rule would be off in a clone.
 
@@ -122,7 +130,8 @@ The helper runs with the scope's write lock held:
 - **[Lock-order mistakes deadlock registration against resolution]** → D4's order is strictly toward the root. The race tests (`ReplaceRacesResolve` stress, `ConcurrentFirstResolution`) run under `-race` with `testWithTimeout`, so a deadlock fails fast instead of hanging.
 - **[A superseded eager default value is never shut down]** → this matches `Override*` today. It is documented: the code that created the value owns it.
 - **[Start and shutdown fix the decision, which surprises late registrations]** → documented on `AsDefault` and the starter page. The error is the existing duplicate panic, naming the service.
-- **[Hot-path regression]** → D8 counters, plus `benchstat` on `bench/` for `InvokeAs`, `InvokeAll`, `InvokeLazySteadyState` and a new `BenchmarkStart` (task 0.1), with no defaults registered.
+- **[Hot-path regression]** → D8 guards, plus `benchstat` on `bench/` for `InvokeAs`, `InvokeAll`, `InvokeLazySteadyState` and a new `BenchmarkStart` (task 0.1), with no defaults registered. The first measurement failed: `InvokeAllParallel` +22%, `InvokeLazyParallel` +6% (the `RootScope` size class), `InvokeAs` +5–8% (the chain walk and an extracted per-scope function), one extra allocation per registration (an escaping closure) and two per collection (eagerly built maps). After the fixes in D8, no gate benchmark regresses and allocations are unchanged (task 10.4 evidence).
+- **[Introspection fixes a decision]** → found by verification: `ExplainInjector` called `isShutdowner`, which decided an unresolved eager default, so a later explicit registration panicked. `isShutdowner` no longer decides (D6); `TestExplainInjector_DoesNotDecideDefault` pins it.
 
 ## Public API & Defaults
 
@@ -136,7 +145,7 @@ Not BREAKING. Behavior without `AsDefault()` is unchanged, which the "Registrati
 
 ## Test Strategy
 
-The production code goes in `service_default.go`, tested in `service_default_test.go`, with an example in `service_default_example_test.go`. Changes to other files are tested in their existing test files. Tests are table-driven with named subtests and testify, and run under `-race` (`make test`). Tests that could block use `testWithTimeout`. Tests that touch `DefaultRootScope` (`TestAsDefault_NilInjector`) do not call `t.Parallel()`.
+The production code goes in `service_default.go`, tested in `service_default_test.go`, with an example in `service_default_example_test.go`. Changes to other files are tested in their existing test files. Tests are table-driven with named subtests and testify, and run under `-race` (`make test`). Tests that could block use `testWithTimeout`. Tests that touch `DefaultRootScope` (`TestAsDefault_NilInjector`) do not call `t.Parallel()`. The explain tests live in `di_explain_default_test.go`, a split of the explain tests by concern: `di_explain_test.go` asserts source line numbers of its own providers, which new imports there would shift.
 
 | Scenario | Test | Kind |
 |---|---|---|
@@ -159,8 +168,9 @@ The production code goes in `service_default.go`, tested in `service_default_tes
 | Override with AsDefault registers an explicit service | di_test.go: `TestOverride_IgnoresAsDefault` | unit |
 | Concurrent first resolutions agree | service_default_test.go: `TestAsDefault_ConcurrentFirstResolution` (100 goroutines) | race |
 | Replacement racing first resolution has one outcome | service_default_test.go: `TestAsDefault_ReplaceRacesResolve/{replace_first,resolve_first}` + `TestAsDefault_ReplaceRacesResolveStress` (1,000×) | race, timeout |
-| Explain output of default registrations | di_explain_test.go: `TestExplainNamedService_DefaultState/{unresolved,chosen,yielded,not_default}` | unit, table |
-| Default state in JSON | di_explain_test.go: `TestExplainNamedService_DefaultStateJSON` | unit |
+| Explain output of default registrations | di_explain_default_test.go: `TestExplainNamedService_DefaultState/{unresolved,chosen,yielded,not_default}` | unit, table |
+| Default state in JSON | di_explain_default_test.go: `TestExplainNamedService_DefaultStateJSON/{yielded,not_default_omits_fields,unknown_text}` | unit |
+| Explaining does not resolve a default | di_explain_default_test.go: `TestExplainInjector_DoesNotDecideDefault/{eager,lazy}` | unit, table |
 | An explicit duplicate in one scope still panics | di_test.go: `TestProvide_ExplicitDuplicateUnchanged` | unit |
 | A nearer explicit service still shadows an ancestor's | di_test.go: `TestProvide_ExplicitShadowingUnchanged` | unit |
 | Each constructor yields an option recognized by registration | options_test.go: existing `TestProvideOptions_Constructors` + row `as_default` | unit, table |
@@ -204,7 +214,8 @@ Examples (docs): `ExampleAsDefault` and `ExampleAsDefault_byType`.
 - `provide` duplicate resolution: the same-scope table and the race tests.
 - `serviceDefault.getInstance`, both the decide path and the fast path: the resolve, yield, frozen, alias and concurrency tests.
 - `selectByType` tiers: the `InvokeAs` and struct-injection tests.
-- Collection candidates: the `InvokeAll` and `InvokeAllMap` tests, plus a default row in an existing `Collection.All` test.
+- Collection candidates: the `InvokeAll` and `InvokeAllMap` tests, plus `TestCollection_DefaultReplacedByType` (collection_test.go) for live collections.
+- Default counts (D8): `TestScope_DefaultCount/{registered,skipped,replaced,overridden,override_as_default,shutdown,clone}` and the `clone` row of `TestInvokeAll_DefaultMembership`.
 - Start discovery: the Start, Refresh and `Scope.Start` tests.
 - Shutdown and health check: the lifecycle, health-check and eager-ownership tests.
 - Zero-cost path: `benchstat` on `bench/`.

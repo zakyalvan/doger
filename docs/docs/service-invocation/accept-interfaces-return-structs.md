@@ -63,6 +63,12 @@ When several services match, the selection is deterministic: the service in the 
 
 :::
 
+:::info Default registrations
+
+A service registered with [`doger.AsDefault()`](../service-registration/default-registrations.md#by-type) is considered only when no other visible service matches, so the application's own implementation wins whatever the scopes and registration order. Selecting such a default fixes its decision. A default that already chose its own provider ranks like any service, and one that yielded is never selected: the service it yields to is.
+
+:::
+
 :::warning
 
 Invoking an implicit alias with a very simple interface signature might lead to loading the wrong service.

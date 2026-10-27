@@ -59,6 +59,26 @@ This matches what `doger.InvokeNamed(child, "x")` resolves.
 
 Inside a provider, the invoking scope is the scope where that provider's service is **registered**, not the scope the consumer invoked it from, as for `Invoke`.
 
+## Default registrations {#defaults}
+
+A service registered with [`doger.AsDefault()`](../service-registration/default-registrations.md#by-type) follows two extra rules:
+
+- A default not resolved yet is **left out** when a non-default member is assignable to the default's **registered type**. Register a default meant to be replaced by type under the interface type: a default registered as `*EnvSource` is replaced only by another `*EnvSource`, not by any `PropertySource`. A default that already chose its own provider stays a member.
+- A default never hides a non-default service of the **same name** in an ancestor: it yields to it, so that service is a member once.
+
+```go
+root := doger.New()
+doger.ProvideNamed(root, "env", func(i doger.Injector) (PropertySource, error) {
+	return NewEnvSource(), nil
+}, doger.AsDefault())
+doger.ProvideNamed(root, "vault", NewVaultSource) // *VaultSource implements PropertySource
+
+sources, _ := doger.InvokeAll[PropertySource](root)
+// sources holds the vault source only
+```
+
+Including a default in a collection resolves it, which fixes its decision. Live collections apply the same rules on every read.
+
 ## Aliases {#aliases}
 
 Aliases registered with `doger.As` or `doger.Bind` are never members. Their target represents itself, so an alias never duplicates a member:
