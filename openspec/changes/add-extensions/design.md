@@ -6,8 +6,9 @@ See proposal.md (Why) and this change's specs. This change builds on `add-defaul
 
 - **Child scopes.** `Scope.Scope(name)` creates and attaches a child and panics on a duplicate name. A shut-down child keeps its name reserved, and nothing detaches a child without shutting the parent down (verified by both audits).
 - **Shutting a child down fires hooks.** `BeforeShutdown`/`AfterShutdown` fire even for never-built lazy services, along with scope Closing/Closed (verified).
-- **`ListInvokedServices`** includes ancestors (`scope.go:280-298`). Only the scope's own `orderedInvocation` shows what *it* resolved.
-- **`InjectorOpts.copy()`** (`injector.go:320`) copies options for clones, and `Logf` defaults to a no-op. `RootScope.CloneWithOpts` (`root_scope.go:726`) clones the scope tree and copies kind entries.
+- **`ListInvokedServices`** includes ancestors (`scope.go:299-319`). Only the scope's own `orderedInvocation` shows what *it* resolved.
+- **`InjectorOpts.copy()`** (`injector.go:328`) copies options for clones, and `Logf` defaults to a no-op. `RootScope.CloneWithOpts` (`root_scope.go:742`) clones the scope tree and copies kind entries.
+- **Shutdown honors its context** (`shutdown-context`, from `fix-shutdown-after-context-end`). Services a shutdown reaches after its context ended are skipped: a built Shutdowner's `Shutdown` is not called and the report holds `ctx.Err()` under its name, any other service gets no error, and all of them are dropped. The `BeforeShutdown`/`AfterShutdown` hooks still run. The export-aware path (`Scope.shutdownWithExports`) skips the same way. `ShutdownOnSignalsWithContext` shuts down with `context.WithoutCancel(ctx)`.
 - **Phases.** `RootScope.Phase()` reports the container phase. `Refresh` and `Scope.Start` require the started or ready phase (`checkIncrementalPhase`, `root_refresh.go:104`). A `ContainerStarting` hook runs before discovery and holds no `lifecycleMu`. Closing hooks run after the close phase is set.
 - **Root health check.** `RootScope.HealthCheckWithContext` checks the root's own services only; child scopes are never walked.
 - **Name inference.** `NameOf` of an interface has no `*` prefix: `github.com/kartaladev/doger.PropertySource`.
@@ -55,7 +56,7 @@ func ExtensionProperties(i Injector) (Properties, bool)
 - **Waiting is checked for cycles.** Each session (one top-level `Extend` plus the `Require` calls made inside it) has an ID. Before a session waits on an entry another session is installing, it records an edge `waiter → owner` in a waits-for graph under `extMu`. If that edge closes a cycle, the call returns `ErrExtensionCycle` instead of waiting. The edge is removed when the wait ends.
 - **Cycles inside one session** are found from the session's requirement stack.
 - **Concurrency outcome:** different identities install concurrently, the same identity installs once, and neither a one-goroutine nor a cross-goroutine cycle can deadlock. User code (`ext.Extend`) never runs under `extMu`.
-- **`doger.Extend` from inside an `Extend`** is a new top-level session. It can wait on another session safely, but a cycle through it is reported, not deadlocked. The godoc still recommends `x.Require`.
+- **`doger.Extend` from inside an `Extend`** is a new top-level session on the same goroutine. The waits-for graph cannot see that the outer session is blocked on it (that needs goroutine identity), so a cycle through a nested `doger.Extend` deadlocks, as a reentrant `sync.Once.Do` does. This is documented as unsupported, worded like `sync.Once`, and the godoc directs extensions to `x.Require`, whose chain detects cycles (Guice's `binder.install` and Spring's import stack follow the same model). Found during apply with a deadlock probe; no test pins a deadlock.
 
 ### D3. Phase check
 `Extend` reads `root.Phase()` once, before claiming the identity. In `PhaseClosing`/`PhaseClosed` it returns an error matching `ErrStartAfterShutdown`. Services added in the started or ready phase are started by `Refresh`. In the failed phase `Refresh` returns `ErrNotStarted`, as today. A shutdown that begins during a running `Extend` is not prevented; that is the same rule as for hook adders and registrations, and it is documented.
@@ -66,7 +67,7 @@ func ExtensionProperties(i Injector) (Properties, bool)
   - `Extend` checks the root's direct children for the name and returns `ErrExtensionConflict` if it is taken. A race is closed by recovering the duplicate-scope panic of `root.Scope(name)` into the same error.
   - The child is created and attached at once, because providers need a real scope. `ExtensionExport*` records pending exports, applied with `ExportNamed` after `ext.Extend` returns nil. An export error counts as a failure.
 - **Rollback:**
-  - The child is shut down and then detached by a new internal `Scope.detachChild(name)`, which frees the reserved name for a retry.
+  - The child is shut down with `context.Background()` and then detached by a new internal `Scope.detachChild(name)`, which frees the reserved name for a retry. `Extend` takes no context, and a context that never ends keeps the `shutdown-context` skip from applying, so every service the failed attempt built gets its `Shutdown` called.
   - Exports applied in that attempt are removed by a new internal `Scope.removeService(name)`.
   - The identity entry is deleted and `done` closed.
   - Rolling back fires the private scope's shutdown hooks and scope Closing/Closed hooks, just as its registration hooks fired. Hooks observe what happens to scopes and services, not successful installs. This is documented and pinned by a test.
@@ -129,6 +130,7 @@ So each service is checked once. Containers without extensions take exactly toda
 - [A `PropertySource` registered under another name is never used] → documented. `InjectorOpts.PropertySource`, or registering under `NameOf[PropertySource]()`, are the supported ways. A late same-name registration panics loudly.
 - [A re-entrant property read from the source's own provider deadlocks] → documented as unsupported. The godoc of `PropertySource` says to read configuration in the source's constructor arguments, not through `Properties`.
 - [Rollback fires shutdown and scope hooks for services that were never used] → documented. `TestExtend_RollbackFiresHooks` pins it.
+- [A rollback whose shutdown context ended would skip, and leak, the services the failed attempt built (`shutdown-context`)] → rollback shuts down with `context.Background()`. `TestExtend_RollbackFiresHooks` asserts the built service's `Shutdown` was called once.
 - [A shutdown that races `Extend`] → not prevented. The phase check plus the existing shutdown semantics apply, documented with the hook-adder rule.
 - [The waits-for graph adds bookkeeping to waiting] → it is touched only when a call waits on another session, which is rare (the same identity installed concurrently). Plain installs only take `extMu` briefly.
 
