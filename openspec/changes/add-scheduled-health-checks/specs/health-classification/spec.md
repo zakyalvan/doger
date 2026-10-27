@@ -132,8 +132,8 @@ Examples:
 <!-- cases: 9 panics: this requirement -->
 <!-- cases: N/A 10 backward compatibility: new options -->
 
-### Requirement: Classification follows clones, overrides and aliases
-`Clone` and `CloneWithOpts` SHALL copy each registration's classification. `Override*` SHALL replace it with the new call's options, and no options SHALL mean the default. An alias carries no classification of its own; its report entry SHALL show its target's tags and severity because it reports the target's result.
+### Requirement: Classification follows clones, overrides, defaults and aliases
+`Clone` and `CloneWithOpts` SHALL copy each registration's classification. `Override*` SHALL replace it with the new call's options, and no options SHALL mean the default. A default that yields SHALL take no part: the entry shows the classification of the service it yielded to. An alias or an export carries no classification and no entry of its own.
 
 #### Scenario: Classification across clone, override and alias
 ```gherkin
@@ -146,7 +146,8 @@ Examples:
   | clones the injector                                             | the clone      | db    | ["liveness"]  | true     |
   | overrides "db" with OverrideNamedValue and no options           | the injector   | db    | ["readiness"] | false    |
   | overrides "db" with OverrideNamedValue and WithHealthTags("x")  | the injector   | db    | ["x"]         | false    |
-  | adds an alias "hc" to "db" with AsNamed                         | the injector   | hc    | ["liveness"]  | true     |
+  | adds an alias "hc" to "db" with AsNamed                         | the injector   | db    | ["liveness"]  | true     |
+  | registers, in child scope "child", a Healthchecker value "db" with AsDefault() and WithHealthTags("x") | scope "child" | db | ["liveness"] | true |
 ```
 
 <!-- cases: N/A 1 default: covered by the first requirement -->
@@ -154,7 +155,7 @@ Examples:
 <!-- cases: N/A 3 zero values: not applicable -->
 <!-- cases: N/A 4 boundaries: not applicable -->
 <!-- cases: N/A 5 errors: not applicable -->
-<!-- cases: 6 not found/duplicate: Override and alias -->
+<!-- cases: 6 not found/duplicate: Override, alias (no entry of its own, health-reports) and a yielded default -->
 <!-- cases: 7 lifecycle: clone -->
 <!-- cases: N/A 8 concurrency: not applicable -->
 <!-- cases: N/A 9 panics: not applicable -->
@@ -221,10 +222,10 @@ Examples:
 
 #### Scenario: Degraded transitions reach the hooks
 ```gherkin
-Given a started injector with a fake clock, HealthCheckInterval 10s and a Healthchecker value "cache" registered with AsOptionalHealth()
+Given a started injector with a manual HealthScheduler and a Healthchecker value "cache" registered with AsOptionalHealth()
 And "cache" returns nil in the first round and errors.New("slow") afterwards
 And a HookServiceHealthChanged hook and a HookContainerHealthChanged hook that record their calls
-When the fake clock advances by 10s and the round finishes
+When the test runs the round twice
 Then the service hook recorded (Unknown, Healthy, nil) then (Healthy, Degraded, "slow")
 And the container hook recorded (Unknown, Healthy) then (Healthy, Degraded)
 ```
@@ -240,8 +241,8 @@ And the container hook recorded (Unknown, Healthy) then (Healthy, Degraded)
 <!-- cases: 9 panics: a panicking optional check is degraded -->
 <!-- cases: N/A 10 backward compatibility: new state -->
 
-### Requirement: Liveness reports are healthy with zero configuration
-With no service tagged `HealthTagLiveness`, a report filtered by `MatchHealthTags(HealthTagLiveness)` SHALL cover no service and SHALL report `HealthHealthy` in every phase except `PhaseClosed`, whatever the readiness checks return.
+### Requirement: Liveness depends only on the phase with zero configuration
+With no service tagged `HealthTagLiveness`, a report filtered by `MatchHealthTags(HealthTagLiveness)` SHALL cover no service, SHALL run no check, and SHALL report `HealthHealthy` whatever the readiness checks return. The exceptions are `PhaseFailed`, which is `HealthUnhealthy` by the phase gate of health-reports, and `PhaseClosed`, which is `HealthUnknown`.
 
 #### Scenario: Zero-config liveness
 ```gherkin
@@ -253,10 +254,12 @@ And the health check of "db" was not called by that read
 
 Examples:
   | phase                                  | state          |
-  | PhaseIdle                              | HealthHealthy  |
-  | PhaseReady, before the first round     | HealthHealthy  |
-  | PhaseReady, after the first round      | HealthHealthy  |
-  | PhaseClosed                            | HealthUnknown  |
+  | PhaseIdle                              | HealthHealthy   |
+  | PhaseStarting (blocked in a Starter)   | HealthHealthy   |
+  | PhaseReady                             | HealthHealthy   |
+  | PhaseClosing (blocked in a Closing hook) | HealthHealthy |
+  | PhaseFailed (a Starter returned an error) | HealthUnhealthy |
+  | PhaseClosed                            | HealthUnknown   |
 ```
 
 <!-- cases: 1 default: this requirement is the zero-config path -->
@@ -265,7 +268,7 @@ Examples:
 <!-- cases: N/A 4 boundaries: not applicable -->
 <!-- cases: N/A 5 errors: a failing readiness check does not leak into liveness -->
 <!-- cases: N/A 6 not found/duplicate: not applicable -->
-<!-- cases: 7 lifecycle: idle, ready before and after the first round, closed -->
+<!-- cases: 7 lifecycle: every phase; liveness follows Spring Boot's CORRECT during graceful shutdown -->
 <!-- cases: N/A 8 concurrency: not applicable -->
 <!-- cases: N/A 9 panics: not applicable -->
 <!-- cases: N/A 10 backward compatibility: new API -->

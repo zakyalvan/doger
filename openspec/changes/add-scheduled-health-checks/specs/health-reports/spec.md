@@ -2,21 +2,20 @@
 
 ## Purpose
 
-Defines the health report a consumer reads instead of running checks: what it contains, which services it covers for the container and for a scope, its per-service and overall states, and when a read may run checks on demand, so that serving health to many readers costs no more than serving one.
+Defines the health report a consumer reads instead of running checks. It covers what the report contains and which services it covers for the container and for a scope, with per-service and overall states. It also says when a read may run checks on demand, and how the container phase gates readiness and liveness, so that serving health to many readers costs no more than serving one.
 
 ## ADDED Requirements
 
 ### Requirement: A report lists each health-checked service with its last result
-`HealthReport(opts...)` and `HealthReportWithContext(ctx, opts...)` SHALL return a `HealthReport` whose `Services` holds one `ServiceHealth` per covered health checker: its `ServiceDescription`, `Tags`, `Optional`, `State`, `Err`, `CheckedAt` and `Duration` of its last recorded result, and `PendingSince` while a check is in flight. The report's `CheckedAt` SHALL be the latest entry `CheckedAt`.
+`HealthReport(opts...)` and `HealthReportWithContext(ctx, opts...)` SHALL return a `HealthReport` whose `Services` holds one `ServiceHealth` per covered check. Each entry has its `ServiceDescription`, `Tags`, `Optional`, `State`, `Err`, and the `CheckedAt` and `Duration` of its last recorded result, plus `PendingSince` while a check is in flight. The report's `CheckedAt` SHALL be the latest entry `CheckedAt`, and its `Phase` the container phase at the read.
 
-#### Scenario: Report entries after one round
+#### Scenario: Report entries after one read
 ```gherkin
-Given an injector whose Clock is a fake clock set to 2026-01-01T00:00:00Z
+Given an injector that is never started, whose Clock is a fake clock set to 2026-01-01T00:00:00Z
 And a service "<name>" registered in <scope> whose health check advances the fake clock by <takes> and returns <result>
-And the container was started and its first round finished
 When the consumer calls HealthReport() on the root scope
 Then the entry for "<name>" has State <state>, Err <err>, CheckedAt 2026-01-01T00:00:00Z plus <takes>, Duration <takes> and a zero PendingSince
-And the report's CheckedAt is 2026-01-01T00:00:00Z plus <takes>
+And the report's CheckedAt is 2026-01-01T00:00:00Z plus <takes> and its Phase is PhaseIdle
 
 Examples:
   | name  | scope               | takes | result             | state           | err                   |
@@ -33,19 +32,19 @@ When the consumer calls HealthReport() again
 Then the entry for "db" has State HealthHealthy
 ```
 
-<!-- cases: 1 default: zero-config container after its first round -->
+<!-- cases: 1 default: zero-config container -->
 <!-- cases: N/A 2 overrides: the report shape has no option; filters are in health-classification -->
 <!-- cases: 3 zero values: a zero Duration for a check that takes no clock time; a zero PendingSince when idle -->
 <!-- cases: 4 boundaries: services across scopes -->
 <!-- cases: 5 errors: Err holds the check's own error unchanged -->
-<!-- cases: N/A 6 not found/duplicate: duplicates are the visibility requirement -->
-<!-- cases: N/A 7 lifecycle: covered by the state requirements below -->
+<!-- cases: N/A 6 not found/duplicate: duplicates are the coverage requirement -->
+<!-- cases: N/A 7 lifecycle: covered by the phase requirements below -->
 <!-- cases: 8 concurrency: each caller gets an isolated copy -->
 <!-- cases: N/A 9 panics: a panicking check's error is specified in health-check-execution -->
 <!-- cases: N/A 10 backward compatibility: new API -->
 
 ### Requirement: Report entries are ordered by scope path, then name
-`Services` SHALL be ordered by the scope's path of names from the root (the root first, then shallower before deeper, then by name), and then by service name.
+`Services` SHALL be ordered by the path of scope names from the root (the root first, then shallower before deeper, then by name), and then by service name.
 
 #### Scenario: Entries are ordered by scope path then name
 ```gherkin
@@ -65,23 +64,25 @@ Then the services are listed as root/"a", root/"b", "w"/"c", "x"/"z", "w/leaf"/"
 <!-- cases: N/A 9 panics: not applicable -->
 <!-- cases: N/A 10 backward compatibility: new API -->
 
-### Requirement: Only health checkers appear in a report
-A report SHALL include a service only when it is a health checker at read time. It SHALL leave out values without a health check, transient services, and lazy services not yet built. An alias of a covered health checker SHALL appear with its target's result.
+### Requirement: Only health checkers appear in a report, once per underlying check
+A report SHALL include a service only when it is a health checker at read time. It SHALL leave out values without a health check, transient services, and lazy services not yet built. An alias or an export SHALL NOT add an entry of its own: when its source is covered, the source's entry is listed once, at the source's scope.
 
 #### Scenario: Report membership
 ```gherkin
-Given an injector that is never started, with <registration> in the root scope
-When the consumer calls HealthReport() on the root scope
+Given an injector that is never started, with <registration>
+When the consumer calls HealthReport() on <target>
 Then the report lists <listed>
 
 Examples:
-  | registration                                                      | listed                                      |
-  | a plain value "answer" = 42                                       | no service                                  |
-  | a lazy Healthchecker "db" that was never invoked                  | no service                                  |
-  | a lazy Healthchecker "db" that was invoked                        | "db"                                        |
-  | a transient Healthchecker "tmp" that was invoked                  | no service                                  |
-  | a Healthchecker value "db" and an alias "hc" to it (AsNamed)      | "db" and "hc", both with the result of "db" |
-  | an alias "hc" to a lazy Healthchecker "db" that was never invoked | no service                                  |
+  | registration                                                           | target              | listed                  |
+  | a plain value root/"answer" = 42                                       | the RootScope       | no service              |
+  | a lazy Healthchecker root/"db" that was never invoked                  | the RootScope       | no service              |
+  | a lazy Healthchecker root/"db" that was invoked                        | the RootScope       | root/"db"               |
+  | a transient Healthchecker root/"tmp" that was invoked                  | the RootScope       | no service              |
+  | a Healthchecker value root/"db" and an alias "hc" to it (AsNamed)      | the RootScope       | root/"db" only          |
+  | an alias "hc" to a lazy Healthchecker root/"db" that was never invoked | the RootScope       | no service              |
+  | a Healthchecker value "child"/"db" exported to the root                | the RootScope       | "child"/"db" only       |
+  | a Healthchecker value "child"/"db" exported to the root                | the root's own *Scope | "child"/"db"          |
 ```
 
 <!-- cases: N/A 1 default: membership has no option -->
@@ -89,28 +90,28 @@ Examples:
 <!-- cases: 3 zero values: a container with no checker yields an empty Services slice -->
 <!-- cases: N/A 4 boundaries: covered by the ordering requirement -->
 <!-- cases: N/A 5 errors: no error path -->
-<!-- cases: 6 not found/duplicate: an alias does not duplicate the check, only the entry -->
+<!-- cases: 6 not found/duplicate: an alias or export does not duplicate the entry -->
 <!-- cases: 7 lifecycle: a lazy service before and after build -->
 <!-- cases: N/A 8 concurrency: a lazy service being built is in health-check-execution -->
 <!-- cases: N/A 9 panics: not applicable -->
-<!-- cases: 10 backward compatibility: HealthCheck() still returns nil entries for non-checkers (health-check-execution) -->
+<!-- cases: 10 backward compatibility: HealthCheck() keeps its own keys, including alias keys (health-check-execution) -->
 
 ### Requirement: The root report covers the container, a scope report covers what the scope sees
-`RootScope.HealthReport()` SHALL cover every scope of the container. `Scope.HealthReport()` SHALL cover the services visible from that scope: its own and its ancestors', leaving out an ancestor's service shadowed by a service of the same name in a nearer scope.
+`RootScope.HealthReport()` SHALL cover every scope of the container, extension scopes included. `Scope.HealthReport()` SHALL cover the services visible from that scope: its own and its ancestors', plus the sources of exports it sees. It SHALL leave out an ancestor's service shadowed by a nearer scope's service of the same name, and a default that yielded.
 
 #### Scenario: Report coverage by scope
 ```gherkin
 Given an injector that is never started, with Healthchecker values root/"db" (healthy), root/"cache" (healthy)
-And child scope "child" with Healthchecker value "db" (returns errors.New("down"))
+And child scope "child" with Healthchecker value "db" (returns errors.New("down")) and Healthchecker value "q" registered AsDefault, while root has a Healthchecker value "q"
 And grandchild scope "leaf" of "child" with Healthchecker value "queue" (healthy)
 When the consumer calls HealthReport() on <target>
 Then the report lists <listed>
 
 Examples:
-  | target                  | listed                                                |
-  | the RootScope           | root/"cache", root/"db", "child"/"db", "leaf"/"queue" |
-  | child scope "child"     | root/"cache", "child"/"db"                            |
-  | grandchild scope "leaf" | root/"cache", "child"/"db", "leaf"/"queue"            |
+  | target                  | listed                                                         |
+  | the RootScope           | root/"cache", root/"db", root/"q", "child"/"db", "leaf"/"queue" |
+  | child scope "child"     | root/"cache", root/"q", "child"/"db"                           |
+  | grandchild scope "leaf" | root/"cache", root/"q", "child"/"db", "leaf"/"queue"           |
 ```
 
 <!-- cases: N/A 1 default: coverage has no option -->
@@ -118,18 +119,18 @@ Examples:
 <!-- cases: 3 zero values: a scope with no checker and no ancestors' checkers yields an empty Services slice -->
 <!-- cases: 4 boundaries: root, one and two levels deep -->
 <!-- cases: N/A 5 errors: none -->
-<!-- cases: 6 not found/duplicate: shadowing of "db" -->
-<!-- cases: 7 lifecycle: nested scopes -->
+<!-- cases: 6 not found/duplicate: shadowing of "db"; the yielded default "q" -->
+<!-- cases: 7 lifecycle: nested scopes; extension scopes are scopes of the container -->
 <!-- cases: N/A 8 concurrency: not applicable -->
 <!-- cases: N/A 9 panics: not applicable -->
 <!-- cases: N/A 10 backward compatibility: new API -->
 
 ### Requirement: The overall state summarizes the covered services
-A report's `State` SHALL be `HealthUnhealthy` when any covered service is unhealthy; else `HealthDegraded` when any is degraded; else `HealthUnknown` when any covered critical service has no result yet; else `HealthHealthy`, including when no service is covered. An optional service without a result SHALL NOT make the state unknown.
+A report's `State` SHALL be `HealthUnhealthy` when any covered service is unhealthy, else `HealthDegraded` when any is degraded, else `HealthUnknown` when any covered critical service has no result yet, else `HealthHealthy`, including when no service is covered. An optional service without a result SHALL NOT make the state unknown. The container-phase gate (a later requirement) then applies.
 
 #### Scenario: Overall state
 ```gherkin
-Given a report covering services in states <states>
+Given a report covering services in states <states>, on an idle container
 When the overall state is computed
 Then it is <overall>
 
@@ -168,24 +169,73 @@ Examples:
 <!-- cases: 4 boundaries: every state against the others; critical vs optional Unknown; an unknown enum value -->
 <!-- cases: N/A 5 errors: none -->
 <!-- cases: N/A 6 not found/duplicate: not applicable -->
-<!-- cases: N/A 7 lifecycle: the closed container is the next requirement -->
+<!-- cases: N/A 7 lifecycle: the phase gate and the closed container are later requirements -->
 <!-- cases: N/A 8 concurrency: not applicable -->
 <!-- cases: N/A 9 panics: not applicable -->
 <!-- cases: N/A 10 backward compatibility: new API -->
 
+### Requirement: The container phase gates readiness and liveness
+A report covering readiness (no tag filter, or a filter including `HealthTagReadiness`) SHALL have `State` `HealthUnhealthy` in `PhaseStarting`, `PhaseStarted`, `PhaseFailed` and `PhaseClosing`. A report covering liveness SHALL have `State` `HealthUnhealthy` in `PhaseFailed`. `PhaseIdle` and `PhaseReady` SHALL NOT change the state. `IgnoreContainerPhase()` SHALL turn the gate off. Health results SHALL never change the phase.
+
+#### Scenario: Phase gate on readiness and liveness
+```gherkin
+Given an injector with a Healthchecker value "db" (no options) returning nil, whose last result was recorded as HealthHealthy
+And the container is in <phase>
+When the consumer calls HealthReport(<options>) on the root scope
+Then the report's Phase is <phase> and its State is <state>
+
+Examples:
+  | phase                                      | options                                                 | state           |
+  | PhaseIdle                                  | none                                                    | HealthHealthy   |
+  | PhaseStarting (blocked in a Starter)       | none                                                    | HealthUnhealthy |
+  | PhaseStarted (blocked in a Started hook)   | MatchHealthTags(HealthTagReadiness)                     | HealthUnhealthy |
+  | PhaseReady                                 | none                                                    | HealthHealthy   |
+  | PhaseFailed (a Starter returned an error)  | MatchHealthTags(HealthTagReadiness)                     | HealthUnhealthy |
+  | PhaseFailed (a Starter returned an error)  | MatchHealthTags(HealthTagLiveness)                      | HealthUnhealthy |
+  | PhaseClosing (blocked in a Closing hook)   | MatchHealthTags(HealthTagReadiness)                     | HealthUnhealthy |
+  | PhaseClosing (blocked in a Closing hook)   | MatchHealthTags(HealthTagLiveness)                      | HealthHealthy   |
+  | PhaseStarting (blocked in a Starter)       | MatchHealthTags(HealthTagLiveness)                      | HealthHealthy   |
+  | PhaseClosing (blocked in a Closing hook)   | MatchHealthTags("cache")                                | HealthHealthy   |
+  | PhaseClosing (blocked in a Closing hook)   | MatchHealthTags(HealthTagReadiness), IgnoreContainerPhase() | HealthHealthy |
+```
+
+#### Scenario: Health never changes the phase
+```gherkin
+Given a started injector in PhaseReady with a Healthchecker value "db" returning errors.New("down")
+When the consumer calls HealthReport() and HealthCheck() on the root scope
+Then the report's State is HealthUnhealthy
+And Phase() still returns PhaseReady
+```
+
+<!-- cases: 1 default: the gate is on; Idle and Ready rows are ungated -->
+<!-- cases: 2 overrides: IgnoreContainerPhase(); a custom-tag filter is ungated -->
+<!-- cases: N/A 3 zero values: an idle container (zero phase) is ungated, so containers that never call Start behave as before -->
+<!-- cases: 4 boundaries: every phase except Closed (next requirement); readiness vs liveness filters -->
+<!-- cases: N/A 5 errors: the gate sets no Err; Phase tells the reason -->
+<!-- cases: N/A 6 not found/duplicate: not applicable -->
+<!-- cases: 7 lifecycle: this requirement; liveness stays Healthy while starting, unlike Spring Boot's BROKEN, so a slow Start does not trigger restarts (startup probes cover a hung Start) -->
+<!-- cases: N/A 8 concurrency: the phase is read once per report -->
+<!-- cases: N/A 9 panics: not applicable -->
+<!-- cases: N/A 10 backward compatibility: new API; the phase itself is unchanged by health -->
+
 ### Requirement: A closed container reports no service and an unknown state
-After root `Shutdown` completed, a report SHALL have `Monitored` false, `State` `HealthUnknown` and no service, and a read SHALL NOT run any check.
+After root `Shutdown` completed, a report SHALL have `Phase` `PhaseClosed`, `Monitored` false, `State` `HealthUnknown` and no service, whatever its options, and a read SHALL NOT run any check.
 
 #### Scenario: A closed container reports no service
 ```gherkin
 Given a started injector with a Healthchecker "db" that counts its calls
-When the container is shut down and the consumer calls HealthReport() on the root scope
-Then the report has Monitored false, State HealthUnknown and an empty Services slice
+When the container is shut down and the consumer calls HealthReport(<options>) on the root scope
+Then the report has Phase PhaseClosed, Monitored false, State HealthUnknown and an empty Services slice
 And the health check of "db" was not called by that read
+
+Examples:
+  | options                 |
+  | none                    |
+  | IgnoreContainerPhase()  |
 ```
 
 <!-- cases: N/A 1 default: no option -->
-<!-- cases: N/A 2 overrides: none -->
+<!-- cases: 2 overrides: IgnoreContainerPhase does not change it -->
 <!-- cases: 3 zero values: an empty Services slice -->
 <!-- cases: N/A 4 boundaries: not applicable -->
 <!-- cases: N/A 5 errors: none -->
@@ -195,41 +245,79 @@ And the health check of "db" was not called by that read
 <!-- cases: N/A 9 panics: not applicable -->
 <!-- cases: N/A 10 backward compatibility: new API -->
 
-### Requirement: A monitored container's report never runs a check
-While the scheduler runs, a report read SHALL return the recorded results without running any check, with `Monitored` true. A covered service with no result yet SHALL be `HealthUnknown`, with `PendingSince` set while its first check is in flight.
+### Requirement: Services not started yet are not checked by reports
+Once the container left `PhaseIdle`, a covered service that `Start`, `Refresh` or `Scope.Start` would start, but that has not been started successfully yet, SHALL be listed as `HealthUnknown` and SHALL NOT be checked by a report read or a scheduled round. `HealthCheck()` and the single-service functions SHALL still check it.
+
+#### Scenario: A service registered after Ready waits for Refresh
+```gherkin
+Given a started injector in PhaseReady
+And an eager value "late" registered afterwards, implementing Start(ctx) error and HealthCheck() error counting its calls and returning errors.New("not started") until started
+When the consumer <action>, then calls HealthReport() on the root scope
+Then the entry for "late" is <state> and its check was called <calls> times by that read
+
+Examples:
+  | action                         | state           | calls |
+  | does nothing else              | HealthUnknown   | 0     |
+  | calls Refresh, which succeeds  | HealthHealthy   | 1     |
+```
+
+#### Scenario: Idle containers check every service
+```gherkin
+Given an injector that is never started, with an eager value "svc" implementing Start(ctx) error and HealthCheck() error returning nil
+When the consumer calls HealthReport() on the root scope
+Then the entry for "svc" is HealthHealthy
+```
+
+<!-- cases: 1 default: no option -->
+<!-- cases: N/A 2 overrides: Refresh or Scope.Start is the way to make it checked -->
+<!-- cases: N/A 3 zero values: an idle container keeps today's semantics -->
+<!-- cases: 4 boundaries: before and after Refresh -->
+<!-- cases: N/A 5 errors: the service's own error is not reported before it starts -->
+<!-- cases: N/A 6 not found/duplicate: not applicable -->
+<!-- cases: 7 lifecycle: registration and Extend after Ready, incremental start -->
+<!-- cases: N/A 8 concurrency: not applicable -->
+<!-- cases: N/A 9 panics: not applicable -->
+<!-- cases: 10 backward compatibility: forced paths still check such a service -->
+
+### Requirement: A monitored container's report runs only first checks
+While a `HealthScheduler` is scheduling the container's rounds, a report SHALL have `Monitored` true. A read SHALL return the recorded results, and SHALL check on demand only covered services that have no recorded result and no check in flight. A covered service whose first check is in flight SHALL be `HealthUnknown` with `PendingSince` set.
 
 #### Scenario: Reads on a monitored container cost nothing
 ```gherkin
-Given a started injector with HealthCheckInterval 0 and a fake clock
-And a Healthchecker "db" that counts its calls
-And the first round finished
+Given a started injector with a manual HealthScheduler and a Healthchecker "db" that counts its calls
+And the test ran the round once
 When 1000 goroutines call HealthReport() on the root scope concurrently
 Then every report has Monitored true and "db" in HealthHealthy
 And the health check of "db" was called 1 time in total
 ```
 
-#### Scenario: Before the first result
+#### Scenario: A service never checked is checked once by a read
 ```gherkin
-Given a started injector with HealthCheckInterval 0 and a fake clock set to 2026-01-01T00:00:00Z
-And a Healthchecker "db" whose first check blocks until released
+Given a started injector with a manual HealthScheduler, whose round the test has not run, and a fake clock set to 2026-01-01T00:00:00Z
+And a Healthchecker "db" whose check <behavior>
 When the consumer calls HealthReport() on the root scope
-Then the report has Monitored true and State HealthUnknown
-And "db" is HealthUnknown with PendingSince 2026-01-01T00:00:00Z
+Then the report has Monitored true
+And "db" is <entry>
+
+Examples:
+  | behavior                                                         | entry                                                          |
+  | returns nil                                                      | HealthHealthy                                                  |
+  | is already in flight from another reader, blocking until released | HealthUnknown with PendingSince 2026-01-01T00:00:00Z, once the reader's 20ms context ends |
 ```
 
-<!-- cases: 1 default: the default interval -->
-<!-- cases: N/A 2 overrides: the interval is in health-check-scheduling -->
-<!-- cases: 3 zero values: no result yet is HealthUnknown -->
-<!-- cases: 4 boundaries: 1 and 1000 readers -->
+<!-- cases: N/A 1 default: monitoring needs a scheduler -->
+<!-- cases: 2 overrides: the scheduler is in health-check-scheduling -->
+<!-- cases: 3 zero values: no result yet -->
+<!-- cases: 4 boundaries: 1 and 1000 readers; first check in flight -->
 <!-- cases: N/A 5 errors: none -->
 <!-- cases: N/A 6 not found/duplicate: not applicable -->
-<!-- cases: 7 lifecycle: Ready before and after the first round -->
+<!-- cases: 7 lifecycle: Ready before and after a round; a service appearing while monitored is checked by the next read -->
 <!-- cases: 8 concurrency: 1000 concurrent readers -->
 <!-- cases: N/A 9 panics: not applicable -->
 <!-- cases: N/A 10 backward compatibility: new API -->
 
 ### Requirement: An unmonitored container's report runs stale checks on demand
-When no scheduler runs and the container is in `PhaseIdle`, `PhaseFailed` or `PhaseReady`, a read SHALL check each covered service whose last result is missing or at least `HealthReportCacheTTL` old (0 means 1s; negative means always), and return the fresh results with `Monitored` false. Concurrent reads SHALL share each in-flight check.
+When no scheduler is scheduling and the container is in `PhaseIdle`, `PhaseFailed` or `PhaseReady`, a read SHALL check each covered service whose last result is missing or at least `HealthReportCacheTTL` old, and return the fresh results with `Monitored` false. A TTL of 0 means 1s, and a negative TTL means always stale. Concurrent reads SHALL share each in-flight check. In `PhaseStarting`, `PhaseStarted` and `PhaseClosing` a read SHALL run no check.
 
 #### Scenario: On-demand reads honor the cache TTL
 ```gherkin
@@ -258,35 +346,35 @@ And all 50 reports have "db" in HealthHealthy
 
 #### Scenario: On-demand reads by phase
 ```gherkin
-Given an injector with a Healthchecker "db" that counts its calls and HealthCheckInterval <interval>
+Given an injector with a Healthchecker "db" that counts its calls, HealthScheduler <scheduler>
 And the container is in <phase>
-When the consumer calls HealthReport() on the root scope
+When the consumer calls HealthReport(IgnoreContainerPhase()) on the root scope
 Then the health check of "db" was called <calls> times by that read
 And the report has Monitored <monitored>
 
 Examples:
-  | phase                                     | interval    | calls | monitored |
-  | PhaseIdle                                 | 0 (default) | 1     | false     |
-  | PhaseIdle                                 | -1ns        | 1     | false     |
-  | PhaseFailed (a Starter returned an error) | 0 (default) | 1     | false     |
-  | PhaseReady, after the first round         | 0 (default) | 0     | true      |
-  | PhaseReady                                | -1ns        | 1     | false     |
-  | PhaseStarting (blocked in a Starter)      | 0 (default) | 0     | false     |
-  | PhaseStarted (blocked in a Started hook)  | 0 (default) | 0     | false     |
-  | PhaseClosing (blocked in a Closing hook)  | 0 (default) | 0     | false     |
+  | phase                                     | scheduler          | calls | monitored |
+  | PhaseIdle                                 | nil                | 1     | false     |
+  | PhaseIdle                                 | a manual scheduler | 1     | false     |
+  | PhaseFailed (a Starter returned an error) | nil                | 1     | false     |
+  | PhaseReady                                | nil                | 1     | false     |
+  | PhaseReady, after one round               | a manual scheduler | 0     | true      |
+  | PhaseStarting (blocked in a Starter)      | nil                | 0     | false     |
+  | PhaseStarted (blocked in a Started hook)  | nil                | 0     | false     |
+  | PhaseClosing (blocked in a Closing hook)  | a manual scheduler | 0     | false     |
 ```
 
 #### Scenario: Reads without on-demand checks return the last recorded results
 ```gherkin
-Given a started injector with a Healthchecker "db" that returned errors.New("down") in its last round
+Given a started injector with a Healthchecker "db" whose last recorded result is errors.New("down")
 And a Closing hook that blocks until released
-When Shutdown is called and, while the Closing hook blocks, the consumer calls HealthReport() on the root scope
+When Shutdown is called and, while the Closing hook blocks, the consumer calls HealthReport(IgnoreContainerPhase()) on the root scope
 Then the report has Monitored false
 And "db" is HealthUnhealthy with the same "down" error
 ```
 
 <!-- cases: 1 default: TTL 1s on an idle container -->
-<!-- cases: 2 overrides: positive and negative TTL; scheduling off on Idle and Ready -->
+<!-- cases: 2 overrides: positive and negative TTL; with and without a scheduler -->
 <!-- cases: 3 zero values: TTL 0 means 1s; a nil context means context.Background() (next requirement) -->
 <!-- cases: 4 boundaries: one millisecond before and exactly at the TTL (exactly at the TTL is stale) -->
 <!-- cases: N/A 5 errors: a read has no error return; check errors are in the entries -->
@@ -296,23 +384,24 @@ And "db" is HealthUnhealthy with the same "down" error
 <!-- cases: N/A 9 panics: specified in health-check-execution -->
 <!-- cases: N/A 10 backward compatibility: new API -->
 
-### Requirement: An on-demand read is bounded by its caller's context and the per-service timeout
-`HealthReportWithContext(ctx)` SHALL stop waiting when ctx is done or when `HealthCheckTimeout` (if positive) elapses for a service, and SHALL report each unfinished check as `HealthUnhealthy` with an error matching `ErrHealthCheckTimeout` and the cause, in that read's report only. `HealthCheckGlobalTimeout` SHALL NOT apply. `HealthReport()` and a nil ctx SHALL use `context.Background()`.
+### Requirement: A report read is bounded by its caller's context and a per-service bound
+A read SHALL stop waiting for a service when ctx is done or when the report bound elapses: `HealthCheckTimeout` when positive, `DefaultHealthReportCheckTimeout` (10s) when 0, and no bound when negative. It SHALL report each unfinished check as `HealthUnhealthy` with an error matching `ErrHealthCheckTimeout` and the cause. `HealthCheckGlobalTimeout` SHALL NOT apply. `HealthReport()` and a nil ctx SHALL use `context.Background()`.
 
 #### Scenario: A reader that stops waiting
 ```gherkin
-Given an injector that is never started, with HealthCheckTimeout <timeout>
-And a service "db" whose HealthCheck(ctx) blocks until released or ctx is done
-When the consumer calls HealthReportWithContext with a context that is <context>
+Given an injector that is never started, with a fake clock and HealthCheckTimeout <timeout>
+And a service "db" whose HealthCheck() blocks until released and ignores any context
+When the consumer calls HealthReportWithContext with a context that is <context>, and the fake clock advances by <advance>
 Then the read returns <returns>
 And the entry for "db" is <entry>
 
 Examples:
-  | timeout | context                       | returns                    | entry                                                                  |
-  | 0       | cancelled 10ms after the call | 10ms after the call        | HealthUnhealthy, "DI: health check timeout: context canceled"          |
-  | 0       | cancelled before the call     | at once                    | HealthUnhealthy, "DI: health check timeout: context canceled"          |
-  | 0       | nil                           | once the check is released | HealthHealthy                                                          |
-  | 20ms    | never cancelled               | 20ms after the call        | HealthUnhealthy, "DI: health check timeout: context deadline exceeded" |
+  | timeout | context                       | advance | returns                    | entry                                                                  |
+  | 0       | never cancelled               | 10s     | after the advance          | HealthUnhealthy, "DI: health check timeout: context deadline exceeded" |
+  | 0       | never cancelled               | 9.999s  | not yet                    | (still waiting)                                                        |
+  | 20ms    | never cancelled               | 20ms    | after the advance          | HealthUnhealthy, "DI: health check timeout: context deadline exceeded" |
+  | -1ns    | never cancelled               | 10m     | not yet                    | (still waiting)                                                        |
+  | 0       | cancelled before the call     | 0s      | at once                    | HealthUnhealthy, "DI: health check timeout: context canceled"          |
 ```
 
 #### Scenario: A reader leaving does not affect other readers
@@ -321,15 +410,15 @@ Given an injector that is never started, with a service "db" whose HealthCheck(c
 And reader A calls HealthReportWithContext with a context cancelled after 10ms
 And reader B calls HealthReport() at the same time
 When A's context is cancelled, then the check is released
-Then A's entry for "db" is HealthUnhealthy with an error matching ErrHealthCheckTimeout
+Then A's entry for "db" is HealthUnhealthy with an error matching ErrHealthCheckTimeout and context.Canceled
 And B's entry for "db" is HealthHealthy
 And a third read within the TTL returns HealthHealthy for "db" without a new check
 ```
 
-<!-- cases: 1 default: no default bound, per user decision; HealthReport() waits -->
-<!-- cases: 2 overrides: HealthCheckTimeout bounds the wait -->
-<!-- cases: 3 zero values: nil context -->
-<!-- cases: 4 boundaries: cancelled before vs during the read -->
+<!-- cases: 1 default: 10s bound with HealthCheckTimeout 0 -->
+<!-- cases: 2 overrides: a positive and a negative HealthCheckTimeout; the caller's ctx -->
+<!-- cases: 3 zero values: HealthCheckTimeout 0; nil context -->
+<!-- cases: 4 boundaries: one millisecond before and exactly at the 10s default -->
 <!-- cases: 5 errors: the timeout error matches ErrHealthCheckTimeout and the cause with errors.Is -->
 <!-- cases: N/A 6 not found/duplicate: not applicable -->
 <!-- cases: N/A 7 lifecycle: on-demand phases are in the previous requirement -->
@@ -337,8 +426,8 @@ And a third read within the TTL returns HealthHealthy for "db" without a new che
 <!-- cases: N/A 9 panics: specified in health-check-execution -->
 <!-- cases: 10 backward compatibility: the timeout message matches health-check-timeouts -->
 
-### Requirement: Every completed check refreshes the report
-The result of every check SHALL be recorded for reports, whichever path ran it: a scheduled round, an on-demand read, `HealthCheck()` / `HealthCheckWithContext()`, or a single-service function. A check whose own bound elapsed SHALL be recorded as timed out at that moment, and its later result SHALL be recorded when it returns.
+### Requirement: Results are recorded once per check, timeouts at the report bound
+The result of every completed check SHALL be recorded for reports, whichever path ran it. When a read or a round stops waiting for a check at its report bound, that check SHALL be recorded as timed out at that moment, and its later result SHALL be discarded. A caller's context ending SHALL NOT record a timeout.
 
 #### Scenario: Forced and single-service checks refresh the report
 ```gherkin
@@ -356,23 +445,23 @@ Examples:
   | HealthCheck[*DB](injector)                    |
 ```
 
-#### Scenario: A timed-out check is recorded at its bound and again when it returns
+#### Scenario: A timed-out check's late result is discarded
 ```gherkin
-Given a started injector with a fake clock, HealthCheckInterval 0 and HealthCheckTimeout 0
+Given an injector that is never started, with a fake clock, HealthReportCacheTTL 1h and HealthCheckTimeout 0
 And a service "db" whose HealthCheck() blocks until released and ignores any context, then returns nil
-And the first round's check of "db" is running
-When the fake clock advances by 10s, then the check is released and returns
-Then after the advance, "db" was HealthUnhealthy with an error matching ErrHealthCheckTimeout and PendingSince set
-And after the release, "db" is HealthHealthy with a zero PendingSince
+And a HookServiceHealthChanged hook that records calls
+When the consumer calls HealthReport(), the fake clock advances by 10s, then the check is released and returns, and the consumer reads HealthReport() again
+Then both reads show "db" HealthUnhealthy with an error matching ErrHealthCheckTimeout
+And the hook recorded only (Unknown, Unhealthy)
 ```
 
 <!-- cases: N/A 1 default: recording has no option -->
 <!-- cases: N/A 2 overrides: none -->
-<!-- cases: 3 zero values: a zero PendingSince once the check returned -->
+<!-- cases: N/A 3 zero values: not applicable -->
 <!-- cases: 4 boundaries: at the bound and at the late return -->
 <!-- cases: 5 errors: the forced path's error is recorded unchanged; the timeout error at the bound -->
 <!-- cases: N/A 6 not found/duplicate: not applicable -->
-<!-- cases: 7 lifecycle: forced checks after Ready; a late result -->
+<!-- cases: 7 lifecycle: forced checks; a late result -->
 <!-- cases: N/A 8 concurrency: next requirement -->
 <!-- cases: N/A 9 panics: specified in health-check-execution -->
 <!-- cases: 10 backward compatibility: forced paths keep their return values -->
@@ -390,7 +479,7 @@ Then "db" has no recorded result: its CheckedAt is zero
 
 #### Scenario: Results after shutdown began are not recorded
 ```gherkin
-Given a started injector with a Healthchecker "db" that returned nil in the first round
+Given a started injector with a Healthchecker "db" whose recorded result is nil
 And a HookServiceHealthChanged hook that records calls
 And a Shutdowner "svc" that, during Shutdown, makes "db" return errors.New("closed") and calls HealthCheck() on the root scope
 When the consumer calls Shutdown

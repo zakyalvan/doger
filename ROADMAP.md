@@ -8,8 +8,9 @@ Every item follows the project rules in `CLAUDE.md`: sensible zero-config defaul
 
 | Change | PR | Summary |
 |---|---|---|
-| `consolidate-pending-lifecycle-work` | #8 | Container lifecycle hooks and phases, incremental start, collections, follow-ups of #4 |
-| `add-scheduled-health-checks` | #9 | Scheduled health checks with cached reports, coalesced forced runs, health classification (readiness, liveness, optional services and a Degraded state), and eight health-check defect fixes. Depends on #8 |
+| `add-scheduled-health-checks` | #9 | Cached health reports with on-demand checks, at most one check in flight per service, health classification (readiness, liveness, optional services and a Degraded state), a container-phase gate on readiness and liveness, opt-in scheduled rounds through a `HealthScheduler` interface with a gocron adapter module (`scheduler/gocron`), and nine health-check defect fixes |
+
+Done since this roadmap was first written: `consolidate-pending-lifecycle-work` (#8), `add-default-registrations` (#11), `add-scope-export` (#12), `fix-shutdown-after-context-end` (#14) and `add-extensions` (#15).
 
 ## Next
 
@@ -20,13 +21,13 @@ In this order. The first is a follow-up of #9; the second and third came out of 
 - **Problem.** #9 adds `HealthReport` and tag filters, but the `http/*` packages only serve the debug UI. Every consumer would write the same handler.
 - **Sketch.**
   - Readiness and liveness handlers in `http/std`, `gin`, `echo`, `fiber` and `chi`.
-  - Each serves a tag-filtered report as JSON, with status 200 for Healthy and Degraded and 503 otherwise.
+  - Each serves a tag-filtered report as JSON, with status 200 for Healthy and Degraded and 503 otherwise. The container-phase gate of #9 is on, so readiness drains during graceful shutdown.
   - Each passes the request context to `HealthReportWithContext`.
 - **To decide.** The JSON shape (including how `Err` is rendered), the paths, and whether a handler exposes service names, since the debug UI already warns about revealing internals.
 
 ### 2. Test helper package
 
-- **Problem.** A test that calls `Start` must also call `Shutdown`, or it leaks goroutines. Since #9, a started container runs a health-check scheduler, so a forgotten `Shutdown` fails every goleak-based test suite. Test setup (a fake clock, a disabled scheduler, failing on a bad shutdown report) is repeated in each consumer's tests.
+- **Problem.** A test that calls `Start` must also call `Shutdown`, or the goroutines its services start leak. With #9, a container given a `HealthScheduler` (for example the gocron adapter) also runs scheduler goroutines until `Shutdown`, so a forgotten `Shutdown` fails goleak-based suites. Test setup (a fake clock, a manual `HealthScheduler`, failing on a bad shutdown report) is repeated in each consumer's tests.
 - **Prior art.** uber-go/fx ships `fxtest` ([source, v1.24.0](https://github.com/uber-go/fx/blob/v1.24.0/fxtest/app.go)).
   - `fxtest.New(tb, opts...)` builds the app and fails the test if `fx.New` fails.
   - `RequireStart()` and `RequireStop()` fail the test on start or stop errors.
@@ -35,13 +36,13 @@ In this order. The first is a follow-up of #9; the second and third came out of 
   - A `dogertest` package.
   - `dogertest.New(t, opts...)` returns a `*doger.RootScope` and registers `Shutdown` with `t.Cleanup`. It fails the test when the shutdown report has errors.
   - `dogertest.Start(t, injector)` starts the container and fails the test on a start error.
-  - Test-friendly defaults that can each be overridden: for example a `clockwork` fake clock, and scheduling off unless the test turns it on.
+  - Test-friendly defaults that can each be overridden: for example a `clockwork` fake clock, and a manual `HealthScheduler` whose rounds the test runs.
 - **To decide.**
   - Subpackage of the root module or a separate module.
   - Which test defaults to apply, given the library principle that defaults must be overridable.
   - Whether to integrate goleak or leave it to the consumer's `TestMain`.
   - Helpers for `Override` and `Clone`-based test isolation.
-- **Depends on.** #9, for the scheduler defaults it controls.
+- **Depends on.** #9, for the `HealthScheduler` interface it fakes.
 
 ### 3. Container validation
 

@@ -2,65 +2,12 @@
 
 ## Purpose
 
-Defines how the container runs health checks on every path (scheduled rounds, report reads, `HealthCheck()` and the single-service functions): sharing work between concurrent callers, bounding each caller's wait, limiting concurrency, containing panics and cycles, and never letting a health check block registration, building or shutdown.
+Defines how the container runs health checks on every path (report reads, scheduled rounds, `HealthCheck()` and the single-service functions). It covers sharing work between concurrent callers, bounding each caller's wait, and limiting concurrency. It ensures panics are contained, each underlying check runs once, and a health check never blocks registration, building or shutdown.
 
 ## ADDED Requirements
 
-### Requirement: Concurrent forced runs on a scope share one run
-A `HealthCheck()` or `HealthCheckWithContext(ctx)` call made while another such call on the same scope is running SHALL join that run instead of starting its own, and SHALL receive the same results in a map of its own. A call made after the run finished SHALL start a new run.
-
-#### Scenario: Concurrent calls share the run
-```gherkin
-Given an injector that is never started, with 10 Healthchecker values "svc-0" to "svc-9" that count their calls
-And "svc-0"'s check blocks until released
-When 50 goroutines call HealthCheck() on the root scope, and "svc-0" is released once all 50 wait
-Then each service's health check was called 1 time
-And every call returns a map with 10 entries, each nil
-And deleting a key from one returned map leaves the others with 10 entries
-```
-
-#### Scenario: Sequential calls run again
-```gherkin
-Given an injector that is never started, with a Healthchecker "db" that counts its calls
-When the consumer calls HealthCheck() on the root scope <n> times, one after another
-Then the health check of "db" was called <n> times
-
-Examples:
-  | n |
-  | 1 |
-  | 3 |
-```
-
-#### Scenario: Runs on different scopes are separate
-```gherkin
-Given an injector with Healthchecker values root/"db" and "child"/"cache", whose checks count their calls and block until released
-When one goroutine calls HealthCheck() on the root scope and another on scope "child", and the checks are released once both wait
-Then the root call returns {"db": nil}
-And the child call returns {"db": nil, "cache": nil}
-And the health check of root/"db" was called 1 time
-```
-
-#### Scenario: A joined run never shows a missing entry
-```gherkin
-Given an injector that is never started, with a plain value "answer" = 42 and a Healthchecker "db" whose check blocks until released
-And one goroutine is running HealthCheck() on the root scope
-When the consumer calls HealthCheckWithContext with an already-cancelled context, 1000 times, each joining that run
-Then every call returns a map whose entry for "answer" is nil and whose entry for "db" matches ErrHealthCheckTimeout
-```
-
-<!-- cases: 1 default: zero configuration -->
-<!-- cases: N/A 2 overrides: coalescing has no option (see proposal Defaults & Control) -->
-<!-- cases: 3 zero values: a scope with no service returns an empty map, as today; a plain value keeps its nil entry -->
-<!-- cases: 4 boundaries: 1 and 50 callers; 1 and 3 sequential calls; 1000 joins -->
-<!-- cases: N/A 5 errors: errors are per service, unchanged -->
-<!-- cases: N/A 6 not found/duplicate: not applicable -->
-<!-- cases: 7 lifecycle: root and child scopes -->
-<!-- cases: 8 concurrency: 50 concurrent callers; isolated result maps; joining with an ended context -->
-<!-- cases: N/A 9 panics: a later requirement -->
-<!-- cases: 10 backward compatibility: return type and keys unchanged -->
-
 ### Requirement: Each caller's wait is bounded by its own context and its own timeout
-Every caller SHALL stop waiting when its context ends or its own path's bound elapses, measured from its call: `HealthCheckTimeout` per service and `HealthCheckGlobalTimeout` for `HealthCheck()`; `HealthCheckSingleTimeout` (0 means `HealthCheckTimeout`) for the single-service functions. For each unfinished service it SHALL get an error matching `ErrHealthCheckTimeout` and the cause, whoever started the check.
+Every caller SHALL stop waiting when its context ends or its own path's bound elapses, measured from its call. The bounds are `HealthCheckTimeout` per service and `HealthCheckGlobalTimeout` for `HealthCheck()`, and `HealthCheckSingleTimeout` (0 means `HealthCheckTimeout`) for the single-service functions. For each unfinished service the caller SHALL get an error matching `ErrHealthCheckTimeout` and the cause, whoever started the check.
 
 #### Scenario: Each caller keeps its own bound when it joins a check
 ```gherkin
@@ -87,7 +34,7 @@ Then A's result for "db" is "DI: health check timeout: context canceled"
 And B's result for "db" is nil
 ```
 
-<!-- cases: 1 default: no bound at zero configuration; the waiting rows -->
+<!-- cases: 1 default: no bound at zero configuration for forced paths; the waiting rows -->
 <!-- cases: 2 overrides: HealthCheckTimeout, HealthCheckSingleTimeout, HealthCheckGlobalTimeout and their interplay -->
 <!-- cases: 3 zero values: 0 inherits or means no bound; a nil or background context waits -->
 <!-- cases: 4 boundaries: one millisecond before and exactly at the bound -->
@@ -96,10 +43,10 @@ And B's result for "db" is nil
 <!-- cases: 7 lifecycle: joining a check another caller started -->
 <!-- cases: 8 concurrency: two callers with different contexts -->
 <!-- cases: N/A 9 panics: a later requirement -->
-<!-- cases: 10 backward compatibility: each path keeps the bounds of health-check-timeouts and of HealthCheckSingleTimeout from consolidate-pending-lifecycle-work -->
+<!-- cases: 10 backward compatibility: each forced path keeps the bounds of health-check-timeouts and of HealthCheckSingleTimeout; report paths are in health-reports -->
 
 ### Requirement: A check sees its starter's context
-A check SHALL receive a context carrying the values and the deadline of the caller that started it, further bounded by that caller's own timeout. The context SHALL be cancelled when that bound elapses, when every caller waiting for the check stopped waiting, or when root shutdown begins. A caller that joins a check SHALL NOT change the check's context.
+A check SHALL receive a context carrying the values and the deadline of the caller that started it, further bounded by that caller's own bound. The context SHALL be cancelled when that bound elapses, when every caller waiting for the check has stopped waiting, or when root shutdown begins. A caller that joins a check SHALL NOT change the check's context.
 
 #### Scenario: Deadline and values reach the check
 ```gherkin
@@ -108,9 +55,10 @@ When the consumer calls <entry> with a context carrying "trace" = "trace-1" and 
 Then the check recorded a deadline and "trace-1"
 
 Examples:
-  | entry                                  |
+  | entry                                    |
   | HealthCheckWithContext on the root scope |
-  | HealthCheckNamedWithContext for "c"    |
+  | HealthCheckNamedWithContext for "c"      |
+  | HealthReportWithContext on the root scope |
 ```
 
 #### Scenario: The only caller leaving cancels the check
@@ -133,14 +81,14 @@ And the check recorded context.Canceled
 <!-- cases: 10 backward compatibility: the deadline and values a check sees today are kept for its starter; a joining caller's values do not reach the check (flagged) -->
 
 ### Requirement: A service never has two checks in flight
-While a service's check is running, any path that would check it SHALL wait for that check instead of starting another. A check that reached its bound, or that every caller left, SHALL stay in flight until it returns. A caller arriving then SHALL NOT receive its result: it SHALL wait, within its own bound, for that check to return, then start a fresh one.
+While a service's check is running, any path that would check it SHALL wait for that check instead of starting another. A check that reached its bound, or that every caller left, SHALL stay in flight until it returns. A caller arriving then SHALL NOT receive its result. It SHALL wait, within its own bound, for that check to return, then start a fresh one.
 
 #### Scenario: A check that ignores its context does not pile up
 ```gherkin
 Given an injector that is never started, with HealthCheckTimeout 5ms
 And a service "db" whose HealthCheck() blocks until released and ignores any context
 When the consumer calls <entry> 100 times, one after another
-Then every call returns "DI: health check timeout: context deadline exceeded" for "db"
+Then every call returns or reports "DI: health check timeout: context deadline exceeded" for "db"
 And the health check of "db" was called 1 time
 And after the check is released and the calls end, goleak reports no leaked goroutine
 
@@ -148,6 +96,16 @@ Examples:
   | entry                                  |
   | HealthCheck() on the root scope        |
   | HealthCheckNamed(injector, "db")       |
+  | HealthReport() on the root scope       |
+```
+
+#### Scenario: Concurrent forced calls share the in-flight checks
+```gherkin
+Given an injector that is never started, with 10 Healthchecker values "svc-0" to "svc-9" that count their calls and block until released
+When 50 goroutines call HealthCheck() on the root scope, and the checks are released once all 50 wait
+Then each service's health check was called 1 time
+And every call returns a map with 10 entries, each nil
+And deleting a key from one returned map leaves the others with 10 entries
 ```
 
 #### Scenario: A call that joins a running check gets its result
@@ -168,26 +126,32 @@ Then the call does not return context.Canceled for "db"
 And the health check of "db" was called 2 times, never two at once
 ```
 
-#### Scenario: After a check finishes, the next call checks again
+#### Scenario: Sequential calls check again
 ```gherkin
 Given an injector that is never started, with a Healthchecker "db" that counts its calls
-When the consumer calls HealthCheckNamed(injector, "db") 2 times, one after another
-Then the health check of "db" was called 2 times
+When the consumer calls <entry> <n> times, one after another
+Then the health check of "db" was called <n> times
+
+Examples:
+  | entry                            | n |
+  | HealthCheck() on the root scope  | 1 |
+  | HealthCheck() on the root scope  | 3 |
+  | HealthCheckNamed(injector, "db") | 2 |
 ```
 
 <!-- cases: 1 default: zero configuration -->
 <!-- cases: 2 overrides: with and without HealthCheckTimeout -->
 <!-- cases: N/A 3 zero values: not applicable -->
-<!-- cases: 4 boundaries: 1, 2 and 100 calls -->
+<!-- cases: 4 boundaries: 1, 2, 3, 50 and 100 calls -->
 <!-- cases: 5 errors: a joining caller gets the check's error; an abandoned check's cancellation never reaches a new caller -->
 <!-- cases: 6 not found/duplicate: an unknown name still returns ErrServiceNotFound, as today -->
 <!-- cases: 7 lifecycle: joining, abandonment, and a fresh check after the old one returns -->
-<!-- cases: 8 concurrency: never two checks at once; goleak -->
+<!-- cases: 8 concurrency: never two checks at once; 50 concurrent forced calls; isolated result maps; goleak -->
 <!-- cases: N/A 9 panics: a later requirement -->
-<!-- cases: 10 backward compatibility: sequential calls still check each time -->
+<!-- cases: 10 backward compatibility: sequential calls still check each time; concurrent forced calls return the same maps with fewer check calls (regression D1) -->
 
-### Requirement: HealthCheckParallelism caps running top-level checks
-With `HealthCheckParallelism` n > 0, at most n top-level checks SHALL run at once across all paths. Waiting for a slot SHALL honor each caller's context and bound, SHALL NOT hold any scope lock, and SHALL have no queue limit. A check's own timeout SHALL start when it starts running. With 0 (default), checks SHALL NOT be limited.
+### Requirement: HealthCheckParallelism caps checks without blocking callers or registration
+With `HealthCheckParallelism` n > 0, at most n checks started by `HealthCheck()`, report reads and scheduled rounds SHALL run at once. Waiting for a slot SHALL honor each caller's context and bound, SHALL NOT hold any scope lock, and SHALL have no queue limit. A check's own bound SHALL start when it starts running. The single-service functions SHALL NOT take a slot, as today. With 0 (default), checks SHALL NOT be limited.
 
 #### Scenario: Parallelism caps running checks
 ```gherkin
@@ -207,26 +171,27 @@ Examples:
 #### Scenario: Waiting for a slot honors the context
 ```gherkin
 Given an injector that is never started, with HealthCheckParallelism 1
-And a service "hung" whose HealthCheck() blocks until released and ignores any context, already running from a HealthCheckNamed call
+And a service "hung" whose HealthCheck() blocks until released and ignores any context
 And a Healthchecker value "db"
-When the consumer calls HealthCheckNamedWithContext with a context that times out after 20ms, for "db"
-Then the call returns within 1s, with an error matching ErrHealthCheckTimeout and context.DeadlineExceeded
+And one HealthCheck() call on the root scope holds the slot with "hung"
+When the consumer calls HealthCheckWithContext on the root scope with a context that times out after 20ms
+Then the call returns within 1s, with an error for "db" matching ErrHealthCheckTimeout and context.DeadlineExceeded
 ```
 
 #### Scenario: Registration is not blocked by checks waiting for a slot
 ```gherkin
 Given an injector that is never started, with HealthCheckParallelism 1
 And a service "hung" whose HealthCheck() blocks until released and ignores any context, already running
-And 1001 goroutines each calling HealthCheckNamed for a different Healthchecker "svc-0" to "svc-1000", all waiting for the slot
+And 1001 goroutines calling HealthCheck() on the root scope, all waiting
 When the consumer calls ProvideNamedValue(injector, "late", 42)
 Then the call returns within 1s
 ```
 
-#### Scenario: A scheduled check's timeout does not count the wait for a slot
+#### Scenario: A report-path check's timeout does not count the wait for a slot
 ```gherkin
-Given a started injector with a fake clock, HealthCheckParallelism 1, HealthCheckTimeout 0 and Healthcheckers "a" and "b"
-And "a"'s check blocks on the fake clock for 15s, then returns nil
-When the fake clock advances by 15s, then by 1s
+Given an injector that is never started, with a fake clock, HealthCheckParallelism 1, HealthCheckTimeout 0 and Healthcheckers "a" and "b"
+And "a"'s check blocks on the fake clock for 9s, then returns nil
+When the consumer calls HealthReport() on the root scope and the fake clock advances by 9s, then by 1s
 Then "b" is HealthHealthy in the report, not timed out
 ```
 
@@ -241,41 +206,15 @@ Then the map has 2000 entries, each nil
 <!-- cases: 2 overrides: n = 1 and n = 4 -->
 <!-- cases: 3 zero values: 0 means unlimited -->
 <!-- cases: 4 boundaries: exactly n running; 2000 services against a limit of 1 (the former 1000-slot queue) -->
-<!-- cases: 5 errors: the timeout error while waiting for a slot -->
+<!-- cases: 5 errors: the timeout error while waiting for a slot (regression D2) -->
 <!-- cases: N/A 6 not found/duplicate: not applicable -->
-<!-- cases: 7 lifecycle: a scheduled check waiting for its slot -->
-<!-- cases: 8 concurrency: slot waits, scope locks, registration -->
+<!-- cases: 7 lifecycle: a report-path check waiting for its slot -->
+<!-- cases: 8 concurrency: slot waits, scope locks, registration (regression D2) -->
 <!-- cases: N/A 9 panics: a later requirement -->
-<!-- cases: 10 backward compatibility: the default stays unlimited; a positive value now also limits the single-service functions (flagged) -->
+<!-- cases: 10 backward compatibility: the default stays unlimited; single-service functions keep skipping the limit, as today -->
 
-### Requirement: Creating a container starts no goroutine
-`New()`, `NewWithOpts()`, `Clone()` and `CloneWithOpts()` SHALL NOT start a goroutine, whatever `HealthCheckParallelism` is.
-
-#### Scenario: New starts no goroutine
-```gherkin
-Given HealthCheckParallelism <n>
-When the consumer calls NewWithOpts with it and registers a Healthchecker value "db"
-Then the number of goroutines is unchanged
-
-Examples:
-  | n |
-  | 0 |
-  | 4 |
-```
-
-<!-- cases: 1 default: 0 -->
-<!-- cases: 2 overrides: a positive parallelism (formerly started 4 pool goroutines) -->
-<!-- cases: N/A 3 zero values: covered by n = 0 -->
-<!-- cases: N/A 4 boundaries: not applicable -->
-<!-- cases: N/A 5 errors: none -->
-<!-- cases: N/A 6 not found/duplicate: not applicable -->
-<!-- cases: 7 lifecycle: construction; the scheduler is in health-check-scheduling -->
-<!-- cases: 8 concurrency: goroutine count -->
-<!-- cases: N/A 9 panics: none -->
-<!-- cases: 10 backward compatibility: New() no longer starts pool goroutines (an improvement) -->
-
-### Requirement: A check started from inside a check never waits for a slot
-A health check called from inside a running check SHALL run on its caller's goroutine without taking a slot. When that service's check is waiting for a slot, the nested call SHALL run it at once, and every caller waiting for it SHALL get that result.
+### Requirement: A single-service check never waits for a slot
+A single-service function SHALL run its check at once, without a slot. When the service's check is queued for a slot, the single-service call SHALL run it at once, and every caller waiting for that check SHALL get its result. Composite checks therefore complete under any limit.
 
 #### Scenario: Nested checks complete under a limit of one
 ```gherkin
@@ -284,54 +223,54 @@ And a Healthchecker value "leaf" returning nil
 And a HealthcheckerWithContext "agg" whose check returns HealthCheckNamedWithContext(ctx, injector, "leaf")
 When the consumer calls <entry>
 Then the call returns within 1s with <result>
+And the health check of "leaf" never ran twice at once
 
 Examples:
-  | entry                           | result                       |
-  | HealthCheck() on the root scope | {"agg": nil, "leaf": nil}    |
-  | HealthCheckNamed(injector, "agg") | nil                        |
+  | entry                             | result                    |
+  | HealthCheck() on the root scope   | {"agg": nil, "leaf": nil} |
+  | HealthCheckNamed(injector, "agg") | nil                       |
 ```
 
 <!-- cases: 1 default: an unlimited container runs nested checks as today -->
 <!-- cases: 2 overrides: a limit of 1, the tightest -->
 <!-- cases: N/A 3 zero values: not applicable -->
 <!-- cases: 4 boundaries: limit 1 -->
-<!-- cases: N/A 5 errors: cycles are the next requirement -->
+<!-- cases: N/A 5 errors: not applicable -->
 <!-- cases: N/A 6 not found/duplicate: not applicable -->
-<!-- cases: 7 lifecycle: a nested call taking over a check waiting for its slot -->
+<!-- cases: 7 lifecycle: a single-service call taking over a check queued for a slot -->
 <!-- cases: 8 concurrency: no deadlock under the limit -->
 <!-- cases: N/A 9 panics: a later requirement -->
-<!-- cases: 10 backward compatibility: composite checks keep working as today -->
+<!-- cases: 10 backward compatibility: composite checks keep working as today; a check calling itself still recurses as today (cycle detection is out of scope) -->
 
-### Requirement: A check that depends on itself returns a cycle error
-A health check called, directly or through other checks, from inside its own running check SHALL return an error matching `ErrHealthCheckCycle`, whose message is ``DI: health check cycle on service `<name>` ``, instead of waiting for itself.
+### Requirement: Creating a container starts no goroutine
+`New()`, `NewWithOpts()`, `Clone()` and `CloneWithOpts()` SHALL NOT start a goroutine, whatever `HealthCheckParallelism` and `HealthScheduler` are.
 
-#### Scenario: Self-referencing checks
+#### Scenario: New starts no goroutine
 ```gherkin
-Given an injector that is never started
-And <services>
-When the consumer calls HealthCheckNamed(injector, "a")
-Then the call returns within 1s
-And the result is an error that matches ErrHealthCheckCycle and contains "<message>"
+Given HealthCheckParallelism <n> and HealthScheduler <scheduler>
+When the consumer calls NewWithOpts with them and registers a Healthchecker value "db"
+Then the number of goroutines is unchanged
 
 Examples:
-  | services                                                                         | message                                  |
-  | a HealthcheckerWithContext "a" whose check returns HealthCheckNamedWithContext(ctx, injector, "a") | DI: health check cycle on service `a` |
-  | "a" whose check calls "b", and "b" whose check calls "a" (both with ctx)          | DI: health check cycle on service `a`    |
+  | n | scheduler                                  |
+  | 0 | nil                                        |
+  | 4 | nil                                        |
+  | 0 | a HealthScheduler that would start a goroutine when called |
 ```
 
-<!-- cases: N/A 1 default: a cycle is never the default path -->
-<!-- cases: N/A 2 overrides: none -->
-<!-- cases: N/A 3 zero values: not applicable -->
-<!-- cases: 4 boundaries: a direct and a two-step cycle -->
-<!-- cases: 5 errors: ErrHealthCheckCycle and its message -->
+<!-- cases: 1 default: 0 and nil -->
+<!-- cases: 2 overrides: a positive parallelism (formerly started 4 pool goroutines, regression D6); a scheduler -->
+<!-- cases: N/A 3 zero values: covered by the default row -->
+<!-- cases: N/A 4 boundaries: not applicable -->
+<!-- cases: N/A 5 errors: none -->
 <!-- cases: N/A 6 not found/duplicate: not applicable -->
-<!-- cases: N/A 7 lifecycle: not applicable -->
-<!-- cases: 8 concurrency: no self-wait -->
-<!-- cases: N/A 9 panics: not applicable -->
-<!-- cases: 10 backward compatibility: today such a check recurses without limit (probe: depth 1001 reached under a guard); detection needs the check to pass on its ctx -->
+<!-- cases: 7 lifecycle: construction; when the scheduler is called is in health-check-scheduling -->
+<!-- cases: 8 concurrency: goroutine count -->
+<!-- cases: N/A 9 panics: none -->
+<!-- cases: 10 backward compatibility: New() no longer starts pool goroutines (an improvement) -->
 
 ### Requirement: A panicking health check returns an error
-A panic in a health check SHALL be recovered on every path. The result SHALL be an error matching `ErrHealthCheckPanic`, with the message `DI: health check panic: ` followed by the value; an error value SHALL also match, and a nil value SHALL match `*runtime.PanicNilError` with `errors.As`. When set, `HookContainerPanic(root, "healthcheck", value)` SHALL be called; a panic it raises SHALL propagate.
+A panic in a health check SHALL be recovered on every path. The result SHALL be an error matching `ErrHealthCheckPanic`, with the message `DI: health check panic: ` followed by the value. An error value SHALL also match, and a nil value SHALL match `*runtime.PanicNilError` with `errors.As`. When set, `HookContainerPanic(root, "healthcheck", value)` SHALL be called, and a panic it raises SHALL propagate.
 
 #### Scenario: Panic results
 ```gherkin
@@ -350,11 +289,11 @@ Examples:
   | set, recording (point, value)  | "boom"  | HealthCheck() on the root scope  | DI: health check panic: boom                                           | nothing else                          | HookContainerPanic recorded ("healthcheck", "boom") |
 ```
 
-#### Scenario: A panic in a scheduled round does not stop scheduling
+#### Scenario: A panic in a scheduled round does not stop later rounds
 ```gherkin
-Given a started injector with a fake clock, HealthCheckInterval 10s and a service "db" whose HealthCheck() panics with "boom" on its first call and returns nil afterwards
+Given an injector with a manual HealthScheduler, started, and a service "db" whose HealthCheck() panics with "boom" on its first call and returns nil afterwards
 And a HookServiceHealthChanged hook that records calls
-When the fake clock advances by 10s and the round finishes
+When the test runs the round twice
 Then the report entry for "db" is HealthHealthy
 And the hook recorded (Unknown, Unhealthy, "DI: health check panic: boom") then (Unhealthy, Healthy, nil)
 ```
@@ -365,9 +304,9 @@ And the hook recorded (Unknown, Unhealthy, "DI: health check panic: boom") then 
 <!-- cases: N/A 4 boundaries: not applicable -->
 <!-- cases: 5 errors: message, ErrHealthCheckPanic, the wrapped error value, PanicNilError -->
 <!-- cases: N/A 6 not found/duplicate: not applicable -->
-<!-- cases: 7 lifecycle: forced, single-service, report and scheduled paths -->
+<!-- cases: 7 lifecycle: forced, single-service, report and round paths -->
 <!-- cases: N/A 8 concurrency: recovery happens on the goroutine running the check -->
-<!-- cases: 9 panics: this requirement; a panic raised by HookContainerPanic propagates so a consumer can still crash on purpose -->
+<!-- cases: 9 panics: this requirement (regression D7); a panic raised by HookContainerPanic propagates so a consumer can still crash on purpose -->
 <!-- cases: 10 backward compatibility: a crash becomes an error (flagged); a single-service panic used to reach the caller as a panic -->
 
 ### Requirement: A health check never holds a service's lock
@@ -392,13 +331,13 @@ Examples:
 <!-- cases: N/A 4 boundaries: not applicable -->
 <!-- cases: N/A 5 errors: not applicable -->
 <!-- cases: N/A 6 not found/duplicate: not applicable -->
-<!-- cases: 7 lifecycle: shutdown during a check -->
+<!-- cases: 7 lifecycle: shutdown during a check (regression D3) -->
 <!-- cases: 8 concurrency: the lock is not held across the check -->
 <!-- cases: N/A 9 panics: previous requirement -->
 <!-- cases: 10 backward compatibility: results unchanged; a check may now run while its service shuts down, as eager services already can (flagged) -->
 
-### Requirement: Listing services never waits for a lazy service being built
-Finding which services are health checkers SHALL NOT wait for a lazy service whose provider is running: such a service SHALL count as not yet built.
+### Requirement: Health checks never wait for a lazy service being built
+Deciding whether a service is a health checker, on any path, SHALL NOT wait for a lazy service whose provider is running: such a service SHALL count as not yet built.
 
 #### Scenario: A provider in progress does not block health checks
 ```gherkin
@@ -408,8 +347,8 @@ When the consumer calls <entry>
 Then the call returns within 1s with <result>
 
 Examples:
-  | entry                                                         | result                       |
-  | HealthCheckWithContext on the root scope with a 20ms context  | {"slow": nil, "db": nil}     |
+  | entry                                                         | result                         |
+  | HealthCheckWithContext on the root scope with a 20ms context  | {"slow": nil, "db": nil}       |
   | HealthReport() on the root scope                              | "db" listed, "slow" not listed |
 ```
 
@@ -422,10 +361,10 @@ Examples:
 <!-- cases: 7 lifecycle: a build in progress -->
 <!-- cases: 8 concurrency: no wait on the provider's lock -->
 <!-- cases: N/A 9 panics: not applicable -->
-<!-- cases: 10 backward compatibility: today the call blocks until the provider returns, ignoring its context (probe, defect D9) -->
+<!-- cases: 10 backward compatibility: on 76404ef the call blocks in the queued goroutine's checker detection until the provider returns, ignoring its context (regression D9) -->
 
-### Requirement: Shadowed and aliased services are checked once per run
-A scope-wide run SHALL NOT check an ancestor's service shadowed by a service of the same name in a nearer scope. An alias SHALL NOT check its target again in a run that also checks the target: the alias's entry SHALL get the target's result.
+### Requirement: Each underlying check runs once per call
+A scope-wide run SHALL check each underlying service once. It SHALL NOT check an ancestor's service shadowed by a nearer scope's service of the same name, nor a default that yielded to another service. An alias or export SHALL NOT check its source again in a run that also checks the source: its entry, when the map has one, SHALL get the source's result.
 
 #### Scenario: Each underlying check runs once
 ```gherkin
@@ -435,11 +374,14 @@ Then the map is <map>, where name(T) is the service name inferred for type T
 And the counts are <counts>
 
 Examples:
-  | registrations                                                               | target         | map                                        | counts   |
-  | root/"svc" (A) and "child"/"svc" (B)                                        | scope "child"  | {"svc": nil}                               | A 0, B 1 |
-  | root/"svc" (A) and "child"/"svc" (B)                                        | the root scope | {"svc": nil}                               | A 1, B 0 |
-  | root *DB value (A) with As[*DB, Healthchecker]                              | the root scope | {name(*DB): nil, name(Healthchecker): nil} | A 1      |
-  | root *DB value (A) returning errors.New("down") with As[*DB, Healthchecker] | the root scope | both entries the same "down" error         | A 1      |
+  | registrations                                                                 | target         | map                                        | counts   |
+  | root/"svc" (A) and "child"/"svc" (B)                                          | scope "child"  | {"svc": nil}                               | A 0, B 1 |
+  | root/"svc" (A) and "child"/"svc" (B)                                          | the root scope | {"svc": nil}                               | A 1, B 0 |
+  | root *DB value (A) with As[*DB, Healthchecker]                                | the root scope | {name(*DB): nil, name(Healthchecker): nil} | A 1      |
+  | root *DB value (A) returning errors.New("down") with As[*DB, Healthchecker]   | the root scope | both entries the same "down" error         | A 1      |
+  | "child"/"svc" (A) exported to the root with ExportNamed                       | the root's own *Scope | {"svc": nil}                        | A 1      |
+  | "child"/"svc" (A) exported to the root with ExportNamed                       | scope "child"  | {"svc": nil}                               | A 1      |
+  | "child"/"svc" (A) registered AsDefault, and root/"svc" (B)                    | scope "child"  | {"svc": nil}                               | A 0, B 1 |
 ```
 
 <!-- cases: N/A 1 default: no option -->
@@ -447,34 +389,35 @@ Examples:
 <!-- cases: N/A 3 zero values: not applicable -->
 <!-- cases: 4 boundaries: shadowing seen from the child and from the root -->
 <!-- cases: 5 errors: the alias shares the target's error -->
-<!-- cases: 6 not found/duplicate: shadowing and aliasing are the duplicates -->
+<!-- cases: 6 not found/duplicate: shadowing, aliasing, exporting and yielded defaults are the duplicates (regressions D4, D5; export and default rows keep the behavior of scope-export and default-registrations, verified on 76404ef) -->
 <!-- cases: 7 lifecycle: child scopes -->
 <!-- cases: N/A 8 concurrency: not applicable -->
 <!-- cases: N/A 9 panics: not applicable -->
 <!-- cases: 10 backward compatibility: map keys and values are unchanged; only the number of calls drops -->
 
 ### Requirement: Forced results keep their existing shape
-`HealthCheck()` / `HealthCheckWithContext()` SHALL keep returning a `map[string]error` keyed by service name over the scope and its ancestors, with a nil entry for each service that is not a health checker. On a `RootScope` they SHALL cover the root scope's services only, as the corrected doc comment states.
+`HealthCheck()` / `HealthCheckWithContext()` on a `Scope` SHALL keep returning a `map[string]error` keyed by service name over the scope and its ancestors, with a nil entry for each service that is not a health checker. On a `RootScope` they SHALL cover the root scope's services and those of installed extension scopes, keyed `<scope name>/<service name>` as the `extensions` capability specifies, and no other child scope.
 
 #### Scenario: Map shape is unchanged
 ```gherkin
-Given an injector that is never started, with a plain value root/"answer" = 42, a Healthchecker root/"db" and a Healthchecker "child"/"cache"
+Given an injector that is never started, with a plain value root/"answer" = 42, a Healthchecker root/"db", a Healthchecker "child"/"cache"
+And an extension "redis" installed with Extend whose private scope holds a Healthchecker "pool", not exported
 When the consumer calls HealthCheck() on <target>
 Then the map is <map>
 
 Examples:
-  | target         | map                                      |
-  | the RootScope  | {"answer": nil, "db": nil}               |
-  | scope "child"  | {"answer": nil, "db": nil, "cache": nil} |
+  | target         | map                                                          |
+  | the RootScope  | {"answer": nil, "db": nil, "ext:redis/pool": nil}            |
+  | scope "child"  | {"answer": nil, "db": nil, "cache": nil}                     |
 ```
 
 <!-- cases: 1 default: zero configuration -->
 <!-- cases: N/A 2 overrides: none -->
 <!-- cases: 3 zero values: the nil entry for a plain value -->
-<!-- cases: 4 boundaries: root and child -->
+<!-- cases: 4 boundaries: root and child; an extension scope -->
 <!-- cases: N/A 5 errors: unchanged -->
 <!-- cases: N/A 6 not found/duplicate: previous requirement -->
-<!-- cases: 7 lifecycle: nested scopes -->
-<!-- cases: N/A 8 concurrency: first requirement -->
+<!-- cases: 7 lifecycle: nested scopes and extension scopes -->
+<!-- cases: N/A 8 concurrency: covered by the in-flight requirement -->
 <!-- cases: N/A 9 panics: a previous requirement -->
-<!-- cases: 10 backward compatibility: this requirement -->
+<!-- cases: 10 backward compatibility: this requirement; the RootScope.HealthCheck doc comment is corrected to state this coverage (D8) -->
