@@ -116,6 +116,10 @@ type RootScope struct {
 	nextRegIndex atomic.Uint64 // next registration index, shared by every scope of this container
 	declareMu    sync.Mutex    // serializes DeclareDependency (cycle check plus add)
 
+	// ext holds the installed extensions; nil until the first Extend, so a
+	// container without extensions holds none.
+	ext atomic.Pointer[extensionRegistry]
+
 	kindsMu sync.Mutex
 	kinds   []kindEntry // kind handlers, in order of first Handle; copied before written, as it may be shared
 
@@ -190,11 +194,33 @@ func (s *RootScope) ListProvidedServices() []ServiceDescription { return s.self.
 func (s *RootScope) ListInvokedServices() []ServiceDescription { return s.self.ListInvokedServices() }
 
 // HealthCheck performs health checks on all services in the root scope and all its descendant scopes.
-func (s *RootScope) HealthCheck() map[string]error { return s.self.HealthCheck() }
+func (s *RootScope) HealthCheck() map[string]error {
+	return s.HealthCheckWithContext(context.Background())
+}
 
 // HealthCheckWithContext performs health checks with context support for cancellation and timeouts.
 func (s *RootScope) HealthCheckWithContext(ctx context.Context) map[string]error {
-	return s.self.HealthCheckWithContext(ctx)
+	scopes := s.extensionScopes()
+	if len(scopes) == 0 {
+		return s.self.HealthCheckWithContext(ctx)
+	}
+
+	return s.self.healthCheckQueued(ctx, func(ctx context.Context) map[string]<-chan error {
+		results := map[string]<-chan error{}
+
+		// an export from an extension scope is checked there, under the
+		// scope's key; a yielded default keeps the result of the service it
+		// yielded to
+		s.self.queueOwnHealthChecks(ctx, results, "", func(service any) bool {
+			return isYieldedDefaultIn(s.self, service) ||
+				s.self.exportCount() > 0 && slices.ContainsFunc(scopes, func(scope *Scope) bool { return readerSeesSource(scope, service) })
+		})
+		for _, scope := range scopes {
+			scope.queueOwnHealthChecks(ctx, results, scope.name+"/", func(service any) bool { return isYieldedDefaultIn(scope, service) })
+		}
+
+		return results
+	})
 }
 
 // Shutdown gracefully shuts down the root scope and all its descendant scopes.
@@ -736,12 +762,17 @@ func (s *RootScope) Clone() *RootScope {
 // CloneWithOpts clones injector with provided services but not with invoked instances, with options.
 // The clone uses only opts (hooks included), and keeps the source's kind
 // handlers, in order. Handling a kind on the clone replaces its handler on
-// the clone only.
+// the clone only. Installed extensions are copied with their private
+// scopes, and disabled ones as disabled: Extend of such an identity on the
+// clone follows the repeat rules of [Extend], and the clone's exports
+// resolve from its own scopes. An installation still running when the clone
+// is taken is not copied, nor is its partly built private scope, so the
+// clone can install that extension itself.
 //
 // Play: https://go.dev/play/p/fT-v63fbFk5
 func (s *RootScope) CloneWithOpts(opts *InjectorOpts) *RootScope {
 	clone := NewWithOpts(opts)
-	clone.self = s.clone(clone, nil)
+	s.cloneWithExtensions(clone)
 	s.copyKindsTo(clone)
 
 	// Read after copying: every copied wrapper got its index before it was
@@ -764,6 +795,49 @@ func (s *RootScope) copyKindsTo(clone *RootScope) {
 	clone.kindsMu.Lock()
 	clone.kinds = kinds
 	clone.kindsMu.Unlock()
+}
+
+// cloneWithExtensions gives clone the scope tree and the extensions of s,
+// copied under the registry mutex, so that no installation ends between the
+// two copies.
+func (s *RootScope) cloneWithExtensions(clone *RootScope) {
+	registry := s.extensionRegistry()
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+
+	clone.self = s.clone(clone, nil)
+	s.copyExtensionsTo(clone, registry)
+}
+
+// copyExtensionsTo gives clone the installed and disabled extensions of
+// registry, the container's, bound to clone's private scopes of the same
+// names, so that Extend on the clone follows the repeat rules. Running
+// installations, sessions and the waits-for graph are not copied, and the
+// private scopes of running installations are detached from clone, so that
+// it can install them itself. Call it after cloning the scope tree, with
+// registry.mu held since before that.
+func (s *RootScope) copyExtensionsTo(clone *RootScope, registry *extensionRegistry) {
+	if len(registry.entries) == 0 {
+		return
+	}
+
+	cloned := clone.extensionRegistry()
+	for id, entry := range registry.entries {
+		if entry.state == extensionInstalling {
+			continue
+		}
+		copied := *entry
+		if entry.scope != nil {
+			copied.scope = clone.self.directChild(entry.scope.name)
+			cloned.scopes[entry.plan.scopeName] = id
+		}
+		cloned.entries[id] = &copied
+	}
+	for scopeName, id := range registry.scopes {
+		if registry.entries[id].state == extensionInstalling {
+			clone.self.detachChild(scopeName)
+		}
+	}
 }
 
 // ShutdownOnSignals listens for the provided signals in order to gracefully stop services.

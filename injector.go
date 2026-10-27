@@ -323,6 +323,18 @@ type InjectorOpts struct {
 	// default, runners must opt in with AsRunnable, because Run is too
 	// common a method name to auto-detect. Custom kinds always need opt-in.
 	EnableRunnerAutoDetection bool
+
+	// PropertySource is where extensions read their configuration (see
+	// PropertySource). Nil means unset: the container then uses a
+	// PropertySource service registered in the root under
+	// NameOf[PropertySource](), or else EnvPropertySource("DOGER_"), decided
+	// at its first property read. If deciding panics (a registration hook,
+	// for example), the panic reaches the reader and the next read decides
+	// again. If that service fails to resolve, every property is unset and
+	// one line naming the error's type, never its message, is logged.
+	// Setting this field avoids any ordering constraint with registrations,
+	// and any provider failure. A clone uses the source of its own options.
+	PropertySource PropertySource
 }
 
 func (o *InjectorOpts) copy() *InjectorOpts {
@@ -358,6 +370,7 @@ func (o *InjectorOpts) copy() *InjectorOpts {
 		DisableStarterAutoDetection: o.DisableStarterAutoDetection,
 		StartParallelism:            o.StartParallelism,
 		EnableRunnerAutoDetection:   o.EnableRunnerAutoDetection,
+		PropertySource:              o.PropertySource,
 	}
 }
 

@@ -144,6 +144,63 @@ func (s *Scope) Scope(name string, packages ...func(Injector)) *Scope {
 	return child
 }
 
+// hasChild reports whether s has a direct child scope named name.
+func (s *Scope) hasChild(name string) bool {
+	return s.directChild(name) != nil
+}
+
+// directChild returns the direct child scope of s named name, or nil.
+func (s *Scope) directChild(name string) *Scope {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return s.childScopes[name]
+}
+
+// detachChild removes the child scope name from s, without shutting it
+// down, so that the name can be used again.
+func (s *Scope) detachChild(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	delete(s.childScopes, name)
+}
+
+// removeService removes the service name from s, if match accepts it,
+// without shutting it down or running any hook.
+func (s *Scope) removeService(name string, match func(service any) bool) {
+	s.mu.Lock()
+	service, ok := s.services[name]
+	removed := ok && match(service)
+	if removed {
+		s.removeLocked(name)
+	}
+	s.mu.Unlock()
+
+	if removed {
+		s.RootScope().forget(service)
+	}
+}
+
+// removeLocked removes the service name from s, with its bookkeeping:
+// default and export counts, type matches, invocation order and the DAG. It
+// returns the removed service, and whether there was one. s.mu must be held.
+func (s *Scope) removeLocked(name string) (service any, ok bool) {
+	service, ok = s.services[name]
+	if !ok {
+		return nil, false
+	}
+
+	delete(s.services, name) // service is removed from DI container
+	s.countDefault(service, -1)
+	s.countExport(service, -1)
+	s.typeMatches = nil
+	delete(s.orderedInvocation, name)
+	s.RootScope().dag.removeService(s.id, s.name, name)
+
+	return service, true
+}
+
 // RootScope returns the root scope of the scope hierarchy.
 // All scopes in a hierarchy share the same root scope, regardless of their depth.
 //
@@ -338,6 +395,14 @@ func (s *Scope) HealthCheck() map[string]error {
 //
 // Play: https://go.dev/play/p/pJcJGOF5zeK
 func (s *Scope) HealthCheckWithContext(ctx context.Context) map[string]error {
+	return s.healthCheckQueued(ctx, func(ctx context.Context) map[string]<-chan error {
+		return s.asyncHealthCheckWithContext(ctx, s)
+	})
+}
+
+// healthCheckQueued runs the health checks queue queues, under the global
+// health check timeout, and returns their results by name.
+func (s *Scope) healthCheckQueued(ctx context.Context, queue func(ctx context.Context) map[string]<-chan error) map[string]error {
 	s.logf("requested health check")
 
 	if s.rootScope.opts.HealthCheckGlobalTimeout > 0 {
@@ -350,7 +415,7 @@ func (s *Scope) HealthCheckWithContext(ctx context.Context) map[string]error {
 
 	results := map[string]error{}
 
-	asyncResults := s.asyncHealthCheckWithContext(ctx, s)
+	asyncResults := queue(ctx)
 	for name, err := range asyncResults {
 		results[name] = <-err
 	}
@@ -360,6 +425,21 @@ func (s *Scope) HealthCheckWithContext(ctx context.Context) map[string]error {
 	return results
 }
 
+// queueOwnHealthChecks queues into results the health checks of the own
+// services of s, not its ancestors', keyed by prefix followed by their
+// name, except the services skip accepts.
+func (s *Scope) queueOwnHealthChecks(ctx context.Context, results map[string]<-chan error, prefix string, skip func(service any) bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for name, service := range s.services {
+		if skip(service) {
+			continue
+		}
+		results[prefix+name] = s.rootScope.queueServiceHealthcheck(ctx, s, name)
+	}
+}
+
 // asyncHealthCheckWithContext queues the health checks of the services of s
 // and its ancestors, for a health check requested from requester: an export
 // is skipped when requester is its source scope or a descendant of it, where
@@ -367,19 +447,11 @@ func (s *Scope) HealthCheckWithContext(ctx context.Context) map[string]error {
 func (s *Scope) asyncHealthCheckWithContext(ctx context.Context, requester *Scope) map[string]<-chan error {
 	asyncResults := map[string]<-chan error{}
 
-	s.mu.RLock()
-	for name, service := range s.services {
+	s.queueOwnHealthChecks(ctx, asyncResults, "", func(service any) bool {
 		// a default that yields is not checked here: the name keeps the
 		// result of the ancestor service it resolves to
-		if isYieldedDefaultIn(s, service) {
-			continue
-		}
-		if s.exportCount() > 0 && readerSeesSource(requester, service) {
-			continue
-		}
-		asyncResults[name] = s.rootScope.queueServiceHealthcheck(ctx, s, name)
-	}
-	s.mu.RUnlock()
+		return isYieldedDefaultIn(s, service) || s.exportCount() > 0 && readerSeesSource(requester, service)
+	})
 
 	// @TODO: We should not check the status of services that are not inherited (overridden in a child tree)
 	for _, ancestor := range s.Ancestors() {
@@ -1103,15 +1175,7 @@ func (s *Scope) serviceHealthCheckFunc(name string) (func(context.Context) error
 // Panics if the service doesn't implement the Shutdowner interface.
 func (s *Scope) serviceShutdown(ctx context.Context, name string) error {
 	s.mu.Lock()
-	serviceAny, ok := s.services[name]
-	if ok {
-		delete(s.services, name) // service is removed from DI container
-		s.countDefault(serviceAny, -1)
-		s.countExport(serviceAny, -1)
-		s.typeMatches = nil
-		delete(s.orderedInvocation, name)
-		s.RootScope().dag.removeService(s.id, s.name, name)
-	}
+	serviceAny, ok := s.removeLocked(name)
 	s.mu.Unlock()
 
 	if !ok {

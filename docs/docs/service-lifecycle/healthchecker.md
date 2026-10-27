@@ -34,6 +34,17 @@ doger.HealthCheckNamed[T any](doger.Injector, string) error
 doger.HealthCheckNamedWithContext[T any](context.Context, doger.Injector, string) error
 ```
 
+## Extension scopes {#extension-scopes}
+
+A root health check covers only the root's own services: child scopes are not walked. The private scopes of installed extensions (`doger.Extend`) are the exception: their own services are checked too, keyed `<scope name>/<service name>`, for example `ext:redis/*redis.Pool`.
+
+So that each service is checked once:
+
+- an export from an extension scope is not checked in the root: its source is checked under the extension scope's key;
+- a default registration of an extension scope that yielded to an application service (`doger.AsDefault()`) is not checked: the application service is checked under its own name.
+
+Ordinary child scopes keep the root-only behavior, and a container without extensions checks exactly what it checked before.
+
 ## Healthchecker interfaces {#healthchecker-interfaces}
 
 Your service can implement one of the following signatures:
