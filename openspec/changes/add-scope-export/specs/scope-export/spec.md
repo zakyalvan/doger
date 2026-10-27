@@ -349,6 +349,7 @@ Given a root scope with child scope "redis", a lazy "*app.Client" in it, and its
 And the consumer called Shutdown on scope "redis"
 When the consumer invokes "*app.Client" from the root
 Then the error matches ErrServiceNotFound
+And the error message contains "redis"
 ```
 
 <!-- cases: N/A 2 overrides, 3 zero values, 4 boundaries, 5 invalid input: no input -->

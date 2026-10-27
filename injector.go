@@ -234,6 +234,11 @@ type InjectorOpts struct {
 	// before its own services. Sibling scopes shut down in parallel, so their
 	// hooks may run concurrently. A panic is dispatched with the point
 	// "scope-closing" (see HookContainerPanic).
+	//
+	// A child that exports services into its parent (see Export) is the
+	// exception: it shuts down after the parent's services that depend on
+	// its exports, so its Closing and Closed hooks run inside its parent's
+	// Closing/Closed pair.
 	HookScopeClosing []func(ctx context.Context, scope *Scope)
 
 	// HookScopeClosed is called when a child scope shut down, after its

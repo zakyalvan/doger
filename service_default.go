@@ -11,11 +11,12 @@ import (
 )
 
 var (
-	_ serviceWrapper[int]       = (*serviceDefault[int])(nil)
-	_ serviceWrapperHealthcheck = (*serviceDefault[int])(nil)
-	_ serviceWrapperShutdown    = (*serviceDefault[int])(nil)
-	_ serviceWrapperClone       = (*serviceDefault[int])(nil)
-	_ serviceWrapperBuildTime   = (*serviceDefault[int])(nil)
+	_ serviceWrapper[int]        = (*serviceDefault[int])(nil)
+	_ serviceWrapperHealthcheck  = (*serviceDefault[int])(nil)
+	_ serviceWrapperShutdown     = (*serviceDefault[int])(nil)
+	_ serviceWrapperClone        = (*serviceDefault[int])(nil)
+	_ serviceWrapperBuildTime    = (*serviceDefault[int])(nil)
+	_ serviceWrapperUnwrapExport = (*serviceDefault[int])(nil)
 )
 
 // defaultState is the decision of a default registration.
@@ -288,6 +289,22 @@ func (s *serviceDefault[T]) ownsInstance() bool {
 	}
 
 	return state != defaultYielded && state != defaultSuperseded
+}
+
+// unwrapExport returns the export the default decorates, while the default
+// does not yield: once it yields, it resolves to another service.
+func (s *serviceDefault[T]) unwrapExport() (serviceWrapperExport, bool) {
+	export, ok := s.inner.(serviceWrapperExport)
+	if !ok || s.currentState() == defaultYielded {
+		return nil, false
+	}
+
+	return export, true
+}
+
+func (s *serviceDefault[T]) decoratesExport() bool {
+	_, ok := s.inner.(serviceWrapperExport)
+	return ok
 }
 
 func (s *serviceDefault[T]) clone(newScope Injector) any {

@@ -363,6 +363,12 @@ func collectionCandidatesFor(source collectionSource, target reflect.Type) []col
 
 	candidates := []collectionCandidate{}
 	seen := excludedNames(source)
+	// the reading scope, only when it sees exports: a single captured
+	// pointer keeps the closure in its allocation size class
+	var reader *Scope
+	if from := injectorScope(source.from); chainHasExports(from) {
+		reader = from
+	}
 
 	source.from.serviceForEachRec(func(name string, scope *Scope, s any) bool {
 		if _, ok := seen[name]; ok {
@@ -372,7 +378,7 @@ func collectionCandidatesFor(source collectionSource, target reflect.Type) []col
 
 		// inlined newCollectionCandidate: this walk is the hot path
 		service, ok := s.(serviceWrapperAny)
-		if !ok || service.getServiceType() == ServiceTypeAlias || !serviceCanCastToType(s, target) {
+		if !ok || (service.getServiceType() == ServiceTypeAlias && (reader == nil || !isExport(s) || readerSeesSource(reader, s))) || !serviceCanCastToType(s, target) {
 			return true
 		}
 
@@ -400,6 +406,7 @@ func collectionCandidatesWithDefaults(source collectionSource, target reflect.Ty
 	candidates := []collectionCandidate{}
 	seen := excludedNames(source)
 	softDefaults, yielding := map[string]struct{}{}, map[string]struct{}{}
+	reader := injectorScope(source.from)
 
 	source.from.serviceForEachRec(func(name string, scope *Scope, s any) bool {
 		if _, ok := seen[name]; ok {
@@ -416,7 +423,7 @@ func collectionCandidatesWithDefaults(source collectionSource, target reflect.Ty
 		if isDefault && state == defaultYielded {
 			return true
 		}
-		if candidate, ok := newCollectionCandidate(name, scope, s, target); ok {
+		if candidate, ok := newCollectionCandidate(name, scope, s, target, reader); ok {
 			candidates = append(candidates, candidate)
 		}
 		return true
@@ -429,11 +436,12 @@ func collectionCandidatesWithDefaults(source collectionSource, target reflect.Ty
 }
 
 // newCollectionCandidate returns the candidate for the service s, registered
-// as name in scope, when it can be a member for target: it is not an alias
-// and its registered type is assignable to target.
-func newCollectionCandidate(name string, scope *Scope, s any, target reflect.Type) (collectionCandidate, bool) {
+// as name in scope, when it can be a member for target read from reader: it
+// is not an alias, or it is an export that reader is not inside the source
+// scope of, and its registered type is assignable to target.
+func newCollectionCandidate(name string, scope *Scope, s any, target reflect.Type, reader *Scope) (collectionCandidate, bool) {
 	service, ok := s.(serviceWrapperAny)
-	if !ok || service.getServiceType() == ServiceTypeAlias || !serviceCanCastToType(s, target) {
+	if !ok || (service.getServiceType() == ServiceTypeAlias && (!isExport(s) || readerSeesSource(reader, s))) || !serviceCanCastToType(s, target) {
 		return collectionCandidate{}, false
 	}
 

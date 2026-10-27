@@ -4,10 +4,10 @@
 
 See proposal.md (Why) and this change's specs. The current code shapes the approach as follows:
 
-- **Aliases.** `serviceAlias` (`service_alias.go`) resolves its target by name from the injector it was registered in (`invokeByName[Initial](i, targetName)`). Its `shutdown` is a no-op, and it delegates `isHealthchecker`/`healthcheck` to the target. Collections skip `ServiceTypeAlias` (`collectionCandidatesFor`, `invoke.go:357`). By-type selection includes aliases (`selectByType`).
-- **Scope shutdown** (`Scope.shutdownWithContext`, `scope.go:407`) shuts all child scopes down in parallel, then the scope's own services. Within a scope, `shutdownServicesInParallel` repeatedly shuts the services that have no dependents (`DAG.listServicesHavingNoDependent`), and dependents in other scopes count. A child service that a root service depends on is therefore never free while the root service is alive. The loop then falls back to shutting everything down in parallel, which is the problem behind the audit's V1.
-- **Cycle detection** is by name along the invoker chain (`virtual_scope.go`). An export usually publishes under its source's name, so a by-name hop from the export to its source would look like a cycle.
-- **Clone** (`Scope.clone`, `scope.go:612`) clones a scope's services *before* its child scopes, so a service's `clone(newScope)` can't hold a pointer to the cloned child scope.
+- **Aliases.** `serviceAlias` (`service_alias.go`) resolves its target by name from the injector it was registered in (`invokeByName[Initial](i, targetName)`). Its `shutdown` is a no-op, and it delegates `isHealthchecker`/`healthcheck` to the target. Collections skip `ServiceTypeAlias` (`collectionCandidatesFor`, `invoke.go:359`). By-type selection includes aliases (`selectByType`).
+- **Scope shutdown** (`Scope.shutdownWithContext`, `scope.go:440`) shuts all child scopes down in parallel, then the scope's own services. Within a scope, `shutdownServicesInParallel` repeatedly shuts the services that have no dependents (`DAG.listServicesHavingNoDependent`), and dependents in other scopes count. A child service that a root service depends on is therefore never free while the root service is alive. The loop then falls back to shutting everything down in parallel, which is the problem behind the audit's V1.
+- **Cycle detection** walks the invoker chain and compares name *and* scope (`virtualScope.chainContains`, `virtual_scope.go:167`). An export usually publishes under its source's name, but the hop from the export to its source crosses scopes, so it is not mistaken for a cycle.
+- **Clone** (`Scope.clone`, `scope.go:727`) clones a scope's services *before* its child scopes, so a service's `clone(newScope)` can't hold a pointer to the cloned child scope.
 - **Dependency edges** carry both scope IDs (`DAG.addDependency`, `dag.go:138`). Start ordering already follows transitive edges through non-candidates.
 
 ## Goals / Non-Goals
@@ -27,7 +27,7 @@ See proposal.md (Why) and this change's specs. The current code shapes the appro
 ### D1. A new wrapper, `serviceExport[T]`, alongside `serviceAlias`
 - **Fields:** the owner scope (the parent), the source child's *name* (not a pointer), the source service name, the published name, the registration index, and invocation frames.
 - **`getServiceType()`** returns `ServiceTypeAlias`, so listings and explain show "alias" and Start skips it through its existing alias check.
-- **Marker interface** `serviceWrapperExport { exportSource() (*Scope, string, bool) }`. Collections and shutdown use it to tell an export from an alias.
+- **Marker interface** `serviceWrapperExport { exportSource() (*Scope, string, bool); withinSource(*Scope) bool }`. Collections and shutdown use it to tell an export from an alias. `withinSource` reports whether a scope is the source scope or a descendant by comparing names and parents, which never change, so it takes no lock (the health walk calls it while holding the owner's read lock). Rules never assert the interface directly: they use `asExport(service)`, which also unwraps an export decorated as a default (D8).
 - *Alternative:* extending `serviceAlias` with an optional source scope. Rejected: `serviceAlias` resolves by name through the invoker's scope, and every branch would need an "is export" check. A separate type keeps aliases untouched (compatibility) and keeps export rules in one place.
 
 ### D2. Resolving the source by scope name, at every invocation
@@ -44,7 +44,7 @@ See proposal.md (Why) and this change's specs. The current code shapes the appro
   - recording `addDependency(owner/published → child/source)`;
   - calling `onServiceInvoke` on the source scope.
 - Cycle detection is already scope-qualified (`virtualScope.chainContains` compares name and scope), so the hop needs no special case even though the published name and the source name are often equal. A real cycle (the scenario "Source provider depends back on the parent dependent") is still reported, and a loop through an export and a default is `ErrCircularDependency` instead of a stack overflow.
-- The helper is `invokeWrapperInScope`, added by `add-default-registrations` (its design D2), which lands first. This change reuses it unchanged.
+- The helper is `invokeWrapperInScope` (`service_default.go`), which already exists from `add-default-registrations` (its design D2). This change reuses it unchanged.
 
 ### D4. Lifecycle forwarding
 | Method | Behaviour |
@@ -80,19 +80,18 @@ In `shutdownWithContext`, when the scope holds at least one export (per-scope co
 ### D7. Registration and counters
 - `Export`/`ExportNamed` validate (nil `from`, no parent, source not in `from` itself, type not assignable via `typeCanCastToType`, empty name). They then register through `add-default-registrations`' `registerLocked` helper (its D4 and task 3.3) under the parent's write lock, so check-then-set is atomic, and return its error instead of panicking. A name taken by a non-default, or by a resolved default, returns the duplicate error; an explicit export replaces an unresolved default of the published name; an export of a default follows D8.
 - The registration hooks run as `registerLocked` runs them for `provide`: before-hook first, after-hook only when stored or replaced.
-- Each scope keeps an `exportCount` (atomic), increased when an export is registered and decreased when its wrapper is removed. `Scope.clone` sets the clone's count from the wrappers it copies, because it bypasses `serviceSet`. The four-step shutdown, the collection check and the health skip run only when it is non-zero.
+- Each scope keeps an export count, an `atomic.Int32` sharing one word with the default count (narrowed from `Int64` to `Int32`), so `Scope` stays 128 bytes and `RootScope`, which embeds it, stays in its 352-byte size class. It counts structurally (`wrapsExport`: an export, or a default decorating one, whatever the default decided), so increments and decrements stay paired. It is updated in `storeLocked` and `serviceShutdown`, and set by `Scope.clone` from the wrappers it copies. When the count is zero, shutdown runs the old code path unchanged, the health skip is not evaluated, and the collection walk drops the export rule; that rule is guarded by `chainHasExports` on the reader, captured as a single pointer so the walk's closure keeps its allocation size class.
 
 ### D8. An export of a default is a default
 - `Export` reads the source wrapper. If it is a `serviceDefault`, the export wrapper is wrapped as a default too (`serviceDefault[T]` around `serviceExport[T]`), so in the parent it follows every default rule: it yields to ancestors, an explicit same-name registration replaces it while unresolved, and registering it over an explicit service is skipped (`Export` returns nil).
 - **No recursion:** the source default's `decide()` skips default wrappers, so it never yields to its own export, which is a default. This is what fixes the loop the audit found (B1), where an explicit export made the private default yield to the export, which resolved the private default again.
 - **Application wins:** when the application's explicit service is in the parent (before or after `Export`), the parent's name resolves to it, and the private default also yields to it (it is in an ancestor). Every reader sees the application's instance.
-- **The export marker survives the wrapping:** `serviceDefault` forwards `exportSource()` while it is unresolved or chosen, and reports no export once it yielded (it is then an alias of the application's service, not an export). Without this forwarding, every rule keyed on the marker (D4 health skip, D5 step 2, D6 collections, and `add-extensions`' health skip) would miss exports of defaults, which is the shape every extension export takes. This change adds that method to `serviceDefault`'s forwarded interfaces.
+- **The export marker survives the wrapping:** `serviceDefault` implements `serviceWrapperUnwrapExport`. `unwrapExport()` returns the decorated export while the default is unresolved or chosen, and reports none once it yielded (it is then an alias of the application's service, not an export). `asExport` uses it, so every rule keyed on the marker (D4 health skip, D5 step 2, D6 collections, and `add-extensions`' health skip) sees exports of defaults, which is the shape every extension export takes. `serviceDefault` does not implement `serviceWrapperExport` itself: if it did, every default registration would look like an export to the shutdown planner.
 
 ## Risks / Trade-offs
 
 - [The four-step shutdown changes ordering for scopes that hold exports] → it is limited to such scopes (counter). The scenario "Scopes without exports keep children-first shutdown" and the full existing suite pin the unchanged path.
 - [Lookup by child name breaks if the user re-creates a same-name child after shutting the original down] → `Scope(name)` panics on a reserved name today (audit V4), so it can't happen. It is documented in the godoc of `Export`.
-- [Skipping one name check hides a real cycle] → only the export-to-source hop is exempt, and a RED test pins a real cycle.
 - [Step 2's reverse walk costs O(edges) per scope shutdown] → it only runs in scopes with exports, and shutdown is not a hot path. A benchmark is not required, but the existing `bench/` suite is compared with `benchstat` for `Invoke` and `InvokeAll`, to check that the collection check costs nothing without exports.
 
 ## Public API & Defaults

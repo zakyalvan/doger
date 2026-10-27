@@ -2002,3 +2002,262 @@ func TestScope_ContextExpiration_ParallelOperations(t *testing.T) {
 		is.Equal(1, service.getShutdownCount())
 	}
 }
+
+// exNode is a service that records its shutdown, and whether the pool it
+// depends on was already shut down then.
+type exNode struct {
+	name      string
+	pool      *exPool
+	record    func(string)
+	sawClosed atomic.Bool
+}
+
+func (n *exNode) Shutdown() error {
+	if n.pool != nil && n.pool.shutdowns.Load() > 0 {
+		n.sawClosed.Store(true)
+	}
+	n.record("shutdown " + n.name)
+	return nil
+}
+
+// nodeInvoking returns a provider of the node name that invokes the named
+// node dependency, or the pool when dependency is empty.
+func nodeInvoking(name, dependency string, record func(string)) Provider[*exNode] {
+	return func(i Injector) (*exNode, error) {
+		if dependency == "" {
+			pool, err := Invoke[*exPool](i)
+			return &exNode{name: name, pool: pool, record: record}, err
+		}
+		dep, err := InvokeNamed[*exNode](i, dependency)
+		if err != nil {
+			return nil, err
+		}
+		return &exNode{name: name, pool: dep.pool, record: record}, nil
+	}
+}
+
+// exportOrderCase registers the dependents of an exported pool in root.
+type exportOrderCase struct {
+	name       string
+	poolOpts   []ProvideOption // registration options of the pool
+	cloned     bool            // the root is cloned, and the clone used instead
+	dependents func(root *RootScope, record func(string))
+	order      []string
+}
+
+func exportOrderCases() []exportOrderCase {
+	return []exportOrderCase{
+		{
+			name: "direct",
+			dependents: func(root *RootScope, record func(string)) {
+				ProvideNamed(root, "app", nodeInvoking("app", "", record))
+			},
+			order: []string{"shutdown app", "shutdown pool"},
+		},
+		{
+			name: "transitive",
+			dependents: func(root *RootScope, record func(string)) {
+				ProvideNamed(root, "repo", nodeInvoking("repo", "", record))
+				ProvideNamed(root, "app", nodeInvoking("app", "repo", record))
+			},
+			order: []string{"shutdown app", "shutdown repo", "shutdown pool"},
+		},
+		{
+			name: "declared",
+			dependents: func(root *RootScope, record func(string)) {
+				ProvideNamed(root, "app", func(i Injector) (*exNode, error) {
+					return &exNode{name: "app", pool: MustInvoke[*exPool](root), record: record}, nil
+				}, DependsOnNamed(NameOf[*exPool]()))
+			},
+			order: []string{"shutdown app", "shutdown pool"},
+		},
+		{
+			name:     "default_source",
+			poolOpts: []ProvideOption{AsDefault()},
+			dependents: func(root *RootScope, record func(string)) {
+				ProvideNamed(root, "app", nodeInvoking("app", "", record))
+			},
+			order: []string{"shutdown app", "shutdown pool"},
+		},
+		{
+			name:   "cloned",
+			cloned: true,
+			dependents: func(root *RootScope, record func(string)) {
+				ProvideNamed(root, "app", nodeInvoking("app", "", record))
+			},
+			order: []string{"shutdown app", "shutdown pool"},
+		},
+	}
+}
+
+// runExportOrder builds the case in a new container, invokes every service,
+// shuts the root down and returns the recorded events and the dependents.
+func runExportOrder(t *testing.T, tt exportOrderCase) ([]string, []*exNode) {
+	t.Helper()
+
+	root := New()
+	redis := root.Scope("redis")
+	recorder := &exRecorder{}
+	Provide(redis, func(Injector) (*exPool, error) { return &exPool{record: recorder.record}, nil }, tt.poolOpts...)
+	if err := Export[*exPool](redis); err != nil {
+		t.Fatal(err)
+	}
+	tt.dependents(root, recorder.record)
+	if tt.cloned {
+		root = root.Clone()
+	}
+
+	nodes := []*exNode{}
+	for _, name := range []string{"app", "repo"} {
+		if root.serviceExist(name) {
+			nodes = append(nodes, MustInvokeNamed[*exNode](root, name))
+		}
+	}
+
+	root.Shutdown()
+
+	return recorder.list(), nodes
+}
+
+func TestScopeShutdown_ExportOrder(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range exportOrderCases() {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, 3*time.Second)
+
+			events, nodes := runExportOrder(t, tt)
+
+			assert.Equal(t, tt.order, events)
+			for _, node := range nodes {
+				assert.False(t, node.sawClosed.Load(), node.name)
+			}
+		})
+	}
+}
+
+func TestExport_ShutdownOrderRepeated(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, 30*time.Second)
+
+	direct := exportOrderCases()[0]
+	for range 200 {
+		events, nodes := runExportOrder(t, direct)
+
+		if !assert.Equal(t, direct.order, events) || !assert.False(t, nodes[0].sawClosed.Load()) {
+			return
+		}
+	}
+}
+
+func TestScopeShutdown_ChainedExportOrder(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, 3*time.Second)
+
+	root := New()
+	a := root.Scope("a")
+	b := a.Scope("b")
+	recorder := &exRecorder{}
+	Provide(b, func(Injector) (*exPool, error) { return &exPool{record: recorder.record}, nil })
+	MustExport[*exPool](b)
+	MustExport[*exPool](a)
+	ProvideNamed(root, "app", nodeInvoking("app", "", recorder.record))
+	MustInvokeNamed[*exNode](root, "app")
+
+	root.Shutdown()
+
+	assert.Equal(t, []string{"shutdown app", "shutdown pool"}, recorder.list())
+}
+
+func TestScopeShutdown_SiblingBeforeExportDependent(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, 3*time.Second)
+
+	root := New()
+	redis := root.Scope("redis")
+	web := root.Scope("web")
+	recorder := &exRecorder{}
+	Provide(redis, func(Injector) (*exPool, error) { return &exPool{record: recorder.record}, nil })
+	MustExport[*exPool](redis)
+	ProvideNamed(root, "app", nodeInvoking("app", "", recorder.record))
+	ProvideNamed(web, "handler", nodeInvoking("handler", "app", recorder.record))
+	MustInvokeNamed[*exNode](web, "handler")
+
+	root.Shutdown()
+
+	assert.Equal(t, []string{"shutdown handler", "shutdown app", "shutdown pool"}, recorder.list())
+}
+
+func TestScopeShutdown_WithoutExportsUnchanged(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, 3*time.Second)
+
+	root := New()
+	c := root.Scope("c")
+	recorder := &exRecorder{}
+	ProvideNamed(root, "root", func(Injector) (*exNode, error) {
+		return &exNode{name: "root", record: recorder.record}, nil
+	})
+	ProvideNamed(c, "child", nodeInvoking("child", "root", recorder.record))
+	MustInvokeNamed[*exNode](c, "child")
+
+	root.Shutdown()
+
+	assert.Equal(t, []string{"shutdown child", "shutdown root"}, recorder.list())
+}
+
+func TestScopeShutdown_ExportingChildHookOrder(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, 3*time.Second)
+
+	recorder := &exRecorder{}
+	hook := func(event string) func(context.Context, *Scope) {
+		return func(_ context.Context, scope *Scope) { recorder.record(event + " " + scope.Name()) }
+	}
+	root := NewWithOpts(&InjectorOpts{
+		HookScopeClosing: []func(context.Context, *Scope){hook("closing")},
+		HookScopeClosed:  []func(context.Context, *Scope){hook("closed")},
+	})
+	tenant := root.Scope("tenant")
+	jobs := tenant.Scope("jobs")
+	Provide(jobs, func(Injector) (*exPool, error) { return &exPool{label: "jobs", record: recorder.record}, nil })
+	MustExport[*exPool](jobs)
+	ProvideNamed(tenant, "worker", nodeInvoking("tenant", "", recorder.record))
+	MustInvokeNamed[*exNode](tenant, "worker")
+
+	tenant.Shutdown()
+
+	assert.Equal(t, []string{
+		"closing tenant", "shutdown tenant",
+		"closing jobs", "shutdown jobs", "closed jobs",
+		"closed tenant",
+	}, recorder.list())
+}
+
+func TestScope_ExportCount(t *testing.T) {
+	t.Parallel()
+
+	root := New()
+	redis := root.Scope("redis")
+	Provide(redis, clientProvider("client-1", nil))
+	ProvideNamed(redis, "default-client", clientProvider("default", nil), AsDefault())
+
+	MustExport[*exClient](redis)
+	assert.Equal(t, int64(1), root.self.exportCount())
+	assert.Equal(t, int64(0), redis.exportCount())
+
+	MustExport[*exClient](redis, ExportAs("second"))
+	MustExportNamed[*exClient](redis, "default-client")
+	assert.Equal(t, int64(3), root.self.exportCount())
+
+	OverrideNamedValue(root, "second", &exClient{label: "override"})
+	assert.Equal(t, int64(2), root.self.exportCount())
+
+	clone := root.Clone()
+	assert.Equal(t, int64(2), clone.self.exportCount())
+
+	root.Shutdown()
+	assert.Equal(t, int64(0), root.self.exportCount())
+	assert.Equal(t, int64(2), clone.self.exportCount())
+}

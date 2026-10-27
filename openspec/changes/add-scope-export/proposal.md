@@ -18,7 +18,7 @@ A child scope can hide internals from the rest of the container, because lookup 
 - **An export of a default is a default.** When the source was registered with `AsDefault()`, the export yields to and is replaced by explicit services of the published name in the parent, as `add-default-registrations` specifies, so the application's service wins whatever the registration order. The source default never yields to its own export.
 - **Shutdown order across an export.** When the scope that holds an export shuts down, its services that depend on the export shut down before the exporting child scope. The export records a dependency edge from the published service to its source, which also orders Start. A cycle that crosses an export fails as `ErrCircularDependency` does elsewhere.
 - **Clone:** a cloned export re-binds to the clone's child scope with the same name and never resolves into the original container.
-- **Errors:** exporting from a nil scope or a root scope (which has no parent), a source not registered in `from` itself, a type mismatch, an empty name, or a name that already exists in the parent (except for an export of a default) fails at export time. A target that is missing at resolution time fails with an error matching `ErrServiceNotFound` that names both scopes.
+- **Errors:** exporting from a nil scope or a root scope (which has no parent), a source not registered in `from` itself, a type mismatch, an empty name, or a name that already exists in the parent fails at export time. Two exceptions: a name held by an unresolved default in the parent is not taken (the export replaces it), and an export of a default follows the default rules below. A target that is missing at resolution time fails with an error matching `ErrServiceNotFound` that names both scopes.
 - **Not BREAKING:** additive. Child-scope shutdown for scopes without exports is unchanged.
 
 ## Capabilities
@@ -36,7 +36,7 @@ A child scope can hide internals from the rest of the container, because lookup 
 
 ## Impact
 
-- Code: a new scope-bound alias wrapper (modelled on `service_alias.go`), `scope.go` (shutdown of children and services: the scope's own dependents of exports go first), `dag.go` (the export edge), `CloneWithOpts`/`clone` (re-binding), and `di_explain.go`.
+- Code: a new scope-bound alias wrapper (modelled on `service_alias.go`), `scope.go` (shutdown of children and services: the scope's own dependents of exports go first), `dag.go` (the export edge), `CloneWithOpts`/`clone` (re-binding), `invoke.go` (collection membership) and `service_default.go` (export unwrapping). `di_explain.go` needs no change: the export edge shows through the existing DAG.
 - Concurrency: the new shutdown ordering runs under the existing scope locks and in parallel batches. A `-race` test with concurrent invokes during shutdown is required.
 - Docs: a "Scope export" section on the scopes page.
 - Dependencies: requires `add-default-registrations` (exports of defaults, and the shared duplicate-resolution and one-hop invocation helpers). A prerequisite of `add-extensions`.

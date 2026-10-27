@@ -80,10 +80,12 @@ type Scope struct {
 	// invocations are sensitive to the container's allocation layout.
 	closing *scopeClosing
 
-	// defaults counts the default registrations (AsDefault) in services;
-	// written under mu. Growing Scope grows RootScope, which embeds it: keep
-	// RootScope in its allocation size class (see the phase fields there).
-	defaults atomic.Int64
+	// defaults counts the default registrations (AsDefault) in services, and
+	// exports the exports (Export); both written under mu. They share one
+	// word: growing Scope grows RootScope, which embeds it, so keep RootScope
+	// in its allocation size class (see the phase fields there).
+	defaults atomic.Int32
+	exports  atomic.Int32
 }
 
 // scopeClosing is the shutdown state of a child scope.
@@ -348,7 +350,7 @@ func (s *Scope) HealthCheckWithContext(ctx context.Context) map[string]error {
 
 	results := map[string]error{}
 
-	asyncResults := s.asyncHealthCheckWithContext(ctx)
+	asyncResults := s.asyncHealthCheckWithContext(ctx, s)
 	for name, err := range asyncResults {
 		results[name] = <-err
 	}
@@ -358,7 +360,11 @@ func (s *Scope) HealthCheckWithContext(ctx context.Context) map[string]error {
 	return results
 }
 
-func (s *Scope) asyncHealthCheckWithContext(ctx context.Context) map[string]<-chan error {
+// asyncHealthCheckWithContext queues the health checks of the services of s
+// and its ancestors, for a health check requested from requester: an export
+// is skipped when requester is its source scope or a descendant of it, where
+// the exported service is checked under its own name.
+func (s *Scope) asyncHealthCheckWithContext(ctx context.Context, requester *Scope) map[string]<-chan error {
 	asyncResults := map[string]<-chan error{}
 
 	s.mu.RLock()
@@ -368,13 +374,16 @@ func (s *Scope) asyncHealthCheckWithContext(ctx context.Context) map[string]<-ch
 		if isYieldedDefaultIn(s, service) {
 			continue
 		}
+		if s.exportCount() > 0 && readerSeesSource(requester, service) {
+			continue
+		}
 		asyncResults[name] = s.rootScope.queueServiceHealthcheck(ctx, s, name)
 	}
 	s.mu.RUnlock()
 
 	// @TODO: We should not check the status of services that are not inherited (overridden in a child tree)
 	for _, ancestor := range s.Ancestors() {
-		health := ancestor.asyncHealthCheckWithContext(ctx)
+		health := ancestor.asyncHealthCheckWithContext(ctx, requester)
 		for name, err := range health {
 			if _, ok := asyncResults[name]; !ok {
 				asyncResults[name] = err
@@ -456,26 +465,92 @@ func (s *Scope) shutdownWithContext(ctx context.Context, first *hookPanic) (repo
 		waitErr = s.waitForStartingRun(ctx)
 	}
 
-	rep1 := s.shutdownChildrenInParallel(ctx, first)
+	if s.exportCount() > 0 {
+		report = s.shutdownWithExports(ctx, first, isChild)
+	} else {
+		rep1 := s.shutdownChildrenInParallel(ctx, first, func(*Scope) bool { return true })
 
-	if isChild {
-		s.runScopeObserverHooks(ctx, "scope-closing", s.rootScope.opts.HookScopeClosing, first)
+		if isChild {
+			s.runScopeObserverHooks(ctx, "scope-closing", s.rootScope.opts.HookScopeClosing, first)
+		}
+
+		rep2 := s.shutdownServicesInParallel(ctx)
+		s.logf("shut down services")
+
+		if isChild {
+			s.runScopeObserverHooks(ctx, "scope-closed", s.rootScope.opts.HookScopeClosed, first)
+		}
+
+		report = mergeShutdownReports(rep1, rep2)
 	}
-
-	rep2 := s.shutdownServicesInParallel(ctx)
-	s.logf("shut down services")
-
-	if isChild {
-		s.runScopeObserverHooks(ctx, "scope-closed", s.rootScope.opts.HookScopeClosed, first)
-	}
-
-	report = mergeShutdownReports(rep1, rep2)
 	if waitErr != nil {
 		report.Errors[newServiceDescription(s.id, s.name, "")] = waitErr
 	}
 	report.ShutdownTime = s.clock().Since(start)
 	report.Succeed = len(report.Errors) == 0
 	return report
+}
+
+// shutdownWithExports shuts down a scope holding exports, in order: the
+// children that export nothing, the services with a dependency path to an
+// export (and the exports), the exporting children, then its other services.
+// Its scope hooks bracket the last three steps, so exporting children close
+// inside them.
+func (s *Scope) shutdownWithExports(ctx context.Context, first *hookPanic, isChild bool) *ShutdownReport {
+	exportNames, isExporting := s.partitionChildren()
+	dependents := s.exportDependents(exportNames)
+
+	rep1 := s.shutdownChildrenInParallel(ctx, first, func(child *Scope) bool { return !isExporting(child) })
+
+	if isChild {
+		s.runScopeObserverHooks(ctx, "scope-closing", s.rootScope.opts.HookScopeClosing, first)
+	}
+
+	rep2 := s.shutdownServiceSetInParallel(ctx, dependents)
+	rep3 := s.shutdownChildrenInParallel(ctx, first, isExporting)
+	rep4 := s.shutdownServicesInParallel(ctx)
+	s.logf("shut down services")
+
+	if isChild {
+		s.runScopeObserverHooks(ctx, "scope-closed", s.rootScope.opts.HookScopeClosed, first)
+	}
+
+	return mergeShutdownReports(rep1, rep2, rep3, rep4)
+}
+
+// partitionChildren returns the names of the exports s holds, and reports
+// whether a child scope of s is one they export from.
+func (s *Scope) partitionChildren() (exportNames []string, isExporting func(*Scope) bool) {
+	s.mu.RLock()
+	for name, service := range s.services {
+		if isExport(service) {
+			exportNames = append(exportNames, name)
+		}
+	}
+	s.mu.RUnlock()
+
+	// exportSource locks s: it is called once s is unlocked
+	exporting := map[*Scope]struct{}{}
+	for _, name := range exportNames {
+		service, _ := s.serviceGet(name)
+		if export, ok := asExport(service); ok {
+			if child, _, found := export.exportSource(); found {
+				exporting[child] = struct{}{}
+			}
+		}
+	}
+
+	return exportNames, func(child *Scope) bool {
+		_, ok := exporting[child]
+		return ok
+	}
+}
+
+// exportDependents returns the services of s to shut down before the child
+// scopes exporting into it: the exports named exportNames, and the services
+// of s with a dependency path, through any scope, to one of them.
+func (s *Scope) exportDependents(exportNames []string) []string {
+	return s.rootScope.dag.listDependentsWithin(s.id, s.name, exportNames)
 }
 
 // scopeCloseRun is a running shutdown of a child scope: concurrent
@@ -577,22 +652,25 @@ func (s *Scope) runScopeObserverHooks(ctx context.Context, point string, hooks [
 	runObserverHooksWith(s.rootScope, "scope", point, hooks, first, func(hook func(context.Context, *Scope)) { hook(ctx, s) })
 }
 
-// shutdownChildrenInParallel runs a parallel shutdown of children scopes.
-// This method shuts down all child scopes concurrently and then removes them
-// from the scope hierarchy.
+// shutdownChildrenInParallel runs a parallel shutdown of the selected
+// children scopes. This method removes them from the scope hierarchy, then
+// shuts them down concurrently.
 //
 // Parameters:
 //   - ctx: Context for cancellation and timeout control
+//   - selected: Reports whether a child scope is shut down by this call
 //
 // Returns a ShutdownReport containing any errors from child scope shutdowns.
-func (s *Scope) shutdownChildrenInParallel(ctx context.Context, first *hookPanic) *ShutdownReport {
+func (s *Scope) shutdownChildrenInParallel(ctx context.Context, first *hookPanic, selected func(*Scope) bool) *ShutdownReport {
 	// Snapshot children under lock
 	s.mu.Lock()
 	children := make([]*Scope, 0, len(s.childScopes))
-	for _, c := range s.childScopes {
-		children = append(children, c)
+	for name, c := range s.childScopes {
+		if selected(c) {
+			children = append(children, c)
+			delete(s.childScopes, name) // scopes are removed from DI container
+		}
 	}
-	s.childScopes = make(map[string]*Scope) // scopes are removed from DI container
 	s.mu.Unlock()
 
 	reports := make([]*ShutdownReport, len(children))
@@ -626,6 +704,12 @@ func (s *Scope) shutdownChildrenInParallel(ctx context.Context, first *hookPanic
 //
 // Returns a ShutdownReport containing any errors from service shutdowns.
 func (s *Scope) shutdownServicesInParallel(ctx context.Context) *ShutdownReport {
+	return s.shutdownServiceSetInParallel(ctx, nil)
+}
+
+// shutdownServiceSetInParallel is shutdownServicesInParallel for the
+// services of the scope named in only, or for all of them when only is nil.
+func (s *Scope) shutdownServiceSetInParallel(ctx context.Context, only []string) *ShutdownReport {
 	report := &ShutdownReport{
 		Succeed:             true,
 		Services:            []ServiceDescription{},
@@ -637,7 +721,16 @@ func (s *Scope) shutdownServicesInParallel(ctx context.Context) *ShutdownReport 
 	listServices := func() []string {
 		s.mu.RLock()
 		defer s.mu.RUnlock()
-		return keys(s.services)
+		if only == nil {
+			return keys(s.services)
+		}
+		names := make([]string, 0, len(only))
+		for _, name := range only {
+			if _, ok := s.services[name]; ok {
+				names = append(names, name)
+			}
+		}
+		return names
 	}
 
 	for {
@@ -741,6 +834,7 @@ func (s *Scope) clone(root *RootScope, parent *Scope) *Scope {
 			clone.services[name] = service
 		}
 		clone.countDefault(clone.services[name], 1)
+		clone.countExport(clone.services[name], 1)
 
 		s.rootScope.opts.onAfterRegistration(clone, name)
 	}
@@ -868,13 +962,15 @@ func (s *Scope) serviceSet(name string, service any) {
 func (s *Scope) storeLocked(name string, replaced, service any) {
 	s.countDefault(replaced, -1)
 	s.countDefault(service, 1)
+	s.countExport(replaced, -1)
+	s.countExport(service, 1)
 	s.services[name] = service
 	s.typeMatches = nil
 }
 
 // countDefault adds delta to the count of default registrations when service
 // is one. The caller holds mu as a writer, or owns the scope alone.
-func (s *Scope) countDefault(service any, delta int64) {
+func (s *Scope) countDefault(service any, delta int32) {
 	if _, ok := service.(serviceWrapperDefault); ok {
 		s.defaults.Add(delta)
 	}
@@ -882,7 +978,21 @@ func (s *Scope) countDefault(service any, delta int64) {
 
 // defaultCount returns the number of default registrations the scope holds.
 func (s *Scope) defaultCount() int64 {
-	return s.defaults.Load()
+	return int64(s.defaults.Load())
+}
+
+// countExport adds delta to the count of exports when service is one, a
+// default decorating one included. The caller holds mu as a writer, or owns
+// the scope alone.
+func (s *Scope) countExport(service any, delta int32) {
+	if wrapsExport(service) {
+		s.exports.Add(delta)
+	}
+}
+
+// exportCount returns the number of exports the scope holds.
+func (s *Scope) exportCount() int64 {
+	return int64(s.exports.Load())
 }
 
 // serviceForEach iterates over all services in the current scope and calls the provided callback
@@ -1060,6 +1170,7 @@ func (s *Scope) serviceShutdown(ctx context.Context, name string) error {
 	if ok {
 		delete(s.services, name) // service is removed from DI container
 		s.countDefault(serviceAny, -1)
+		s.countExport(serviceAny, -1)
 		s.typeMatches = nil
 		delete(s.orderedInvocation, name)
 		s.RootScope().dag.removeService(s.id, s.name, name)

@@ -100,6 +100,20 @@ A default registered under its concrete type (`*EnvSource`) is replaced only by 
 
 `Override*` ignores `AsDefault()`: an override is explicit by definition. It replaces whatever is registered under the name, default or not, with the usual caveat that a built instance is not shut down.
 
+## Exporting a default {#export}
+
+[Exporting](../container/scope.md#scope-export) a default from a child scope publishes a default in the parent: an explicit service of the published name in the parent wins, whether it is registered before or after `Export`.
+
+```go
+ext := root.Scope("ext")
+doger.Provide(ext, NewClient, doger.AsDefault()) // the extension's client
+doger.MustExport[*Client](ext)
+
+doger.Provide(root, NewAppClient) // the application's client wins
+```
+
+Every reader then sees the application's instance: the root resolves it, and the private default in `ext` yields to it, as any default yields to an explicit service of an ancestor. `Export` over an explicit service of the published name returns nil and leaves that service in place. The private default never yields to its own export. Export a source registered without `AsDefault()` to publish an explicit service.
+
 ## Defaults & control {#control}
 
 | Behavior                                               | Zero-config default                                       | Consumer control                                                                      |
@@ -109,6 +123,7 @@ A default registered under its concrete type (`*EnvSource`) is replaced only by 
 | A default and an explicit service of a compatible type | The explicit service wins by type; the default is skipped | Invoke the default by name, or register the explicit service under the default's name |
 | Explicit registration after the default was resolved   | Panics like a duplicate                                   | Register before resolving, or use `Override*`                                         |
 | A default that yields                                  | No start, shutdown, health check or kind handling         | Not overridable: lifecycle belongs to the service that provides the instance          |
+| Exporting a default                                    | The export is a default in the parent                     | Register an explicit service of the published name, or export a non-default source    |
 
 ## Explain {#explain}
 
