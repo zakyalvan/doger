@@ -1705,6 +1705,161 @@ func TestScope_ShutdownWithContextExpiration_ChildScopes(t *testing.T) {
 	is.Equal(0, parentService.getShutdownCount())
 }
 
+func TestScopeShutdown_AfterContextEnded(t *testing.T) {
+	t.Parallel()
+
+	cancelled := func(*testing.T) context.Context {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		return ctx
+	}
+	lazyBuilt := func(t *testing.T, tenant *Scope) func() int32 {
+		t.Helper()
+		service := &countedShutdowner{}
+		ProvideNamed(tenant, "s", func(Injector) (*countedShutdowner, error) { return service, nil })
+		MustInvokeNamed[*countedShutdowner](tenant, "s")
+		return service.calls.Load
+	}
+
+	tests := []struct {
+		name    string
+		service func(t *testing.T, tenant *Scope) func() int32
+		ctx     func(t *testing.T) context.Context
+		calls   int32
+		wantErr error
+	}{
+		{
+			name:    "lazy_cancelled",
+			service: lazyBuilt,
+			ctx:     cancelled,
+			wantErr: context.Canceled,
+		},
+		{
+			name: "lazy_context_aware_cancelled",
+			service: func(t *testing.T, tenant *Scope) func() int32 {
+				t.Helper()
+				probe := &ctxShutdownProbe{}
+				ProvideNamed(tenant, "s", func(Injector) (*ctxShutdownProbe, error) { return probe, nil })
+				MustInvokeNamed[*ctxShutdownProbe](tenant, "s")
+				return func() int32 {
+					probe.mu.Lock()
+					defer probe.mu.Unlock()
+					return int32(len(probe.ctxs))
+				}
+			},
+			ctx:     cancelled,
+			wantErr: context.Canceled,
+		},
+		{
+			name: "value_cancelled",
+			service: func(t *testing.T, tenant *Scope) func() int32 {
+				t.Helper()
+				service := &countedShutdowner{}
+				ProvideNamedValue(tenant, "s", service)
+				return service.calls.Load
+			},
+			ctx:     cancelled,
+			wantErr: context.Canceled,
+		},
+		{
+			name:    "lazy_deadline_expired",
+			service: lazyBuilt,
+			ctx: func(t *testing.T) context.Context {
+				ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+				t.Cleanup(cancel)
+				<-ctx.Done()
+				return ctx
+			},
+			wantErr: context.DeadlineExceeded,
+		},
+		{
+			name: "lazy_never_built",
+			service: func(t *testing.T, tenant *Scope) func() int32 {
+				t.Helper()
+				service := &countedShutdowner{}
+				ProvideNamed(tenant, "s", func(Injector) (*countedShutdowner, error) { return service, nil })
+				return service.calls.Load
+			},
+			ctx: cancelled,
+		},
+		{
+			name: "lazy_no_shutdowner",
+			service: func(t *testing.T, tenant *Scope) func() int32 {
+				t.Helper()
+				ProvideNamed(tenant, "s", func(Injector) (*depValue, error) { return &depValue{name: "s"}, nil })
+				MustInvokeNamed[*depValue](tenant, "s")
+				return func() int32 { return 0 } // no Shutdown method to call
+			},
+			ctx: cancelled,
+		},
+		{
+			name: "alias_cancelled",
+			service: func(t *testing.T, tenant *Scope) func() int32 {
+				t.Helper()
+				// the target lives in the root, so the tenant shutdown reaches only the alias
+				target := &countedShutdowner{}
+				ProvideNamed(tenant.RootScope(), "target", func(Injector) (*countedShutdowner, error) { return target, nil })
+				MustInvokeNamed[*countedShutdowner](tenant.RootScope(), "target")
+				require.NoError(t, AsNamed[*countedShutdowner, ShutdownerWithError](tenant, "target", "s"))
+				return target.calls.Load
+			},
+			ctx: cancelled,
+		},
+		{
+			name: "transient_cancelled",
+			service: func(t *testing.T, tenant *Scope) func() int32 {
+				t.Helper()
+				service := &countedShutdowner{}
+				ProvideNamedTransient(tenant, "s", func(Injector) (*countedShutdowner, error) { return service, nil })
+				MustInvokeNamed[*countedShutdowner](tenant, "s")
+				return service.calls.Load
+			},
+			ctx: cancelled,
+		},
+		{
+			name:    "lazy_background",
+			service: lazyBuilt,
+			ctx:     func(*testing.T) context.Context { return context.Background() },
+			calls:   1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+			is := assert.New(t)
+
+			root := New()
+			var before, after []string
+			var afterErr error
+			root.AddBeforeShutdownHook(func(_ *Scope, name string) { before = append(before, name) })
+			root.AddAfterShutdownHook(func(_ *Scope, name string, err error) {
+				after = append(after, name)
+				afterErr = err
+			})
+			tenant := root.Scope("tenant")
+			calls := tt.service(t, tenant)
+
+			report := tenant.ShutdownWithContext(tt.ctx(t))
+
+			is.Equal(tt.calls, calls())
+			if tt.wantErr == nil {
+				is.True(report.Succeed, report.Error())
+				is.NoError(afterErr)
+			} else {
+				is.False(report.Succeed)
+				is.ErrorIs(report.Errors[newServiceDescription(tenant.ID(), tenant.Name(), "s")], tt.wantErr)
+				is.ErrorIs(afterErr, tt.wantErr)
+			}
+			// the per-service shutdown hooks run even for a skipped service
+			is.Equal([]string{"s"}, before)
+			is.Equal([]string{"s"}, after)
+			is.ErrorIs(ShutdownNamed(tenant, "s"), ErrServiceNotFound)
+		})
+	}
+}
+
 // Test healthcheck context expiration
 func TestScope_HealthCheckWithContextExpiration_Timeout(t *testing.T) {
 	t.Parallel()

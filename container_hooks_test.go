@@ -558,15 +558,28 @@ func TestContainerHooks_ShutdownOnSignalsWithContext(t *testing.T) {
 
 	root := New()
 	var closing, closed atomic.Int32
-	root.AddContainerClosingHook(func(context.Context, *RootScope) { closing.Add(1) })
-	root.AddContainerClosedHook(func(context.Context, *RootScope, *ShutdownReport) { closed.Add(1) })
+	var closingCtx, closedCtx context.Context
+	root.AddContainerClosingHook(func(ctx context.Context, _ *RootScope) {
+		closing.Add(1)
+		closingCtx = ctx
+	})
+	root.AddContainerClosedHook(func(ctx context.Context, _ *RootScope, _ *ShutdownReport) {
+		closed.Add(1)
+		closedCtx = ctx
+	})
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), ctxTestKey, "r-1"))
 	cancel()
 	_, _ = root.ShutdownOnSignalsWithContext(ctx)
 
 	is.Equal(int32(1), closing.Load())
 	is.Equal(int32(1), closed.Load())
+	for hook, hookCtx := range map[string]context.Context{"closing": closingCtx, "closed": closedCtx} {
+		if is.NotNil(hookCtx, hook) {
+			is.NoError(hookCtx.Err(), hook)
+			is.Equal("r-1", hookCtx.Value(ctxTestKey), hook)
+		}
+	}
 }
 
 func TestContainerHooks_HookCallsShutdown(t *testing.T) {

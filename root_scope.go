@@ -224,9 +224,24 @@ func (s *RootScope) Shutdown() *ShutdownReport { return s.ShutdownWithContext(co
 // A Shutdown that begins while [RootScope.StartWithContext] runs cancels
 // Start, with cause [ErrStartAfterShutdown], and waits for it to return
 // before shutting services down. If ctx ends first, the report fails with a
-// root-scope error wrapping ctx.Err(), and shutdown proceeds while Start is
-// still running. Never call Shutdown synchronously from a Starter, handler,
-// runner, provider or hook running during Start: it would wait for itself.
+// root-scope error wrapping ctx.Err(), and shutdown proceeds with the ended
+// context while Start is still running, so it skips the services it then
+// reaches (see below). Never call Shutdown synchronously from a Starter,
+// handler, runner, provider or hook running during Start: it would wait for
+// itself.
+//
+// Once ctx has ended, the services the shutdown then reaches are not shut
+// down: their Shutdown method is not called, whatever its signature, and
+// they are removed from their scope. The report holds ctx.Err() under the
+// name of each built service implementing a Shutdowner interface; any other
+// service (never built, without a Shutdown method, an alias, a transient
+// service or an export) gets no error. The HookBeforeShutdown and
+// HookAfterShutdown hooks still run for each of them, the latter with that
+// error (nil when none).
+// To give services time to shut down, pass a context that is still live,
+// for example context.WithTimeout(context.Background(), grace) created when
+// the shutdown begins, not one that has already ended, such as a
+// [signal.NotifyContext] context once its signal arrived.
 //
 // Only the [RootScope] methods follow this model. A shutdown reached through
 // the root's *Scope (a provider's injector, or [Injector.Shutdown] on a
@@ -759,8 +774,18 @@ func (s *RootScope) ShutdownOnSignals(signals ...os.Signal) (os.Signal, *Shutdow
 }
 
 // ShutdownOnSignalsWithContext listens for the provided signals in order to gracefully stop services.
-// It will block until receiving any of these signals.
+// It will block until receiving any of these signals or until ctx ends.
 // If no signal is provided, syscall.SIGTERM and os.Interrupt will be handled by default.
+//
+// ctx only ends the wait for a signal; it neither bounds nor cancels the
+// shutdown. Whichever comes first, a signal or the end of ctx, the call shuts
+// the container down, and runs the HookContainerClosing and
+// HookContainerClosed hooks, with a context that keeps ctx's values but has
+// no cancellation or deadline, so every service is shut down, as with
+// [RootScope.ShutdownOnSignals]. It returns the signal, or nil when ctx ended
+// first. The shutdown is unbounded: to bound it, wait for the signal yourself
+// ([signal.NotifyContext]) and call [RootScope.ShutdownWithContext] with a
+// new context that has your own deadline.
 func (s *RootScope) ShutdownOnSignalsWithContext(ctx context.Context, signals ...os.Signal) (os.Signal, *ShutdownReport) {
 	// Make sure there is at least syscall.SIGTERM and os.Interrupt as a signal
 	if len(signals) < 1 {
@@ -775,13 +800,11 @@ func (s *RootScope) ShutdownOnSignalsWithContext(ctx context.Context, signals ..
 	case sig = <-ch:
 		// got a signal
 	case <-ctx.Done():
-		signal.Stop(ch)
-		close(ch)
-		return nil, s.ShutdownWithContext(ctx)
+		// ctx ended first: no signal
 	}
 
 	signal.Stop(ch)
 	close(ch)
 
-	return sig, s.ShutdownWithContext(ctx)
+	return sig, s.ShutdownWithContext(context.WithoutCancel(ctx))
 }

@@ -510,7 +510,8 @@ func TestScopeShutdown_WaitBounded(t *testing.T) {
 		root := New()
 		require.NoError(t, root.Start())
 		tenant := root.Scope("tenant")
-		w := newGatedStarter(&callRecorder{})
+		events := &callRecorder{}
+		w := newGatedStarter(events)
 		ProvideNamed(tenant, "w", func(Injector) (*gatedStarter, error) { return w, nil })
 		runErr := make(chan error, 1)
 		go func() { runErr <- root.Refresh() }()
@@ -525,8 +526,11 @@ func TestScopeShutdown_WaitBounded(t *testing.T) {
 		is.Equal(time.Second, time.Since(begin))
 		is.False(report.Succeed)
 		is.ErrorIs(report.Errors[newServiceDescription(tenant.ID(), tenant.Name(), "")], context.DeadlineExceeded)
+		// the shutdown proceeded with the ended context, so it skipped w
+		is.ErrorIs(report.Errors[newServiceDescription(tenant.ID(), tenant.Name(), "w")], context.DeadlineExceeded)
 		close(w.release)
 		is.NoError(<-runErr)
+		is.NotContains(events.list(), "shutdown", "Shutdown of w called")
 		started, _ := tracked(root, wrapper)
 		is.False(started, "shut-down w re-added to started")
 	})
