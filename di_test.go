@@ -1602,3 +1602,196 @@ func TestBindNamed(t *testing.T) {
 	is.ElementsMatch([]ServiceDescription{svc1, svc2, svc3}, root.ListProvidedServices())
 	is.ElementsMatch([]ServiceDescription{svc1, svc3}, root.ListInvokedServices())
 }
+
+func TestProvide_DefaultSameScope(t *testing.T) {
+	t.Parallel()
+
+	duplicate := fmt.Sprintf("DI: service `%s` has already been declared", NameOf[*dfDialer]())
+	lazyDefault := func(i Injector) { Provide(i, dialerProvider("default-dialer", nil), AsDefault()) }
+	explicit := func(i Injector) { Provide(i, dialerProvider("app-dialer", nil)) }
+	invoked := func(t *testing.T, i Injector) {
+		t.Helper()
+		_, err := Invoke[*dfDialer](i)
+		require.NoError(t, err)
+	}
+
+	tests := []struct {
+		name     string
+		first    func(i Injector)
+		step     func(t *testing.T, i Injector) // nil: nothing else happened
+		second   func(i Injector)
+		panicMsg string // empty: the registration succeeds
+		want     string
+	}{
+		{name: "explicit_replaces", first: lazyDefault, second: explicit, want: "app-dialer"},
+		{name: "default_skipped", first: explicit, second: lazyDefault, want: "app-dialer"},
+		{name: "after_resolve_panics", first: lazyDefault, step: invoked, second: explicit, panicMsg: duplicate, want: "default-dialer"},
+		{name: "second_default_panics", first: lazyDefault, second: lazyDefault, panicMsg: duplicate, want: "default-dialer"},
+		{
+			name:   "eager_replaced",
+			first:  func(i Injector) { ProvideValue(i, &dfDialer{label: "default-dialer"}, AsDefault()) },
+			second: explicit,
+			want:   "app-dialer",
+		},
+		{
+			name:   "transient_replaced",
+			first:  func(i Injector) { ProvideTransient(i, dialerProvider("default-dialer", nil), AsDefault()) },
+			second: explicit,
+			want:   "app-dialer",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			root := New()
+			tt.first(root)
+			if tt.step != nil {
+				tt.step(t, root)
+			}
+
+			if tt.panicMsg != "" {
+				assert.PanicsWithError(t, tt.panicMsg, func() { tt.second(root) })
+			} else {
+				assert.NotPanics(t, func() { tt.second(root) })
+			}
+
+			dialer, err := Invoke[*dfDialer](root)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, dialer.label)
+		})
+	}
+}
+
+func TestProvide_DefaultReplacementKeepsIndex(t *testing.T) {
+	t.Parallel()
+
+	root := New()
+	ProvideNamedValue(root, "first", 1)
+	Provide(root, dialerProvider("default-dialer", nil), AsDefault())
+	ProvideNamedValue(root, "last", 2)
+
+	require.NotPanics(t, func() { Provide(root, dialerProvider("app-dialer", nil)) })
+
+	first := registrationIndexOf(t, root, "first")
+	dialer := registrationIndexOf(t, root, NameOf[*dfDialer]())
+	last := registrationIndexOf(t, root, "last")
+	assert.Less(t, first, dialer)
+	assert.Less(t, dialer, last)
+}
+
+func TestProvide_ExplicitDuplicateUnchanged(t *testing.T) {
+	t.Parallel()
+
+	root := New()
+	Provide(root, dialerProvider("first", nil))
+
+	assert.PanicsWithError(t, fmt.Sprintf("DI: service `%s` has already been declared", NameOf[*dfDialer]()), func() {
+		Provide(root, dialerProvider("second", nil))
+	})
+}
+
+func TestProvide_ExplicitShadowingUnchanged(t *testing.T) {
+	t.Parallel()
+
+	root := New()
+	ext := root.Scope("ext")
+	Provide(root, dialerProvider("first", nil))
+	Provide(ext, dialerProvider("second", nil))
+
+	dialer, err := Invoke[*dfDialer](ext)
+
+	require.NoError(t, err)
+	assert.Equal(t, "second", dialer.label)
+}
+
+func TestProvide_DefaultRegistrationHooks(t *testing.T) {
+	t.Parallel()
+
+	lazyDefault := func(i Injector) { Provide(i, dialerProvider("default-dialer", nil), AsDefault()) }
+	explicit := func(i Injector) { Provide(i, dialerProvider("app-dialer", nil)) }
+
+	tests := []struct {
+		name          string
+		first, second func(i Injector)
+		before, after int
+	}{
+		{name: "default_then_explicit", first: lazyDefault, second: explicit, before: 2, after: 2},
+		{name: "explicit_then_default", first: explicit, second: lazyDefault, before: 2, after: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var mu sync.Mutex
+			seen := map[string]int{}
+			record := func(point string) func(*Scope, string) {
+				return func(_ *Scope, name string) {
+					if name != NameOf[*dfDialer]() {
+						return
+					}
+					mu.Lock()
+					defer mu.Unlock()
+					seen[point]++
+				}
+			}
+			root := New()
+			root.AddBeforeRegistrationHook(record("before"))
+			root.AddAfterRegistrationHook(record("after"))
+
+			tt.first(root)
+			assert.NotPanics(t, func() { tt.second(root) })
+
+			mu.Lock()
+			defer mu.Unlock()
+			assert.Equal(t, tt.before, seen["before"])
+			assert.Equal(t, tt.after, seen["after"])
+		})
+	}
+}
+
+func TestOverride_IgnoresAsDefault(t *testing.T) {
+	t.Parallel()
+
+	t.Run("ext_default_yields_to_override", func(t *testing.T) {
+		t.Parallel()
+
+		root := New()
+		ext := root.Scope("ext")
+		Provide(ext, dialerProvider("default-dialer", nil), AsDefault())
+		Override(root, dialerProvider("override-dialer", nil), AsDefault())
+
+		dialer, err := Invoke[*dfDialer](ext)
+
+		require.NoError(t, err)
+		assert.Equal(t, "override-dialer", dialer.label)
+	})
+
+	t.Run("override_is_explicit", func(t *testing.T) {
+		t.Parallel()
+
+		root := New()
+		Override(root, dialerProvider("override-dialer", nil), AsDefault())
+
+		assert.PanicsWithError(t, fmt.Sprintf("DI: service `%s` has already been declared", NameOf[*dfDialer]()), func() {
+			Provide(root, dialerProvider("app-dialer", nil))
+		})
+	})
+
+	t.Run("stale_reader_gets_override", func(t *testing.T) {
+		t.Parallel()
+
+		root := New()
+		Provide(root, dialerProvider("default-dialer", nil), AsDefault())
+		stale, ok := root.serviceGet(NameOf[*dfDialer]())
+		require.True(t, ok)
+		Override(root, dialerProvider("override-dialer", nil))
+
+		instance, err := stale.(serviceWrapperAny).getInstanceAny(root) //nolint:errcheck,forcetypeassert
+
+		require.NoError(t, err)
+		assert.Equal(t, "override-dialer", instance.(*dfDialer).label) //nolint:errcheck,forcetypeassert
+	})
+}

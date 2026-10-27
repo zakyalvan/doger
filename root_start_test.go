@@ -2275,3 +2275,86 @@ func TestAbortOutcome(t *testing.T) {
 		})
 	}
 }
+
+func TestStart_DefaultCandidates(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		explicit      bool
+		refresh       bool // the root was started, then Refresh is the operation
+		defaultStarts int32
+		rootStarts    int32
+	}{
+		{name: "yielded", explicit: true, defaultStarts: 0, rootStarts: 1},
+		{name: "alone", defaultStarts: 1, rootStarts: 0},
+		{name: "refresh", explicit: true, refresh: true, defaultStarts: 0, rootStarts: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, 3*time.Second)
+
+			root := New()
+			t.Cleanup(func() { _ = root.Shutdown() })
+			ext := root.Scope("ext")
+			defaultServer, rootServer := &dfPool{}, &dfPool{}
+			Provide(ext, poolProvider(defaultServer), AsDefault())
+			if tt.explicit {
+				Provide(root, poolProvider(rootServer))
+			}
+
+			require.NoError(t, root.Start())
+			if tt.refresh {
+				require.NoError(t, root.Refresh())
+			}
+
+			assert.Equal(t, tt.defaultStarts, defaultServer.starts.Load())
+			assert.Equal(t, tt.rootStarts, rootServer.starts.Load())
+		})
+	}
+}
+
+func TestStart_DefaultDecidedAtDiscovery(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, 3*time.Second)
+
+	root := New()
+	t.Cleanup(func() { _ = root.Shutdown() })
+	ext := root.Scope("ext")
+	var defaultCalls atomic.Int32
+	Provide(ext, func(Injector) (*dfPool, error) {
+		defaultCalls.Add(1)
+		return &dfPool{}, nil
+	}, AsDefault(), AsRunnable())
+	rootServer := &dfPool{}
+	Provide(root, poolProvider(rootServer), AsRunnable())
+
+	require.NoError(t, root.Start())
+
+	assert.Equal(t, int32(1), rootServer.runs.Load())
+	assert.Equal(t, int32(0), defaultCalls.Load())
+}
+
+func TestScopeStart_SkipsYieldedDefault(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, 3*time.Second)
+
+	root := New()
+	t.Cleanup(func() { _ = root.Shutdown() })
+	rootServer := &dfPool{}
+	Provide(root, poolProvider(rootServer))
+	require.NoError(t, root.Start())
+	ext := root.Scope("ext")
+	var defaultCalls atomic.Int32
+	Provide(ext, func(Injector) (*dfPool, error) {
+		defaultCalls.Add(1)
+		return &dfPool{}, nil
+	}, AsDefault())
+
+	require.NoError(t, ext.Start())
+
+	assert.Equal(t, int32(1), rootServer.starts.Load())
+	assert.Equal(t, int32(0), defaultCalls.Load())
+}

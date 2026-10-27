@@ -2,6 +2,7 @@ package doger
 
 import (
 	"bytes"
+	"fmt"
 	"html/template"
 	"slices"
 	"sort"
@@ -57,6 +58,64 @@ type ExplainServiceOutput struct {
 	Invoked          *stacktrace.Frame                `json:"invoked"`
 	Dependencies     []ExplainServiceDependencyOutput `json:"dependencies"`
 	Dependents       []ExplainServiceDependencyOutput `json:"dependents"`
+
+	// DefaultState is the decision of a registration given [AsDefault], or
+	// DefaultStateNone for any other registration. JSON omits it then.
+	DefaultState DefaultState `json:"default_state,omitempty"`
+	// DefaultYieldedToScopeName is the name of the scope holding the service
+	// a default yielded to; empty unless DefaultState is DefaultStateYielded.
+	DefaultYieldedToScopeName string `json:"default_yielded_to_scope_name,omitempty"`
+	// DefaultYieldedToService is the name of the service a default yielded
+	// to; empty unless DefaultState is DefaultStateYielded.
+	DefaultYieldedToService string `json:"default_yielded_to_service,omitempty"`
+}
+
+// DefaultState is the decision of a registration given [AsDefault], as
+// explained by [ExplainService] and [ExplainNamedService]. JSON encodes it by
+// name: "not-default", "unresolved", "chosen" or "yielded".
+type DefaultState int
+
+// The decisions of a default registration. The zero value is not a default.
+const (
+	DefaultStateNone       DefaultState = iota // not a default registration
+	DefaultStateUnresolved                     // a default not resolved yet
+	DefaultStateChosen                         // a default that uses its own provider or value
+	DefaultStateYielded                        // a default that resolves to a non-default service of an ancestor
+)
+
+// String returns "not-default", "unresolved", "chosen" or "yielded", or
+// "DefaultState(n)" for an unknown value.
+func (s DefaultState) String() string {
+	switch s {
+	case DefaultStateNone:
+		return "not-default"
+	case DefaultStateUnresolved:
+		return "unresolved"
+	case DefaultStateChosen:
+		return "chosen"
+	case DefaultStateYielded:
+		return "yielded"
+	default:
+		return fmt.Sprintf("DefaultState(%d)", int(s))
+	}
+}
+
+// MarshalText encodes the state as its String form, so JSON shows it by name.
+func (s DefaultState) MarshalText() ([]byte, error) {
+	return []byte(s.String()), nil
+}
+
+// UnmarshalText decodes the String form of a state, so explained output read
+// back from JSON keeps it. Any other text is an error.
+func (s *DefaultState) UnmarshalText(text []byte) error {
+	for _, state := range []DefaultState{DefaultStateNone, DefaultStateUnresolved, DefaultStateChosen, DefaultStateYielded} {
+		if state.String() == string(text) {
+			*s = state
+			return nil
+		}
+	}
+
+	return fmt.Errorf("DI: unknown default state %q", text)
 }
 
 // String returns a formatted string representation of the service explanation.
@@ -246,7 +305,7 @@ func ExplainNamedService(scope Injector, name string) (description ExplainServic
 		buildTime, _ = lazy.getBuildTime()
 	}
 
-	return ExplainServiceOutput{
+	output := ExplainServiceOutput{
 		ScopeID:          serviceScope.ID(),
 		ScopeName:        serviceScope.Name(),
 		ServiceName:      name,
@@ -255,7 +314,21 @@ func ExplainNamedService(scope Injector, name string) (description ExplainServic
 		Invoked:          invoked,
 		Dependencies:     newExplainServiceDependencies(_i, newServiceDescription(serviceScope.ID(), serviceScope.Name(), name), "dependencies", nil),
 		Dependents:       newExplainServiceDependencies(_i, newServiceDescription(serviceScope.ID(), serviceScope.Name(), name), "dependents", nil),
-	}, true
+	}
+	if defaultService, ok := serviceAny.(serviceWrapperDefault); ok {
+		switch defaultService.currentState() {
+		case defaultUnresolved, defaultSuperseded:
+			output.DefaultState = DefaultStateUnresolved
+		case defaultChosen:
+			output.DefaultState = DefaultStateChosen
+		case defaultYielded:
+			output.DefaultState = DefaultStateYielded
+			targetScope, targetName := defaultService.yieldedTo()
+			output.DefaultYieldedToScopeName, output.DefaultYieldedToService = targetScope.Name(), targetName
+		}
+	}
+
+	return output, true
 }
 
 // newExplainServiceDependencies returns the dependencies (or dependents) of

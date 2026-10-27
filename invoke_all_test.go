@@ -241,6 +241,9 @@ func TestInvokeAll_Visibility(t *testing.T) {
 	sqlDB := func(scope Injector, name string) {
 		ProvideNamed(scope, name, func(Injector) (*sql.DB, error) { return &sql.DB{}, nil })
 	}
+	bHandlerDefault := func(scope Injector, name string) {
+		provideHandler(scope, name, func(n string) *BHandler { return &BHandler{handlerBase{n}} }, AsDefault())
+	}
 
 	tests := []struct {
 		name      string
@@ -256,6 +259,7 @@ func TestInvokeAll_Visibility(t *testing.T) {
 		{name: "child shadows root", rootName: "x", rootReg: aHandler, childName: "x", childReg: bHandler, from: "child", members: []string{"*doger.BHandler x"}},
 		{name: "non-matching child shadows root", rootName: "x", rootReg: aHandler, childName: "x", childReg: sqlDB, from: "child", members: []string{}},
 		{name: "sibling sees root and sibling", rootName: "x", rootReg: aHandler, childName: "x", childReg: bHandler, from: "sibling", members: []string{"*doger.AHandler x", "*doger.SiblingHandler s"}},
+		{name: "default_does_not_shadow", rootName: "x", rootReg: aHandler, childName: "x", childReg: bHandlerDefault, from: "child", members: []string{"*doger.AHandler x"}},
 	}
 
 	for _, tt := range tests {
@@ -913,5 +917,163 @@ func TestInvokeAll_ConcurrentShutdown(t *testing.T) {
 		is.NoError(o.err)
 		is.GreaterOrEqual(o.length, 0)
 		is.LessOrEqual(o.length, 2)
+	}
+}
+
+// provideEnvSourceAs registers "envSource" as a default under type T.
+func provideEnvSourceAs[T dfPropertySource](scope Injector) {
+	ProvideNamed(scope, "envSource", func(Injector) (T, error) {
+		return any(&dfEnvSource{name: "envSource"}).(T), nil //nolint:errcheck,forcetypeassert
+	}, AsDefault())
+}
+
+// sourceNames returns the Source() of each source, in order.
+func sourceNames(sources []dfPropertySource) []string {
+	names := make([]string, 0, len(sources))
+	for _, source := range sources {
+		names = append(names, source.Source())
+	}
+	return names
+}
+
+func TestInvokeAll_DefaultMembership(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		setup   func(root *RootScope) Injector // returns where to invoke from
+		members []string
+	}{
+		{name: "iface_replaced", setup: func(root *RootScope) Injector {
+			provideEnvSourceAs[dfPropertySource](root)
+			provideMySource(root, "mySource")
+			return root
+		}, members: []string{"mySource"}},
+		{name: "iface_alone", setup: func(root *RootScope) Injector {
+			provideEnvSourceAs[dfPropertySource](root)
+			return root
+		}, members: []string{"envSource"}},
+		{name: "concrete_kept", setup: func(root *RootScope) Injector {
+			provideEnvSourceAs[*dfEnvSource](root)
+			provideMySource(root, "mySource")
+			return root
+		}, members: []string{"envSource", "mySource"}},
+		{name: "concrete_replaced", setup: func(root *RootScope) Injector {
+			provideEnvSourceAs[*dfEnvSource](root)
+			provideEnvSource(root, "envSource2")
+			return root
+		}, members: []string{"envSource2"}},
+		{name: "clone", setup: func(root *RootScope) Injector {
+			provideEnvSourceAs[dfPropertySource](root)
+			provideMySource(root, "mySource")
+			return root.Clone()
+		}, members: []string{"mySource"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+
+			from := tt.setup(New())
+
+			sources, err := InvokeAll[dfPropertySource](from)
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.members, sourceNames(sources))
+		})
+	}
+}
+
+func TestInvokeAll_ChosenDefaultStaysMember(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	provideEnvSourceAs[dfPropertySource](root)
+	_, err := InvokeNamed[dfPropertySource](root, "envSource")
+	require.NoError(t, err)
+	provideMySource(root, "mySource")
+
+	sources, err := InvokeAll[dfPropertySource](root)
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"envSource", "mySource"}, sourceNames(sources))
+}
+
+// dfServer is an explicit health checker, unrelated to dfPool.
+type dfServer struct{}
+
+func (s *dfServer) HealthCheck() error { return nil }
+
+func TestInvokeAll_DefaultKeepsUnrelated(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	Provide(root, poolProvider(&dfPool{}), AsDefault())
+	Provide(root, func(Injector) (*dfServer, error) { return &dfServer{}, nil })
+
+	checkers, err := InvokeAllMap[Healthchecker](root)
+
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{NameOf[*dfPool](), NameOf[*dfServer]()}, slices.Collect(maps.Keys(checkers)))
+}
+
+func TestInvokeAllMap_YieldedDefaultDoesNotShadow(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+
+	root := New()
+	ext := root.Scope("ext")
+	Provide(root, poolProvider(&dfPool{}))
+	Provide(ext, poolProvider(&dfPool{}), AsDefault())
+
+	checkers, err := InvokeAllMap[Healthchecker](ext)
+
+	require.NoError(t, err)
+	require.Len(t, checkers, 1)
+	assert.Same(t, MustInvoke[*dfPool](root), checkers[NameOf[*dfPool]()])
+}
+
+func TestInvokeAllMap_DefaultKeepsOneEntry(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, root *RootScope, ext *Scope)
+	}{
+		{name: "chosen_then_explicit", setup: func(t *testing.T, root *RootScope, ext *Scope) {
+			t.Helper()
+			Provide(ext, poolProvider(&dfPool{}), AsDefault())
+			_, err := Invoke[*dfPool](ext)
+			require.NoError(t, err)
+			Provide(root, poolProvider(&dfPool{}))
+		}},
+		{name: "two_defaults", setup: func(_ *testing.T, root *RootScope, ext *Scope) {
+			Provide(root, poolProvider(&dfPool{}), AsDefault())
+			Provide(ext, poolProvider(&dfPool{}), AsDefault())
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+
+			root := New()
+			ext := root.Scope("ext")
+			tt.setup(t, root, ext)
+
+			checkers, err := InvokeAllMap[Healthchecker](ext)
+
+			require.NoError(t, err)
+			require.Len(t, checkers, 1)
+			extPool, ok := ext.serviceGet(NameOf[*dfPool]())
+			require.True(t, ok)
+			instance, err := extPool.(serviceWrapperAny).getInstanceAny(ext) //nolint:errcheck,forcetypeassert
+			require.NoError(t, err)
+			assert.Same(t, instance, checkers[NameOf[*dfPool]()])
+		})
 	}
 }

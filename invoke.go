@@ -354,20 +354,15 @@ func (p placement) compare(o placement) int {
 // visible from source: the nearest service of each name (even when it is
 // not assignable to target, it shadows its ancestors), without aliases,
 // without the service whose provider reads the collection and without the
-// holder, whose registered type is assignable to target.
+// holder, whose registered type is assignable to target. When the visible
+// scopes hold defaults, collectionCandidatesWithDefaults applies their rules.
 func collectionCandidatesFor(source collectionSource, target reflect.Type) []collectionCandidate {
-	candidates := []collectionCandidate{}
-	seen := map[string]struct{}{}
+	if chainHasDefaults(injectorScope(source.from)) {
+		return collectionCandidatesWithDefaults(source, target)
+	}
 
-	// the service whose provider reads the collection is not a member
-	if source.reader != nil {
-		if invoker, ok := source.reader.getLastInvokerName(); ok {
-			seen[invoker] = struct{}{}
-		}
-	}
-	if source.holder != "" {
-		seen[source.holder] = struct{}{}
-	}
+	candidates := []collectionCandidate{}
+	seen := excludedNames(source)
 
 	source.from.serviceForEachRec(func(name string, scope *Scope, s any) bool {
 		if _, ok := seen[name]; ok {
@@ -375,6 +370,7 @@ func collectionCandidatesFor(source collectionSource, target reflect.Type) []col
 		}
 		seen[name] = struct{}{}
 
+		// inlined newCollectionCandidate: this walk is the hot path
 		service, ok := s.(serviceWrapperAny)
 		if !ok || service.getServiceType() == ServiceTypeAlias || !serviceCanCastToType(s, target) {
 			return true
@@ -395,6 +391,130 @@ func collectionCandidatesFor(source collectionSource, target reflect.Type) []col
 	return candidates
 }
 
+// collectionCandidatesWithDefaults is collectionCandidatesFor with the rules
+// of default registrations: an unresolved or yielded default hides only
+// farther defaults, and is not a member when a farther non-default of its
+// name exists; a yielded default is never a member, its target represents
+// it. See dropReplacedDefaults for defaults replaced by type.
+func collectionCandidatesWithDefaults(source collectionSource, target reflect.Type) []collectionCandidate {
+	candidates := []collectionCandidate{}
+	seen := excludedNames(source)
+	softDefaults, yielding := map[string]struct{}{}, map[string]struct{}{}
+
+	source.from.serviceForEachRec(func(name string, scope *Scope, s any) bool {
+		if _, ok := seen[name]; ok {
+			return true
+		}
+		isDefault, state := defaultStateOf(s)
+		if hiddenByNearerDefault(name, isDefault, state, softDefaults, yielding) {
+			return true
+		}
+		if !isDefault || state == defaultChosen {
+			seen[name] = struct{}{}
+		}
+
+		if isDefault && state == defaultYielded {
+			return true
+		}
+		if candidate, ok := newCollectionCandidate(name, scope, s, target); ok {
+			candidates = append(candidates, candidate)
+		}
+		return true
+	})
+
+	candidates = dropReplacedDefaults(dropYieldingDefaults(candidates, yielding))
+	slices.SortFunc(candidates, func(a, b collectionCandidate) int { return a.compare(b.placement) })
+
+	return candidates
+}
+
+// newCollectionCandidate returns the candidate for the service s, registered
+// as name in scope, when it can be a member for target: it is not an alias
+// and its registered type is assignable to target.
+func newCollectionCandidate(name string, scope *Scope, s any, target reflect.Type) (collectionCandidate, bool) {
+	service, ok := s.(serviceWrapperAny)
+	if !ok || service.getServiceType() == ServiceTypeAlias || !serviceCanCastToType(s, target) {
+		return collectionCandidate{}, false
+	}
+
+	return collectionCandidate{
+		name:     name,
+		depth:    scopeDepth(scope),
+		regIndex: service.getRegistrationIndex(),
+		scope:    scope,
+		service:  s,
+	}, true
+}
+
+// hiddenByNearerDefault records a visited service of name, nearest scope
+// first, and reports whether a nearer unresolved or yielded default of the
+// name hides it: such a default hides only farther defaults, and a farther
+// non-default it yields to is recorded in yielding. An unresolved or yielded
+// default is recorded in softDefaults.
+func hiddenByNearerDefault(name string, isDefault bool, state defaultState, softDefaults, yielding map[string]struct{}) bool {
+	if _, ok := softDefaults[name]; ok {
+		if isDefault {
+			return true
+		}
+		yielding[name] = struct{}{}
+	}
+	if isDefault && state != defaultChosen {
+		softDefaults[name] = struct{}{}
+	}
+
+	return false
+}
+
+// excludedNames returns the names that are never members of a collection
+// read from source: the service whose provider reads it, and the holder.
+func excludedNames(source collectionSource) map[string]struct{} {
+	excluded := map[string]struct{}{}
+	if source.reader != nil {
+		if invoker, ok := source.reader.getLastInvokerName(); ok {
+			excluded[invoker] = struct{}{}
+		}
+	}
+	if source.holder != "" {
+		excluded[source.holder] = struct{}{}
+	}
+
+	return excluded
+}
+
+// dropYieldingDefaults removes from candidates the defaults whose name is in
+// yielding: each yields to a farther non-default of its name, a member too.
+func dropYieldingDefaults(candidates []collectionCandidate, yielding map[string]struct{}) []collectionCandidate {
+	return slices.DeleteFunc(candidates, func(c collectionCandidate) bool {
+		isDefault, _ := defaultStateOf(c.service)
+		_, yields := yielding[c.name]
+		return isDefault && yields
+	})
+}
+
+// dropReplacedDefaults removes from candidates each unresolved default that a
+// non-default candidate is assignable to the registered type of, and decides
+// the unresolved defaults it keeps, removing those that yield.
+func dropReplacedDefaults(candidates []collectionCandidate) []collectionCandidate {
+	replacing := []reflect.Type{}
+	for _, candidate := range candidates {
+		if isDefault, _ := defaultStateOf(candidate.service); !isDefault {
+			replacing = append(replacing, candidate.service.(serviceWrapperAny).getReflectType()) //nolint:errcheck,forcetypeassert
+		}
+	}
+
+	return slices.DeleteFunc(candidates, func(c collectionCandidate) bool {
+		isDefault, state := defaultStateOf(c.service)
+		if !isDefault || state != defaultUnresolved {
+			return false
+		}
+		registered := c.service.(serviceWrapperAny).getReflectType() //nolint:errcheck,forcetypeassert
+		if slices.ContainsFunc(replacing, func(t reflect.Type) bool { return typeCanCastToType(t, registered) }) {
+			return true
+		}
+		return isYieldedDefault(c.service)
+	})
+}
+
 // invokingServiceName returns the name of the service whose provider
 // received injector, when injector is a provider's virtual scope.
 func invokingServiceName(injector Injector) (string, bool) {
@@ -413,9 +533,15 @@ func invokingServiceName(injector Injector) (string, bool) {
 // decorator resolves the service it wraps. This is nearest-first, the
 // opposite of collection order, on purpose: it keeps the "current scope
 // first" behavior of InvokeAs.
+//
+// Defaults rank in two tiers: unresolved defaults are considered only when no
+// other service matches, nearest first, and picking one decides it. A default
+// that chose its own provider ranks as a non-default; one that yielded is
+// never a candidate, since its target represents it.
 func selectByType(injector Injector, target reflect.Type) (collectionCandidate, bool) {
 	from := injectorScope(injector)
 	invoker, fromProvider := invokingServiceName(injector)
+	var unresolved []collectionCandidate // the second tier
 
 	// nearest scope first: once a scope has a match, a farther scope cannot
 	// win, so the walk stops there
@@ -433,8 +559,14 @@ func selectByType(injector Injector, target reflect.Type) (collectionCandidate, 
 				continue
 			}
 
+			// a default ranks in the first tier only once it chose its own
+			// provider; an unresolved one waits in the second tier
+			if match.isDefault && !firstTierDefault(from, scope, match, &unresolved) {
+				continue
+			}
+
 			// a nearer service of the same name hides this one, as for collections
-			if shadowedBetween(from, scope, match.name) {
+			if shadowedBetween(from, scope, match.name, match.isDefault) {
 				continue
 			}
 
@@ -448,6 +580,46 @@ func selectByType(injector Injector, target reflect.Type) (collectionCandidate, 
 
 		if found {
 			return selected, true
+		}
+	}
+
+	return selectUnresolvedDefault(unresolved)
+}
+
+// firstTierDefault reports whether match, a default of scope, ranks among
+// the services that are not defaults: it chose its own provider. An
+// unresolved default visible from from is appended to unresolved, the second
+// tier; a yielded one is never a candidate.
+func firstTierDefault(from, scope *Scope, match typeMatch, unresolved *[]collectionCandidate) bool {
+	switch match.service.(serviceWrapperDefault).currentState() { //nolint:errcheck,forcetypeassert
+	case defaultChosen:
+		return true
+	case defaultUnresolved:
+		if !shadowedBetween(from, scope, match.name, true) {
+			*unresolved = append(*unresolved, collectionCandidate{
+				name:     match.name,
+				depth:    scopeDepth(scope),
+				regIndex: match.regIndex,
+				scope:    scope,
+				service:  match.service,
+			})
+		}
+	case defaultYielded, defaultSuperseded:
+	}
+
+	return false
+}
+
+// selectUnresolvedDefault returns the first of the unresolved defaults that
+// does not yield once decided: in the nearest scope, then with the earliest
+// registration, then with the smallest name.
+func selectUnresolvedDefault(unresolved []collectionCandidate) (collectionCandidate, bool) {
+	slices.SortFunc(unresolved, func(a, b collectionCandidate) int {
+		return cmp.Or(cmp.Compare(b.depth, a.depth), a.compare(b.placement))
+	})
+	for _, candidate := range unresolved {
+		if !isYieldedDefault(candidate.service) {
+			return candidate, true
 		}
 	}
 
@@ -484,10 +656,13 @@ func aliasResolvesTo(service any, name string) bool {
 }
 
 // shadowedBetween reports whether a scope from from up to, but not
-// including, its ancestor to registers name, hiding to's service.
-func shadowedBetween(from, to *Scope, name string) bool {
+// including, its ancestor to registers name, hiding to's service. A default
+// is hidden by any nearer registration of its name; a non-default is not
+// hidden by a default that is unresolved or yielded.
+func shadowedBetween(from, to *Scope, name string, shadowedIsDefault bool) bool {
 	for scope := from; scope != nil && scope != to; scope = scope.parentScope {
-		if scope.serviceExist(name) {
+		service, ok := scope.serviceGet(name)
+		if ok && (shadowedIsDefault || hidesNonDefault(service)) {
 			return true
 		}
 	}

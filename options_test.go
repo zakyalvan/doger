@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -183,6 +184,7 @@ type optIns struct {
 	dependsOn []string
 	kinds     []kindOptIn
 	order     *int // collection order set by WithOrder
+	isDefault bool // registered with AsDefault
 }
 
 // kindOptIn is a kind binding, by kind name and metadata.
@@ -210,7 +212,7 @@ func optInsOf(t *testing.T, scope Injector, name string) optIns {
 		kinds = append(kinds, kindOptIn{name: binding.id.name, meta: binding.meta})
 	}
 
-	return optIns{starter: opts.starter, dependsOn: opts.dependsOn, kinds: kinds, order: opts.order}
+	return optIns{starter: opts.starter, dependsOn: opts.dependsOn, kinds: kinds, order: opts.order, isDefault: opts.isDefault}
 }
 
 func TestProvideOptions_Registration(t *testing.T) {
@@ -359,6 +361,7 @@ func TestProvideOptions_Constructors(t *testing.T) {
 			want:   optIns{kinds: []kindOptIn{{name: "scheduled", meta: Spec{Every: time.Minute}}}},
 		},
 		{name: "with_order", option: WithOrder(-10), want: optIns{order: new(-10)}},
+		{name: "as_default", option: AsDefault(), want: optIns{isDefault: true}},
 	}
 
 	for _, tt := range tests {
@@ -587,6 +590,104 @@ func TestProvideOptions_CloneOverrideAlias(t *testing.T) {
 			container := tt.operation(t, root)
 
 			assert.Equal(t, tt.want, optInsOf(t, container, tt.service))
+		})
+	}
+}
+
+func TestProvideOptions_AsDefaultPanics(t *testing.T) {
+	t.Parallel()
+
+	dialerName := NameOf[*dfDialer]()
+	newDialer := func(Injector) (*dfDialer, error) { return &dfDialer{}, nil }
+
+	tests := []struct {
+		name     string
+		register func(i Injector)
+		panicMsg string
+	}{
+		{name: "provide", register: func(i Injector) { Provide(i, newDialer, AsDefault()) }},
+		{name: "value", register: func(i Injector) { ProvideValue(i, &dfDialer{}, AsDefault()) }},
+		{name: "transient", register: func(i Injector) { ProvideTransient(i, newDialer, AsDefault()) }},
+		{name: "named", register: func(i Injector) { ProvideNamed(i, "dialer", newDialer, AsDefault()) }},
+		{name: "package", register: func(i Injector) { Package(Lazy(newDialer, AsDefault()))(i) }},
+		{
+			name:     "transient_starter",
+			register: func(i Injector) { ProvideTransient(i, newDialer, AsDefault(), AsStarter()) },
+			panicMsg: fmt.Sprintf("DI: transient service `%s` cannot be started", dialerName),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			root := New()
+			if tt.panicMsg != "" {
+				assert.PanicsWithError(t, tt.panicMsg, func() { tt.register(root) })
+				return
+			}
+			assert.NotPanics(t, func() { tt.register(root) })
+		})
+	}
+}
+
+func TestProvideOptions_AsDefaultValidatedBeforeSkip(t *testing.T) {
+	t.Parallel()
+
+	root := New()
+	Provide(root, dialerProvider("app-dialer", nil))
+
+	assert.PanicsWithError(t, fmt.Sprintf("DI: transient service `%s` cannot be started", NameOf[*dfDialer]()), func() {
+		ProvideTransient(root, dialerProvider("default-dialer", nil), AsDefault(), AsStarter())
+	})
+}
+
+func TestProvideOptions_AsDefaultCombined(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		opts      []ProvideOption
+		explicit  bool // an explicit pool is registered in the root
+		starts    int32
+		runs      int32
+		cfgBuilds int32
+	}{
+		{name: "starter_alone", opts: []ProvideOption{AsStarter(), DependsOnNamed("cfg")}, starts: 1, runs: 0, cfgBuilds: 1},
+		{name: "starter_yielded", opts: []ProvideOption{AsStarter(), DependsOnNamed("cfg")}, explicit: true},
+		{name: "runnable_alone", opts: []ProvideOption{AsRunnable()}, starts: 1, runs: 1, cfgBuilds: 0},
+		{name: "runnable_yielded", opts: []ProvideOption{AsRunnable()}, explicit: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, 3*time.Second)
+
+			root := New()
+			t.Cleanup(func() { _ = root.Shutdown() })
+			ext := root.Scope("ext")
+			var cfgBuilds atomic.Int32
+			ProvideNamed(ext, "cfg", func(Injector) (int, error) {
+				cfgBuilds.Add(1)
+				return 1, nil
+			})
+			defaultPool := &dfPool{}
+			Provide(ext, poolProvider(defaultPool), append([]ProvideOption{AsDefault()}, tt.opts...)...)
+			rootPool := &dfPool{}
+			if tt.explicit {
+				Provide(root, poolProvider(rootPool))
+			}
+
+			require.NoError(t, root.Start())
+
+			assert.Equal(t, tt.starts, defaultPool.starts.Load())
+			assert.Equal(t, tt.runs, defaultPool.runs.Load())
+			assert.Equal(t, tt.cfgBuilds, cfgBuilds.Load())
+			if tt.explicit {
+				assert.Equal(t, int32(1), rootPool.starts.Load(), "the root's pool starts once")
+				assert.Equal(t, int32(0), rootPool.runs.Load(), "the root's pool is not a runner")
+			}
 		})
 	}
 }

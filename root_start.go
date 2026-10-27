@@ -8,8 +8,9 @@ import (
 	"slices"
 )
 
-// startPhase is the start state of a root container.
-type startPhase int
+// startPhase is the start state of a root container. It is an int32 so it
+// shares a word with closePhase in RootScope.
+type startPhase int32
 
 const (
 	startIdle startPhase = iota
@@ -548,6 +549,11 @@ func (s *RootScope) newStartCandidate(scope *Scope, name string, depth int, serv
 	// a component is handled at most once per kind per container
 	kinds = slices.DeleteFunc(slices.Clone(kinds), func(b kindBinding) bool { return s.isHandled(service, b.id) })
 	if !starter && len(kinds) == 0 {
+		return nil
+	}
+	// a default that yields is an alias of its target, which Start handles
+	// through its own registration
+	if isYieldedDefaultIn(scope, serviceAny) {
 		return nil
 	}
 

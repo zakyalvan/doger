@@ -7,6 +7,7 @@ import (
 	"maps"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jonboulle/clockwork"
@@ -78,6 +79,11 @@ type Scope struct {
 	// scope, which the root container embeds, keeps its size: parallel
 	// invocations are sensitive to the container's allocation layout.
 	closing *scopeClosing
+
+	// defaults counts the default registrations (AsDefault) in services;
+	// written under mu. Growing Scope grows RootScope, which embeds it: keep
+	// RootScope in its allocation size class (see the phase fields there).
+	defaults atomic.Int64
 }
 
 // scopeClosing is the shutdown state of a child scope.
@@ -356,7 +362,12 @@ func (s *Scope) asyncHealthCheckWithContext(ctx context.Context) map[string]<-ch
 	asyncResults := map[string]<-chan error{}
 
 	s.mu.RLock()
-	for name := range s.services {
+	for name, service := range s.services {
+		// a default that yields is not checked here: the name keeps the
+		// result of the ancestor service it resolves to
+		if isYieldedDefaultIn(s, service) {
+			continue
+		}
 		asyncResults[name] = s.rootScope.queueServiceHealthcheck(ctx, s, name)
 	}
 	s.mu.RUnlock()
@@ -729,6 +740,7 @@ func (s *Scope) clone(root *RootScope, parent *Scope) *Scope {
 		} else {
 			clone.services[name] = service
 		}
+		clone.countDefault(clone.services[name], 1)
 
 		s.rootScope.opts.onAfterRegistration(clone, name)
 	}
@@ -836,8 +848,11 @@ func (s *Scope) serviceSet(name string, service any) {
 
 	s.mu.Lock()
 	replaced, ok := s.services[name]
-	s.services[name] = service
-	s.typeMatches = nil
+	// readers holding an unresolved default resolve its name again
+	previous, isDefault := replaced.(serviceWrapperSupersede)
+	if !isDefault || !previous.supersede(func() { s.storeLocked(name, replaced, service) }) {
+		s.storeLocked(name, replaced, service)
+	}
 	s.mu.Unlock()
 
 	// an Override leaves the replaced wrapper behind for good
@@ -846,6 +861,28 @@ func (s *Scope) serviceSet(name string, service any) {
 	}
 
 	s.RootScope().opts.onAfterRegistration(s, name)
+}
+
+// storeLocked stores service as name, in place of replaced (nil when the name
+// was free), keeping the count of defaults. mu must be held as a writer.
+func (s *Scope) storeLocked(name string, replaced, service any) {
+	s.countDefault(replaced, -1)
+	s.countDefault(service, 1)
+	s.services[name] = service
+	s.typeMatches = nil
+}
+
+// countDefault adds delta to the count of default registrations when service
+// is one. The caller holds mu as a writer, or owns the scope alone.
+func (s *Scope) countDefault(service any, delta int64) {
+	if _, ok := service.(serviceWrapperDefault); ok {
+		s.defaults.Add(delta)
+	}
+}
+
+// defaultCount returns the number of default registrations the scope holds.
+func (s *Scope) defaultCount() int64 {
+	return s.defaults.Load()
 }
 
 // serviceForEach iterates over all services in the current scope and calls the provided callback
@@ -880,9 +917,10 @@ func (s *Scope) serviceForEach(cb func(name string, scope *Scope, service any) b
 // typeMatch is a service of a scope whose registered type is assignable to
 // a target type.
 type typeMatch struct {
-	name     string
-	service  any
-	regIndex uint64
+	name      string
+	service   any
+	regIndex  uint64
+	isDefault bool // registered with AsDefault
 }
 
 // matchesFor returns the services of this scope whose registered type is
@@ -906,7 +944,8 @@ func (s *Scope) matchesFor(target reflect.Type) []typeMatch {
 	for name, serviceAny := range s.services {
 		service, ok := serviceAny.(serviceWrapperAny)
 		if ok && typeCanCastToType(service.getReflectType(), target) {
-			matches = append(matches, typeMatch{name: name, service: serviceAny, regIndex: service.getRegistrationIndex()})
+			_, isDefault := serviceAny.(serviceWrapperDefault)
+			matches = append(matches, typeMatch{name: name, service: serviceAny, regIndex: service.getRegistrationIndex(), isDefault: isDefault})
 		}
 	}
 	if s.typeMatches == nil {
@@ -1020,6 +1059,7 @@ func (s *Scope) serviceShutdown(ctx context.Context, name string) error {
 	serviceAny, ok := s.services[name]
 	if ok {
 		delete(s.services, name) // service is removed from DI container
+		s.countDefault(serviceAny, -1)
 		s.typeMatches = nil
 		delete(s.orderedInvocation, name)
 		s.RootScope().dag.removeService(s.id, s.name, name)

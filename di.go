@@ -190,18 +190,122 @@ func ProvideNamedTransient[T any](i Injector, name string, provider Provider[T],
 // - Logging is performed for successful registration.
 func provide[T any, A any](i Injector, name string, valueOrProvider A, serviceCtor func(string, A) serviceWrapper[T], opts []ProvideOption) {
 	_i := getInjectorOrDefault(i)
-	if _i.serviceExist(name) {
-		panic(fmt.Errorf("DI: service `%s` has already been declared", name))
+	scope := injectorScope(_i)
+	options := buildServiceOptions(opts)
+
+	// without a default involved, a duplicate fails first, as it always did
+	if (options == nil || !options.isDefault) && nonDefaultExists(scope, name) {
+		panic(duplicateServiceError(name))
 	}
 
 	service := serviceCtor(name, valueOrProvider)
-	options := buildServiceOptions(opts)
 	validateServiceOptions(name, service, options)
-	service.setRegistrationIndex(assignRegistrationIndex(_i, name))
 	service.setOptions(options)
-	_i.serviceSet(name, service)
+	wrapped := wrapIfDefault(scope, service, options)
 
-	_i.RootScope().opts.Logf("DI: service %s injected", name)
+	root := _i.RootScope()
+	root.opts.onBeforeRegistration(scope, name)
+
+	outcome, err := registerLocked(scope, name, wrapped)
+	if err != nil {
+		panic(err)
+	}
+	if outcome == registerSkipped {
+		return
+	}
+
+	root.opts.onAfterRegistration(scope, name)
+	root.opts.Logf("DI: service %s injected", name)
+}
+
+// registerLocked registers incoming as name in scope under the scope's write
+// lock, so deciding between storing, replacing a default and skipping is
+// atomic with the write. It runs no hook. A taken name returns the duplicate
+// error and leaves the scope unchanged.
+func registerLocked(scope *Scope, name string, incoming serviceWrapperAny) (registerOutcome, error) {
+	root := scope.rootScope
+
+	scope.mu.Lock()
+	replaced, outcome := scope.services[name], registerStored
+	if replaced != nil {
+		outcome = sameScopeOutcome(replaced, incoming)
+	}
+	switch outcome {
+	case registerStored:
+		incoming.setRegistrationIndex(root.nextRegIndex.Add(1) - 1)
+		scope.storeLocked(name, replaced, incoming)
+	case registerReplaced:
+		incoming.setRegistrationIndex(replaced.(serviceWrapperAny).getRegistrationIndex()) //nolint:errcheck,forcetypeassert
+		store := func() { scope.storeLocked(name, replaced, incoming) }
+		if !replaced.(serviceWrapperSupersede).supersede(store) { //nolint:errcheck,forcetypeassert
+			outcome = registerDuplicate
+		}
+	case registerSkipped, registerDuplicate:
+	}
+	scope.mu.Unlock()
+
+	if outcome == registerDuplicate {
+		return outcome, duplicateServiceError(name)
+	}
+	if outcome == registerReplaced {
+		root.forget(replaced)
+	}
+
+	return outcome, nil
+}
+
+// registerOutcome is what registering a service does to the scope's entry
+// of its name.
+type registerOutcome int
+
+const (
+	registerStored    registerOutcome = iota // the name was free
+	registerReplaced                         // an explicit registration replaced an unresolved default
+	registerSkipped                          // a default met an explicit service
+	registerDuplicate                        // the name is taken
+)
+
+// sameScopeOutcome returns what registering incoming does to existing, a
+// registration of the same name in the same scope.
+func sameScopeOutcome(existing, incoming any) registerOutcome {
+	_, existingIsDefault := existing.(serviceWrapperDefault)
+	_, incomingIsDefault := incoming.(serviceWrapperDefault)
+
+	switch {
+	case existingIsDefault && !incomingIsDefault:
+		return registerReplaced
+	case !existingIsDefault && incomingIsDefault:
+		return registerSkipped
+	default:
+		return registerDuplicate
+	}
+}
+
+// nonDefaultExists reports whether scope itself registers name, other than
+// as a default.
+func nonDefaultExists(scope *Scope, name string) bool {
+	service, ok := scope.serviceGet(name)
+	if !ok {
+		return false
+	}
+	_, isDefault := service.(serviceWrapperDefault)
+
+	return !isDefault
+}
+
+// duplicateServiceError is the error of a registration whose name is taken.
+func duplicateServiceError(name string) error {
+	return fmt.Errorf("DI: service `%s` has already been declared", name)
+}
+
+// wrapIfDefault returns the wrapper to store for service in scope: decorated
+// as a default when options carry AsDefault, service itself otherwise.
+func wrapIfDefault[T any](scope *Scope, service serviceWrapper[T], options *serviceOptions) serviceWrapper[T] {
+	if options != nil && options.isDefault {
+		return newServiceDefault(service, scope)
+	}
+
+	return service
 }
 
 // assignRegistrationIndex returns the registration index for name in scope.
@@ -330,6 +434,9 @@ func override[T any, A any](i Injector, name string, valueOrProvider A, serviceC
 	service := serviceCtor(name, valueOrProvider)
 	options := buildServiceOptions(opts)
 	validateServiceOptions(name, service, options)
+	if options != nil {
+		options.isDefault = false // an override is explicit
+	}
 	service.setRegistrationIndex(assignRegistrationIndex(_i, name))
 	service.setOptions(options)
 	_i.serviceSet(name, service) // @TODO: should we unload/shutdown the previous service ?
@@ -654,6 +761,11 @@ func MustAsNamed[Initial any, Alias any](i Injector, initial string, alias strin
 // would. Inside a provider, the invoking scope is the scope the provider's
 // service is registered in. Aliases (As, Bind) are never members: their
 // target represents itself.
+//
+// A default registration ([AsDefault]) not resolved yet is left out when a
+// non-default member is assignable to its registered type, and neither it
+// nor a default that yielded hides a non-default of its name in an ancestor.
+// Including a default in the result resolves it.
 //
 // Inside a provider, the service that provider builds is not a member, so a
 // composite can collect every other implementation of its own interface.

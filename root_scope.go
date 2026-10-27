@@ -123,9 +123,9 @@ type RootScope struct {
 	// which is never held while user code runs.
 	lifecycleMu sync.Mutex
 	startPhase  startPhase
+	closePhase  closePhase              // next to startPhase: both fit one word, keeping RootScope in its size class
 	startCancel context.CancelCauseFunc // cancels the running Start's context
 	startDone   chan struct{}           // closed when the running Start returned
-	closePhase  closePhase
 	closeDone   chan struct{}           // closed when the winning Shutdown finished
 	closeReport *ShutdownReport         // private copy of the winner's report
 	incCancel   context.CancelCauseFunc // cancels the running Refresh or Scope.Start
@@ -146,8 +146,9 @@ type RootScope struct {
 	dagStorage  DAG
 }
 
-// closePhase is the shutdown state of a root container.
-type closePhase int
+// closePhase is the shutdown state of a root container. It is an int32 so it
+// shares a word with startPhase in RootScope.
+type closePhase int32
 
 const (
 	closeOpen closePhase = iota
