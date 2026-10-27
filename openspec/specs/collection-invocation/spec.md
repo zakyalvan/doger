@@ -112,7 +112,7 @@ Then the recorded names are exactly "a"
 <!-- cases: N/A 10 compatibility: matches what InvokeNamed resolves for each name; the default row applies only to registrations given AsDefault() -->
 
 ### Requirement: Aliases are excluded from collections
-Services registered through `As`/`Bind` aliases SHALL NOT appear in a collection. The aliased original SHALL represent itself when its registered type is assignable to `T`.
+Services registered through `As`/`Bind` aliases SHALL NOT appear in a collection. The aliased original SHALL represent itself when its registered type is assignable to `T`. Exports are not `As`/`Bind` aliases: their membership is specified in scope-export ("Collections and type selection see exports in the parent").
 
 #### Scenario: Alias does not duplicate its target
 ```gherkin
@@ -129,7 +129,7 @@ And that element is the instance of "*AuditHandler"
 <!-- cases: N/A 4 boundaries: covered by the 1-element scenario above -->
 <!-- cases: N/A 5 errors, 8 concurrency: alias filtering has no failure or shared state -->
 <!-- cases: N/A 9 panics: no panicking path -->
-<!-- cases: N/A 10 compatibility: aliases keep resolving through Invoke and InvokeAs unchanged -->
+<!-- cases: N/A 10 compatibility: aliases keep resolving through Invoke and InvokeAs unchanged; exports are a new kind of registration -->
 
 ### Requirement: No match yields an empty collection
 When no visible service matches, `InvokeAll[T]` SHALL return an empty, non-nil slice and `InvokeAllMap[T]` SHALL return an empty, non-nil map. Both SHALL return a nil error, never `ErrServiceNotFound` or `ErrServiceNotMatch`.

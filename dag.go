@@ -223,6 +223,24 @@ func (d *DAG) listServicesHavingNoDependent(scopeID, scopeName string, serviceNa
 	return out
 }
 
+// snapshotDependents returns, for each service of set, its dependents that
+// are in set too, as the graph holds them now. It takes a single read lock.
+func (d *DAG) snapshotDependents(set map[ServiceDescription]struct{}) map[ServiceDescription][]ServiceDescription {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	dependents := map[ServiceDescription][]ServiceDescription{}
+	for desc := range set {
+		for dependent := range d.dependents[desc] {
+			if _, ok := set[dependent]; ok {
+				dependents[desc] = append(dependents[desc], dependent)
+			}
+		}
+	}
+
+	return dependents
+}
+
 // explainService provides information about a service's dependencies and dependents in the DAG.
 // This function returns the list of services that the specified service depends on,
 // as well as the list of services that depend on the specified service.
