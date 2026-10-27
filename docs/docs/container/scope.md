@@ -157,14 +157,18 @@ Exporting a service registered with `AsDefault()` publishes a default: an explic
 
 ### Shutdown order {#scope-export-shutdown}
 
-When the parent shuts down, its services that depend on an export shut down **before** the exporting child, so they never see the exported service closed:
+When the parent shuts down, services shut down in **dependency order across the parent and its exporting descendants** (the children that export into it, and their own exporting children), so no service sees a dependency closed:
 
-1. the child scopes that export nothing, in parallel, as before;
-2. the parent's services with a dependency path to an export, in dependency order;
-3. the exporting child scopes, in parallel;
-4. the parent's other services.
+1. the child scopes that export nothing (of the parent and of every exporting descendant), in parallel, as before;
+2. one pass over the services of the parent and of its exporting descendants: a service shuts down once no service still running in the pass depends on it, whatever scope each belongs to.
 
-An exporting child therefore runs its `HookScopeClosing` and `HookScopeClosed` hooks inside its parent's pair. Scopes without exports shut down exactly as before.
+The order follows dependency paths, not scopes:
+
+- the parent's services that use an export shut down before the exported service;
+- a service of the exporting child that uses one of those parent services shuts down before it (`x` in the child → `p` in the parent → export → pool shuts down `x`, `p`, then the pool);
+- exporting siblings share the pass: a service of one sibling that uses another sibling's export shuts down before the exported service.
+
+An exporting child runs its `HookScopeClosing` hooks just before its first service shuts down and its `HookScopeClosed` hooks once its services and its own exporting children are done, inside its parent's pair. A `Shutdown` of the exporting child while its parent's pass runs waits for that pass and returns its part of the report. A true dependency cycle shuts the remaining services down in parallel. Scopes without exports shut down exactly as before.
 
 ### Defaults & control {#scope-export-control}
 
@@ -172,7 +176,7 @@ An exporting child therefore runs its `HookScopeClosing` and `HookScopeClosed` h
 | ----------------------------- | --------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
 | Name of the published service | The name of the child service                                               | `doger.ExportAs(name)`                                                                               |
 | Lifecycle of the instance     | Owned by the child: started, health-checked and shut down there, once       | Not overridable: one owner per instance; to make the parent own a service, register it in the parent |
-| Shutdown order                | The parent's dependents of the export shut down before the exporting child  | `DeclareDependency` and `DependsOn` add edges; nothing shuts the child down first                    |
+| Shutdown order                | Dependency order across the parent and its exporting descendants            | `DeclareDependency` and `DependsOn` add edges; nothing shuts the exported service down first         |
 | Scopes without exports        | Shutdown exactly as before                                                  | -                                                                                                    |
 | Exporting a default           | The export is a default too: an explicit service of the published name wins | Register the explicit service, or export a non-default source to publish an explicit one             |
 | Collections in the parent     | The export is a member                                                      | Read from the exporting scope, or invoke by name, to bypass it                                       |

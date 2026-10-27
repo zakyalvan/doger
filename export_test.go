@@ -609,6 +609,67 @@ func TestExport_InvokeAs(t *testing.T) {
 	assert.Same(t, owned, checker)
 }
 
+// exAPI is the interface of the by-type selection tests.
+type exAPI interface{ Describe() string }
+
+// exBase is an exAPI described as "base".
+type exBase struct{}
+
+func (*exBase) Describe() string { return "base" }
+
+// exDecorator is an exAPI wrapping another one.
+type exDecorator struct{ inner exAPI }
+
+func (d *exDecorator) Describe() string { return "dec(" + d.inner.Describe() + ")" }
+
+func TestExport_InvokeAsSkipsOwnExport(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		scope func(a, c *Scope) *Scope // the scope of "dec"
+		// export publishes "dec" in the root as "api"
+		export func(a, c *Scope) error
+	}{
+		{
+			name:   "direct",
+			scope:  func(a, _ *Scope) *Scope { return a },
+			export: func(a, _ *Scope) error { return ExportNamed[exAPI](a, "dec", ExportAs("api")) },
+		},
+		{
+			name:  "chained",
+			scope: func(_, c *Scope) *Scope { return c },
+			export: func(a, c *Scope) error {
+				if err := ExportNamed[exAPI](c, "dec"); err != nil {
+					return err
+				}
+				return ExportNamed[exAPI](a, "dec", ExportAs("api"))
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			root := New()
+			a := root.Scope("a")
+			c := a.Scope("c")
+			scope := tt.scope(a, c)
+			ProvideNamed(scope, "dec", func(i Injector) (*exDecorator, error) {
+				inner, err := InvokeAs[exAPI](i)
+				return &exDecorator{inner: inner}, err
+			})
+			require.NoError(t, tt.export(a, c))
+			ProvideNamed(root, "base", func(Injector) (*exBase, error) { return &exBase{}, nil })
+
+			dec, err := InvokeNamed[*exDecorator](scope, "dec")
+			require.NoError(t, err)
+			assert.Equal(t, "dec(base)", dec.Describe())
+		})
+	}
+}
+
 func TestExport_Cycle(t *testing.T) {
 	t.Parallel()
 

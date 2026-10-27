@@ -236,9 +236,9 @@ type InjectorOpts struct {
 	// "scope-closing" (see HookContainerPanic).
 	//
 	// A child that exports services into its parent (see Export) is the
-	// exception: it shuts down after the parent's services that depend on
-	// its exports, so its Closing and Closed hooks run inside its parent's
-	// Closing/Closed pair.
+	// exception: its services shut down in dependency order with the
+	// parent's, so its Closing and Closed hooks run inside its parent's
+	// Closing/Closed pair, Closing just before its first service shuts down.
 	HookScopeClosing []func(ctx context.Context, scope *Scope)
 
 	// HookScopeClosed is called when a child scope shut down, after its

@@ -1303,8 +1303,8 @@ func TestAliasResolvesTo_Loop(t *testing.T) {
 	root.serviceSet("x", x)
 	root.serviceSet("y", newServiceAlias[Greeter, Greeter]("y", root, "x"))
 
-	assert.False(t, aliasResolvesTo(x, "decor"))
-	assert.True(t, aliasResolvesTo(x, "x"))
+	assert.False(t, aliasResolvesTo(x, nil, "decor"))
+	assert.True(t, aliasResolvesTo(x, nil, "x"))
 }
 
 // TestInvokeAs_SkipsAliasOfShadowedName characterizes the name-only rule of

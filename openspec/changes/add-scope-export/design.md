@@ -27,7 +27,7 @@ See proposal.md (Why) and this change's specs. The current code shapes the appro
 ### D1. A new wrapper, `serviceExport[T]`, alongside `serviceAlias`
 - **Fields:** the owner scope (the parent), the source child's *name* (not a pointer), the source service name, the published name, the registration index, and invocation frames.
 - **`getServiceType()`** returns `ServiceTypeAlias`, so listings and explain show "alias" and Start skips it through its existing alias check.
-- **Marker interface** `serviceWrapperExport { exportSource() (*Scope, string, bool); withinSource(*Scope) bool }`. Collections and shutdown use it to tell an export from an alias. `withinSource` reports whether a scope is the source scope or a descendant by comparing names and parents, which never change, so it takes no lock (the health walk calls it while holding the owner's read lock). Rules never assert the interface directly: they use `asExport(service)`, which also unwraps an export decorated as a default (D8).
+- **Marker interface** `serviceWrapperExport { exportSource() (*Scope, string, bool); withinSource(*Scope) bool }`. Collections and shutdown use it to tell an export from an alias. `withinSource` reports whether a scope is the source scope or a descendant by comparing names and parents, which never change, so it takes no lock (the health walk calls it while holding the owner's read lock). Rules never assert the interface directly: a decorator (a default, D8) exposes one method, `unwrapExport() (export serviceWrapperExport, yielded bool)`, and two helpers derive from it: `asExport` (an export, or a decorated one that has not yielded: the live check used by every rule) and `wrapsExport` (an export, or any decorated one: the structural check used by the counter, D7).
 - *Alternative:* extending `serviceAlias` with an optional source scope. Rejected: `serviceAlias` resolves by name through the invoker's scope, and every branch would need an "is export" check. A separate type keeps aliases untouched (compatibility) and keeps export rules in one place.
 
 ### D2. Resolving the source by scope name, at every invocation
@@ -56,29 +56,31 @@ See proposal.md (Why) and this change's specs. The current code shapes the appro
 | Start / kinds | never a candidate (`ServiceTypeAlias`) |
 
 ### D5. Shutdown order with exports
-In `shutdownWithContext`, when the scope holds at least one export (per-scope count, see D7), shutdown has four steps. Without exports it is unchanged.
+In `shutdownWithContext`, when the scope holds at least one export (per-scope count, see D7), shutdown orders services by dependency path across the scope and its *exporting descendants*. Without exports it is unchanged.
 
 ```
-1. non-exporting children   (parallel, as today)
-2. own services that have a dependency path to an export, plus the export wrappers,
-   in dependency order (the existing no-dependents loop restricted to this set)
-3. exporting children       (parallel)
-4. remaining own services   (the existing loop)
+1. non-exporting children of the scope and of every exporting descendant   (parallel, full shutdowns, as today)
+2. the scope's Closing hook
+3. one dependency-ordered pass over the services of the scope and of every exporting descendant:
+   a service shuts down once no service still running in the pass depends on it
+4. the scope's Closed hook
 ```
 
-- **Why the sibling case works:** a non-exporting sibling (`web`) can only reach the exporting child (`redis`) through a parent service. It shuts down in step 1, before that parent service shuts down in step 2.
-- **Why chained exports work:** each scope applies the rule to its own exports when it shuts down.
-- **Cycles:** a cycle (exporting child → parent service in the set → export) makes step 2's loop fall back to its existing parallel shutdown, as today.
-- **Building the step-2 set:** a reverse walk over the DAG from the scope's export wrappers, under one DAG read lock.
-- **Scope hooks:** the scope's Closing hook runs before step 2 and its Closed hook after step 4, so they bracket the scope's own services as before. Exporting children (step 3) therefore close *inside* their parent's Closing/Closed pair, not before it. That is an exception to "children before their parent", specified as a MODIFIED requirement in `scope-lifecycle-hooks` and flagged as a behavior change for exporting scopes only.
+- **The pass set.** The scope plus, recursively, every child that exports into its parent (export chains). Their non-exporting children are not in the pass: nothing can depend on them across scopes except through a hand-written forwarding provider (a non-goal), so they shut down first, children before their parent as before.
+- **One snapshot.** Dependents are read from one snapshot of the DAG edges among the pass set, taken before anything is removed. Removing a service from the DAG during the pass would erase transitive paths (`x` in the child → `p2` → `p1` → export → pool: once `p1` and `p2` are gone, the pool looks free while `x` still uses it). Dependents outside the pass set are ignored, as they are alive scopes this shutdown does not own.
+- **Why the review cases work.** A child service that depends on a parent dependent of the export (`x` → `p` → export → pool) is ordered by the path, not by scope: `x`, `p`, export, pool. Exporting siblings (`a/x` → root export of `b`'s pool) are in one pass, so `x` shuts down before the pool. The previous four steps could express neither: step 2 fell back to parallel shutdown and step 3 shut exporting siblings down in parallel.
+- **Cycles:** a true cycle in the snapshot makes the pass fall back to shutting the remaining services down in parallel, as the existing loop does.
+- **Scope hooks:** the scope's Closing hook runs before the pass and its Closed hook after it, so they bracket the scope's own services as before. An exporting descendant's Closing hook runs just before its first service shuts down (or, for a scope with no service left, once its exporting descendants closed), and its Closed hook once its services and its exporting descendants are done. Exporting children therefore close *inside* their parent's Closing/Closed pair. That is an exception to "children before their parent", specified as a MODIFIED requirement in `scope-lifecycle-hooks` and flagged as a behavior change for exporting scopes only.
+- **Joins and start waits.** Each exporting descendant still takes part in the child-scope shutdown protocol (`joinClose`, `waitForStartingRun`, `finishScopeClose`), so a concurrent `Shutdown` of it joins this one and receives its part of the report. If it is already shutting down elsewhere, this shutdown waits for that one (bounded by its context) and leaves its services out of the pass. A panic in the pass (for example from a custom `Logf`) releases every joined descendant that has not finished with a failed report containing "DI: scope shutdown did not complete", as a single child scope's shutdown does.
 
 ### D6. Collections and by-type selection
 - `collectionCandidatesFor` keeps the alias exclusion, except for exports. An export is skipped only when the reader's scope is the export's source scope or one of its descendants (an ancestor walk from `source.from`).
-- `selectByType` already includes aliases; exports need no change there. Read from inside the source scope, the source itself is nearer and wins.
+- `selectByType` already includes aliases. Read from inside the source scope, the source itself is nearer and wins. It skips an alias of the invoking provider (`aliasResolvesTo`); that check also follows an export to its source and compares **scope and name** with the provider (its virtual scope's scope and name), so a decorator never selects its own export renamed with `ExportAs`. Comparing names only would skip an unrelated same-name service of another scope.
+- One helper, `excludedAlias(service, reader)`, decides the alias exclusion of collections with a single `asExport` call: an `As`/`Bind` alias is excluded, an export is excluded only when the reader is inside its source scope. Both collection walks use it.
 - An export's collection order is its own registration index in the owner scope, as for any member; `WithOrder` on the source does not move it.
 
 ### D7. Registration and counters
-- `Export`/`ExportNamed` validate (nil `from`, no parent, source not in `from` itself, type not assignable via `typeCanCastToType`, empty name). They then register through `add-default-registrations`' `registerLocked` helper (its D4 and task 3.3) under the parent's write lock, so check-then-set is atomic, and return its error instead of panicking. A name taken by a non-default, or by a resolved default, returns the duplicate error; an explicit export replaces an unresolved default of the published name; an export of a default follows D8.
+- `Export`/`ExportNamed` validate (nil `from`, no parent, source not in `from` itself, type not assignable via `typeCanCastToType`, empty name). `validateExport` returns the source wrapper it found, and the default decision (D8) uses that same wrapper, so validation and wrapping read one lookup. They then register through `add-default-registrations`' `registerLocked` helper (its D4 and task 3.3) under the parent's write lock, so check-then-set is atomic, and return its error instead of panicking. A name taken by a non-default, or by a resolved default, returns the duplicate error; an explicit export replaces an unresolved default of the published name; an export of a default follows D8.
 - The registration hooks run as `registerLocked` runs them for `provide`: before-hook first, after-hook only when stored or replaced.
 - Each scope keeps an export count, an `atomic.Int32` sharing one word with the default count (narrowed from `Int64` to `Int32`), so `Scope` stays 128 bytes and `RootScope`, which embeds it, stays in its 352-byte size class. It counts structurally (`wrapsExport`: an export, or a default decorating one, whatever the default decided), so increments and decrements stay paired. It is updated in `storeLocked` and `serviceShutdown`, and set by `Scope.clone` from the wrappers it copies. When the count is zero, shutdown runs the old code path unchanged, the health skip is not evaluated, and the collection walk drops the export rule; that rule is guarded by `chainHasExports` on the reader, captured as a single pointer so the walk's closure keeps its allocation size class.
 
@@ -86,13 +88,14 @@ In `shutdownWithContext`, when the scope holds at least one export (per-scope co
 - `Export` reads the source wrapper. If it is a `serviceDefault`, the export wrapper is wrapped as a default too (`serviceDefault[T]` around `serviceExport[T]`), so in the parent it follows every default rule: it yields to ancestors, an explicit same-name registration replaces it while unresolved, and registering it over an explicit service is skipped (`Export` returns nil).
 - **No recursion:** the source default's `decide()` skips default wrappers, so it never yields to its own export, which is a default. This is what fixes the loop the audit found (B1), where an explicit export made the private default yield to the export, which resolved the private default again.
 - **Application wins:** when the application's explicit service is in the parent (before or after `Export`), the parent's name resolves to it, and the private default also yields to it (it is in an ancestor). Every reader sees the application's instance.
-- **The export marker survives the wrapping:** `serviceDefault` implements `serviceWrapperUnwrapExport`. `unwrapExport()` returns the decorated export while the default is unresolved or chosen, and reports none once it yielded (it is then an alias of the application's service, not an export). `asExport` uses it, so every rule keyed on the marker (D4 health skip, D5 step 2, D6 collections, and `add-extensions`' health skip) sees exports of defaults, which is the shape every extension export takes. `serviceDefault` does not implement `serviceWrapperExport` itself: if it did, every default registration would look like an export to the shutdown planner.
+- **The export marker survives the wrapping:** `serviceDefault` implements `unwrapExport()`, returning the decorated export and whether the default yielded (once it yielded it is an alias of the application's service, not an export). `asExport` uses it, so every rule keyed on the marker (D4 health skip, D5 pass set, D6 collections and by-type, and `add-extensions`' health skip) sees exports of defaults, which is the shape every extension export takes. `serviceDefault` does not implement `serviceWrapperExport` itself: if it did, every default registration would look like an export to the shutdown planner.
 
 ## Risks / Trade-offs
 
 - [The four-step shutdown changes ordering for scopes that hold exports] → it is limited to such scopes (counter). The scenario "Scopes without exports keep children-first shutdown" and the full existing suite pin the unchanged path.
 - [Lookup by child name breaks if the user re-creates a same-name child after shutting the original down] → `Scope(name)` panics on a reserved name today (audit V4), so it can't happen. It is documented in the godoc of `Export`.
-- [Step 2's reverse walk costs O(edges) per scope shutdown] → it only runs in scopes with exports, and shutdown is not a hot path. A benchmark is not required, but the existing `bench/` suite is compared with `benchstat` for `Invoke` and `InvokeAll`, to check that the collection check costs nothing without exports.
+- [The cross-scope pass snapshots the DAG edges among the pass set at each shutdown of a scope holding exports] → it only runs when the export count is non-zero, and shutdown is not a hot path; the benchmark gate is repeated after it.
+- [Each exporting descendant joins the shutdown protocol from its ancestor's pass] → it reuses `joinClose`/`finishScopeClose`; the existing join tests and a new concurrent `Shutdown` of an exporting child during a root shutdown pin it. A benchmark is not required, but the existing `bench/` suite is compared with `benchstat` for `Invoke` and `InvokeAll`, to check that the collection check costs nothing without exports.
 
 ## Public API & Defaults
 
@@ -108,7 +111,7 @@ No exported identifier changes and nothing is BREAKING. `Export` takes `*Scope` 
 
 ## Test Strategy
 
-The production code goes in `export.go` (new), tested in `export_test.go`. The shutdown ordering is tested in `scope_test.go`, with an example in `export_example_test.go`. Tests are table-driven with named subtests and testify, run under `-race`, and use `testWithTimeout` around shutdown tests.
+The production code goes in `export.go` (new), tested in `export_test.go`; the cross-scope shutdown pass (D5) goes in `export_shutdown.go` (new), tested with the other shutdown ordering tests in `scope_test.go`. The shutdown ordering is tested in `scope_test.go`, with an example in `export_example_test.go`. Tests are table-driven with named subtests and testify, run under `-race`, and use `testWithTimeout` around shutdown tests.
 
 | Scenario | Test | Kind |
 |---|---|---|
@@ -136,7 +139,7 @@ The production code goes in `export.go` (new), tested in `export_test.go`. The s
 | Closing and Closed around child scope shutdown | scope_hooks_test.go: existing `TestScopeHooks_ClosingClosed` (unchanged) | unit, table |
 | Root scope fires no scope hook | scope_hooks_test.go: existing `TestScopeHooks_RootFiresNone` (unchanged) | unit |
 | Overlapping shutdowns of a child scope join | root_refresh_test.go: existing `TestScopeShutdown_ConcurrentShutdownsJoin`, `TestScopeShutdown_JoinBoundedByContext`, `TestScopeShutdown_JoinedWinnerPanics` (unchanged) | unit, synctest |
-| Closing and Closed around an exporting child | scope_test.go: `TestScopeShutdown_ExportingChildHookOrder` | unit, timeout |
+| Closing and Closed around an exporting child | scope_test.go: `TestScopeShutdown_ExportingChildHookOrder/{parent_dependent,child_depends_on_parent}` | unit, table, timeout |
 | A same-name grandchild does not capture the export | export_test.go: `TestExport_DirectChildOnly` (100 runs) | unit |
 | An export replaces an unresolved default in the parent | export_test.go: `TestExport_ReplacesUnresolvedDefault` | unit |
 | Exported target is shut down once | export_test.go: `TestExport_TargetShutdownOnce/{root,published_name,owning_scope}` | unit, table |
@@ -144,6 +147,14 @@ The production code goes in `export.go` (new), tested in `export_test.go`. The s
 | Exporting a default where an explicit service exists succeeds without effect | export_test.go: `TestExport_DefaultOverExplicitSkipped` | unit |
 | A health check from the source scope checks the exported service once | export_test.go: `TestExport_SourceScopeHealthCheck/{explicit_source,default_source}` | unit, table |
 | Alias does not duplicate its target | invoke_all_test.go: existing `TestInvokeAll_AliasExcluded` (unchanged; the MODIFIED text only clarifies exports) | unit |
+| An exporting child's service that depends on a parent dependent shuts down first | scope_test.go: `TestScopeShutdown_ChildDependsOnParentDependent/{direct,chain}` (each 50 runs) | unit, table, timeout |
+| Exporting siblings order shutdown through their exports | scope_test.go: `TestScopeShutdown_ExportingSiblings` (200 runs) | unit, timeout, race |
+| A provider does not select its own export by type | export_test.go: `TestExport_InvokeAsSkipsOwnExport/{direct,chained}` | unit, table |
+| An exporting child with no service left closes once | scope_test.go: `TestScopeShutdown_ExportingChildHookOrder/no_service_left` | unit, table, timeout |
+| Shutdowns of an exporting child join its parent's shutdown | scope_test.go: `TestScopeShutdown_ExportingChildJoin/{root_first,child_first}`, `TestScopeShutdown_ExportingChildJoinAfterPanic` | unit, table, synctest |
+| A dependency cycle through an export still shuts every service down | scope_test.go: `TestScopeShutdown_ExportCycle` | unit, timeout |
+| The shutdown report covers the exporting descendants | scope_test.go: `TestScopeShutdown_ExportReport` | unit |
+| An exporting child waits for a running start | scope_test.go: `TestScopeShutdown_ExportingChildWaitsForStart` | unit, synctest |
 
 The Risks section adds `TestExport_ShutdownOrderRepeated`: the direct row 200 times under `-race`, which pins that the order doesn't depend on scheduling.
 
@@ -151,7 +162,8 @@ Examples (docs): `ExampleExport` (a private pool in a child scope, the client ex
 
 **Hot paths and their coverage:**
 - Export resolution: the publishes, resolves-from-source and concurrent tests.
-- Scope shutdown with and without exports: the four `TestScopeShutdown_*` tests and the existing scope shutdown suite.
+- Scope shutdown with and without exports: the `TestScopeShutdown_*` export tests and the existing scope shutdown suite.
+- The shutdown pass (`export_shutdown.go`): every branch, including a join of a descendant already shutting down elsewhere, the cycle fallback, a descendant with no service left, a descendant's start-wait error and the release of joined descendants after a panic. Only panics inside the per-service goroutines are not exercised; they are unrecoverable, as in the scope shutdown without exports.
 - Collection candidates: the membership test and the existing collection suite.
 - Start ordering: the start-order test.
 - Health check: the lifecycle and root health check tests.

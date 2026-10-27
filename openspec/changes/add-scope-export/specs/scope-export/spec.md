@@ -277,7 +277,7 @@ Then the start order is "*app.Pool", "*app.Server"
 <!-- cases: N/A 9 panics, 10 compatibility: unchanged / new API -->
 
 ### Requirement: Collections and type selection see exports in the parent
-In the parent and its other descendants, an export SHALL be a member of collections and a candidate of by-type selection, resolving to the exported instance. Read from the exporting scope or its descendants, the export SHALL NOT be a collection member, so the exported service is not counted twice.
+In the parent and its other descendants, an export SHALL be a member of collections and a candidate of by-type selection, resolving to the exported instance. Read from the exporting scope or its descendants, the export SHALL NOT be a collection member, so the exported service is not counted twice. A provider's own export SHALL NOT be a by-type candidate for that provider, as for an `As` alias of it.
 
 #### Scenario: Collection membership of an export
 ```gherkin
@@ -305,9 +305,24 @@ When the consumer calls doger.InvokeAs[doger.Healthchecker] from the root
 Then the result is the pool instance owned by scope "redis"
 ```
 
+#### Scenario: A provider does not select its own export by type
+```gherkin
+Given a root scope with child scope "a" and grandchild scope "c" of "a"
+And a lazy "dec" of type "*app.Decorator" in scope <scope> implementing "API", whose provider calls doger.InvokeAs[API] and wraps the result as "dec(<inner>)"
+And the consumer called <exports>
+And a lazy "base" of type "*app.Base" registered in the root afterwards, implementing "API" as "base"
+When the consumer invokes "dec" from scope <scope>
+Then the result is "dec(base)"
+
+Examples:
+  | scope | exports                                                                                          |
+  | "a"   | doger.ExportNamed[API](a, "dec", doger.ExportAs("api"))                                          |
+  | "c"   | doger.ExportNamed[API](c, "dec"), then doger.ExportNamed[API](a, "dec", doger.ExportAs("api"))   |
+```
+
 <!-- cases: N/A 2 overrides: membership has no option; the export's position is its own registration in the parent, so WithOrder on the source does not move it -->
 <!-- cases: 3 zero values: no export means no member (existing "No match yields an empty collection") -->
-<!-- cases: 4 boundaries: parent, sibling, exporting scope rows -->
+<!-- cases: 4 boundaries: parent, sibling, exporting scope rows; a provider and its own renamed export, directly and through a chain of exports -->
 <!-- cases: N/A 5 invalid input: unchanged collection errors -->
 <!-- cases: N/A 6 duplicate: the exporting-scope row pins no double count -->
 <!-- cases: N/A 7 lifecycle, 8 concurrency, 9 panics: unchanged collection behavior -->

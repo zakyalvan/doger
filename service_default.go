@@ -291,20 +291,11 @@ func (s *serviceDefault[T]) ownsInstance() bool {
 	return state != defaultYielded && state != defaultSuperseded
 }
 
-// unwrapExport returns the export the default decorates, while the default
-// does not yield: once it yields, it resolves to another service.
-func (s *serviceDefault[T]) unwrapExport() (serviceWrapperExport, bool) {
-	export, ok := s.inner.(serviceWrapperExport)
-	if !ok || s.currentState() == defaultYielded {
-		return nil, false
-	}
-
-	return export, true
-}
-
-func (s *serviceDefault[T]) decoratesExport() bool {
-	_, ok := s.inner.(serviceWrapperExport)
-	return ok
+// unwrapExport returns the export the default decorates, if any, and
+// whether the default yielded: it then resolves to another service.
+func (s *serviceDefault[T]) unwrapExport() (export serviceWrapperExport, yielded bool) {
+	export, _ = s.inner.(serviceWrapperExport)
+	return export, s.currentState() == defaultYielded
 }
 
 func (s *serviceDefault[T]) clone(newScope Injector) any {

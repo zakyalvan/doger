@@ -223,41 +223,22 @@ func (d *DAG) listServicesHavingNoDependent(scopeID, scopeName string, serviceNa
 	return out
 }
 
-// listDependentsWithin returns the services of the scope identified by
-// scopeID/scopeName that are among serviceNames, or have a dependency path,
-// through any scope, to one of them. It takes a single read lock.
-func (d *DAG) listDependentsWithin(scopeID, scopeName string, serviceNames []string) []string {
-	if len(serviceNames) == 0 {
-		return []string{}
-	}
-
+// snapshotDependents returns, for each service of set, its dependents that
+// are in set too, as the graph holds them now. It takes a single read lock.
+func (d *DAG) snapshotDependents(set map[ServiceDescription]struct{}) map[ServiceDescription][]ServiceDescription {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	seen := map[ServiceDescription]struct{}{}
-	queue := make([]ServiceDescription, 0, len(serviceNames))
-	for _, name := range serviceNames {
-		desc := newServiceDescription(scopeID, scopeName, name)
-		seen[desc] = struct{}{}
-		queue = append(queue, desc)
-	}
-
-	out := make([]string, 0, len(serviceNames))
-	for len(queue) > 0 {
-		desc := queue[0]
-		queue = queue[1:]
-		if desc.ScopeID == scopeID {
-			out = append(out, desc.Service)
-		}
+	dependents := map[ServiceDescription][]ServiceDescription{}
+	for desc := range set {
 		for dependent := range d.dependents[desc] {
-			if _, ok := seen[dependent]; !ok {
-				seen[dependent] = struct{}{}
-				queue = append(queue, dependent)
+			if _, ok := set[dependent]; ok {
+				dependents[desc] = append(dependents[desc], dependent)
 			}
 		}
 	}
 
-	return out
+	return dependents
 }
 
 // explainService provides information about a service's dependencies and dependents in the DAG.

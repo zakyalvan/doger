@@ -491,68 +491,6 @@ func (s *Scope) shutdownWithContext(ctx context.Context, first *hookPanic) (repo
 	return report
 }
 
-// shutdownWithExports shuts down a scope holding exports, in order: the
-// children that export nothing, the services with a dependency path to an
-// export (and the exports), the exporting children, then its other services.
-// Its scope hooks bracket the last three steps, so exporting children close
-// inside them.
-func (s *Scope) shutdownWithExports(ctx context.Context, first *hookPanic, isChild bool) *ShutdownReport {
-	exportNames, isExporting := s.partitionChildren()
-	dependents := s.exportDependents(exportNames)
-
-	rep1 := s.shutdownChildrenInParallel(ctx, first, func(child *Scope) bool { return !isExporting(child) })
-
-	if isChild {
-		s.runScopeObserverHooks(ctx, "scope-closing", s.rootScope.opts.HookScopeClosing, first)
-	}
-
-	rep2 := s.shutdownServiceSetInParallel(ctx, dependents)
-	rep3 := s.shutdownChildrenInParallel(ctx, first, isExporting)
-	rep4 := s.shutdownServicesInParallel(ctx)
-	s.logf("shut down services")
-
-	if isChild {
-		s.runScopeObserverHooks(ctx, "scope-closed", s.rootScope.opts.HookScopeClosed, first)
-	}
-
-	return mergeShutdownReports(rep1, rep2, rep3, rep4)
-}
-
-// partitionChildren returns the names of the exports s holds, and reports
-// whether a child scope of s is one they export from.
-func (s *Scope) partitionChildren() (exportNames []string, isExporting func(*Scope) bool) {
-	s.mu.RLock()
-	for name, service := range s.services {
-		if isExport(service) {
-			exportNames = append(exportNames, name)
-		}
-	}
-	s.mu.RUnlock()
-
-	// exportSource locks s: it is called once s is unlocked
-	exporting := map[*Scope]struct{}{}
-	for _, name := range exportNames {
-		service, _ := s.serviceGet(name)
-		if export, ok := asExport(service); ok {
-			if child, _, found := export.exportSource(); found {
-				exporting[child] = struct{}{}
-			}
-		}
-	}
-
-	return exportNames, func(child *Scope) bool {
-		_, ok := exporting[child]
-		return ok
-	}
-}
-
-// exportDependents returns the services of s to shut down before the child
-// scopes exporting into it: the exports named exportNames, and the services
-// of s with a dependency path, through any scope, to one of them.
-func (s *Scope) exportDependents(exportNames []string) []string {
-	return s.rootScope.dag.listDependentsWithin(s.id, s.name, exportNames)
-}
-
 // scopeCloseRun is a running shutdown of a child scope: concurrent
 // shutdowns of the scope wait for it instead of walking the scope again.
 type scopeCloseRun struct {
@@ -704,12 +642,6 @@ func (s *Scope) shutdownChildrenInParallel(ctx context.Context, first *hookPanic
 //
 // Returns a ShutdownReport containing any errors from service shutdowns.
 func (s *Scope) shutdownServicesInParallel(ctx context.Context) *ShutdownReport {
-	return s.shutdownServiceSetInParallel(ctx, nil)
-}
-
-// shutdownServiceSetInParallel is shutdownServicesInParallel for the
-// services of the scope named in only, or for all of them when only is nil.
-func (s *Scope) shutdownServiceSetInParallel(ctx context.Context, only []string) *ShutdownReport {
 	report := &ShutdownReport{
 		Succeed:             true,
 		Services:            []ServiceDescription{},
@@ -721,16 +653,7 @@ func (s *Scope) shutdownServiceSetInParallel(ctx context.Context, only []string)
 	listServices := func() []string {
 		s.mu.RLock()
 		defer s.mu.RUnlock()
-		if only == nil {
-			return keys(s.services)
-		}
-		names := make([]string, 0, len(only))
-		for _, name := range only {
-			if _, ok := s.services[name]; ok {
-				names = append(names, name)
-			}
-		}
-		return names
+		return keys(s.services)
 	}
 
 	for {

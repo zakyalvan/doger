@@ -378,7 +378,7 @@ func collectionCandidatesFor(source collectionSource, target reflect.Type) []col
 
 		// inlined newCollectionCandidate: this walk is the hot path
 		service, ok := s.(serviceWrapperAny)
-		if !ok || (service.getServiceType() == ServiceTypeAlias && (reader == nil || !isExport(s) || readerSeesSource(reader, s))) || !serviceCanCastToType(s, target) {
+		if !ok || (service.getServiceType() == ServiceTypeAlias && excludedAlias(s, reader)) || !serviceCanCastToType(s, target) {
 			return true
 		}
 
@@ -441,7 +441,7 @@ func collectionCandidatesWithDefaults(source collectionSource, target reflect.Ty
 // scope of, and its registered type is assignable to target.
 func newCollectionCandidate(name string, scope *Scope, s any, target reflect.Type, reader *Scope) (collectionCandidate, bool) {
 	service, ok := s.(serviceWrapperAny)
-	if !ok || (service.getServiceType() == ServiceTypeAlias && (!isExport(s) || readerSeesSource(reader, s))) || !serviceCanCastToType(s, target) {
+	if !ok || (service.getServiceType() == ServiceTypeAlias && excludedAlias(s, reader)) || !serviceCanCastToType(s, target) {
 		return collectionCandidate{}, false
 	}
 
@@ -452,6 +452,18 @@ func newCollectionCandidate(name string, scope *Scope, s any, target reflect.Typ
 		scope:    scope,
 		service:  s,
 	}, true
+}
+
+// excludedAlias reports whether the alias service is not a collection member
+// read from reader: an As or Bind alias never is, and an export is not one
+// inside its source scope. reader is nil when no scope it sees holds exports.
+func excludedAlias(service any, reader *Scope) bool {
+	if reader == nil {
+		return true
+	}
+	export, ok := asExport(service)
+
+	return !ok || export.withinSource(reader)
 }
 
 // hiddenByNearerDefault records a visited service of name, nearest scope
@@ -563,7 +575,7 @@ func selectByType(injector Injector, target reflect.Type) (collectionCandidate, 
 			}
 
 			// an alias of the invoking service would resolve to it
-			if fromProvider && aliasResolvesTo(match.service, invoker) {
+			if fromProvider && aliasResolvesTo(match.service, from, invoker) {
 				continue
 			}
 
@@ -640,9 +652,25 @@ const maxAliasHops = 64
 
 // aliasResolvesTo reports whether service is an alias whose target chain
 // reaches a service named name, following each target from its alias's
-// injector, as invoking the alias does.
-func aliasResolvesTo(service any, name string) bool {
+// injector, as invoking the alias does. An export in the chain is followed to
+// its source, which must be name registered in scope: another scope's service
+// of the same name is a different one.
+func aliasResolvesTo(service any, scope *Scope, name string) bool {
 	for range maxAliasHops {
+		if export, ok := asExport(service); ok {
+			source, sourceName, found := export.exportSource()
+			if !found {
+				return false
+			}
+			if source == scope && sourceName == name {
+				return true
+			}
+			if service, found = source.serviceGet(sourceName); !found {
+				return false
+			}
+			continue
+		}
+
 		alias, ok := service.(serviceWrapperAliasTarget)
 		if !ok {
 			return false

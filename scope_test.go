@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNewScope(t *testing.T) {
@@ -2209,30 +2211,373 @@ func TestScopeShutdown_WithoutExportsUnchanged(t *testing.T) {
 
 func TestScopeShutdown_ExportingChildHookOrder(t *testing.T) {
 	t.Parallel()
+
+	tests := []struct {
+		name   string
+		jobs   func(jobs *Scope, record func(string)) // registers more services in jobs, or shuts some down
+		events []string                               // the recorded events, unless check is set
+		check  func(t *testing.T, events []string)
+	}{
+		{
+			name: "parent_dependent",
+			jobs: func(*Scope, func(string)) {},
+			events: []string{
+				"closing tenant", "shutdown tenant",
+				"closing jobs", "shutdown jobs", "closed jobs",
+				"closed tenant",
+			},
+		},
+		{
+			name: "child_depends_on_parent",
+			jobs: func(jobs *Scope, record func(string)) {
+				ProvideNamed(jobs, "x", nodeInvoking("x", "worker", record))
+				MustInvokeNamed[*exNode](jobs, "x")
+			},
+			events: []string{
+				"closing tenant",
+				"closing jobs", "shutdown x", "shutdown tenant", "shutdown jobs", "closed jobs",
+				"closed tenant",
+			},
+		},
+		{
+			name: "no_service_left",
+			jobs: func(jobs *Scope, _ func(string)) {
+				if err := ShutdownNamed(jobs, NameOf[*exPool]()); err != nil {
+					panic(err)
+				}
+			},
+			check: func(t *testing.T, events []string) {
+				t.Helper()
+				closing, closed := slices.Index(events, "closing jobs"), slices.Index(events, "closed jobs")
+				assert.Equal(t, 1, count(events, "closing jobs"), events)
+				assert.Equal(t, 1, count(events, "closed jobs"), events)
+				assert.Equal(t, closing+1, closed, events)
+				assert.Less(t, slices.Index(events, "closing tenant"), closing, events)
+				assert.Less(t, closed, slices.Index(events, "closed tenant"), events)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, 3*time.Second)
+
+			recorder := &exRecorder{}
+			hook := func(event string) func(context.Context, *Scope) {
+				return func(_ context.Context, scope *Scope) { recorder.record(event + " " + scope.Name()) }
+			}
+			root := NewWithOpts(&InjectorOpts{
+				HookScopeClosing: []func(context.Context, *Scope){hook("closing")},
+				HookScopeClosed:  []func(context.Context, *Scope){hook("closed")},
+			})
+			tenant := root.Scope("tenant")
+			jobs := tenant.Scope("jobs")
+			Provide(jobs, func(Injector) (*exPool, error) { return &exPool{label: "jobs", record: recorder.record}, nil })
+			MustExport[*exPool](jobs)
+			ProvideNamed(tenant, "worker", nodeInvoking("tenant", "", recorder.record))
+			MustInvokeNamed[*exNode](tenant, "worker")
+			tt.jobs(jobs, recorder.record)
+
+			tenant.Shutdown()
+
+			if tt.check != nil {
+				tt.check(t, recorder.list())
+				return
+			}
+			assert.Equal(t, tt.events, recorder.list())
+		})
+	}
+}
+
+// count returns how many times event occurs in events.
+func count(events []string, event string) int {
+	n := 0
+	for _, e := range events {
+		if e == event {
+			n++
+		}
+	}
+	return n
+}
+
+func TestScopeShutdown_ChildDependsOnParentDependent(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		services func(root *RootScope, redis *Scope, record func(string))
+		order    []string
+	}{
+		{
+			name: "direct",
+			services: func(root *RootScope, redis *Scope, record func(string)) {
+				ProvideNamed(root, "p", nodeInvoking("p", "", record))
+				ProvideNamed(redis, "x", nodeInvoking("x", "p", record))
+			},
+			order: []string{"shutdown x", "shutdown p", "shutdown pool"},
+		},
+		{
+			name: "chain",
+			services: func(root *RootScope, redis *Scope, record func(string)) {
+				ProvideNamed(root, "p1", nodeInvoking("p1", "", record))
+				ProvideNamed(root, "p2", nodeInvoking("p2", "p1", record))
+				ProvideNamed(redis, "x", nodeInvoking("x", "p2", record))
+			},
+			order: []string{"shutdown x", "shutdown p2", "shutdown p1", "shutdown pool"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, 10*time.Second)
+
+			for range 50 {
+				root := New()
+				redis := root.Scope("redis")
+				recorder := &exRecorder{}
+				Provide(redis, func(Injector) (*exPool, error) { return &exPool{record: recorder.record}, nil })
+				MustExport[*exPool](redis)
+				tt.services(root, redis, recorder.record)
+				x := MustInvokeNamed[*exNode](redis, "x")
+
+				root.Shutdown()
+
+				if !assert.Equal(t, tt.order, recorder.list()) || !assert.False(t, x.sawClosed.Load()) {
+					return
+				}
+			}
+		})
+	}
+}
+
+func TestScopeShutdown_ExportingSiblings(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, 30*time.Second)
+
+	for range 200 {
+		root := New()
+		a := root.Scope("a")
+		b := root.Scope("b")
+		recorder := &exRecorder{}
+		Provide(b, func(Injector) (*exPool, error) { return &exPool{record: recorder.record}, nil })
+		MustExport[*exPool](b)
+		Provide(a, clientProvider("client-1", nil))
+		MustExport[*exClient](a)
+		ProvideNamed(a, "x", nodeInvoking("x", "", recorder.record))
+		x := MustInvokeNamed[*exNode](a, "x")
+
+		root.Shutdown()
+
+		if !assert.Equal(t, []string{"shutdown x", "shutdown pool"}, recorder.list()) || !assert.False(t, x.sawClosed.Load()) {
+			return
+		}
+	}
+}
+
+// gatedNode is a service whose first Shutdown signals entered, then waits
+// for release; without channels it only counts its calls.
+type gatedNode struct {
+	entered, release chan struct{}
+	calls            atomic.Int32
+}
+
+func (n *gatedNode) Shutdown() error {
+	if n.calls.Add(1) == 1 && n.entered != nil {
+		close(n.entered)
+		<-n.release
+	}
+	return nil
+}
+
+func TestScopeShutdown_ExportingChildJoin(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		childFirst bool // redis.Shutdown runs first, blocked in its HookScopeClosing; else root.Shutdown, blocked in app
+	}{
+		{name: "root_first"},
+		{name: "child_first", childFirst: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, 3*time.Second)
+
+			synctest.Test(t, func(t *testing.T) {
+				is := assert.New(t)
+
+				entered, release := make(chan struct{}), make(chan struct{})
+				var closing, closed atomic.Int32
+				root := New()
+				root.AddScopeClosingHook(func(context.Context, *Scope) {
+					if closing.Add(1) == 1 && tt.childFirst {
+						close(entered)
+						<-release
+					}
+				})
+				root.AddScopeClosedHook(func(context.Context, *Scope) { closed.Add(1) })
+				redis := root.Scope("redis")
+				pool := &exPool{}
+				ProvideValue(redis, pool)
+				MustExport[*exPool](redis)
+				app := &gatedNode{}
+				if !tt.childFirst {
+					app.entered, app.release = entered, release
+				}
+				ProvideNamed(root, "app", func(i Injector) (*gatedNode, error) {
+					_, err := Invoke[*exPool](i)
+					return app, err
+				})
+				MustInvokeNamed[*gatedNode](root, "app")
+
+				first, second := root.Shutdown, redis.Shutdown
+				if tt.childFirst {
+					first, second = redis.Shutdown, root.Shutdown
+				}
+				firstDone := make(chan *ShutdownReport, 1)
+				go func() { firstDone <- first() }()
+				<-entered
+				secondDone := make(chan *ShutdownReport, 1)
+				go func() { secondDone <- second() }()
+				synctest.Wait() // the second shutdown joined the first, or ended
+				if !tt.childFirst {
+					is.Equal(int32(0), pool.shutdowns.Load(), "pool shut down while app shuts down")
+				}
+				close(release)
+				firstReport, secondReport := <-firstDone, <-secondDone
+
+				is.True(firstReport.Succeed, "first report: %v", firstReport.Errors)
+				is.True(secondReport.Succeed, "second report: %v", secondReport.Errors)
+				is.Equal(int32(1), closing.Load(), "HookScopeClosing runs")
+				is.Equal(int32(1), closed.Load(), "HookScopeClosed runs")
+				is.Equal(int32(1), app.calls.Load(), "app shut down")
+				is.Equal(int32(1), pool.shutdowns.Load(), "pool shut down")
+			})
+		})
+	}
+}
+
+func TestScopeShutdown_ExportingChildJoinAfterPanic(t *testing.T) {
+	t.Parallel()
 	testWithTimeout(t, 3*time.Second)
 
-	recorder := &exRecorder{}
-	hook := func(event string) func(context.Context, *Scope) {
-		return func(_ context.Context, scope *Scope) { recorder.record(event + " " + scope.Name()) }
-	}
-	root := NewWithOpts(&InjectorOpts{
-		HookScopeClosing: []func(context.Context, *Scope){hook("closing")},
-		HookScopeClosed:  []func(context.Context, *Scope){hook("closed")},
+	synctest.Test(t, func(t *testing.T) {
+		is := assert.New(t)
+
+		root := NewWithOpts(&InjectorOpts{
+			Logf: func(format string, _ ...any) {
+				if strings.Contains(format, "hook panicked") {
+					panic("logf")
+				}
+			},
+			HookScopeClosing: []func(context.Context, *Scope){func(context.Context, *Scope) { panic("closing") }},
+		})
+		tenant := root.Scope("tenant")
+		jobs := tenant.Scope("jobs")
+		ProvideValue(jobs, &exPool{})
+		MustExport[*exPool](jobs)
+		worker := &gatedNode{entered: make(chan struct{}), release: make(chan struct{})}
+		ProvideNamed(tenant, "worker", func(i Injector) (*gatedNode, error) {
+			_, err := Invoke[*exPool](i)
+			return worker, err
+		})
+		MustInvokeNamed[*gatedNode](tenant, "worker")
+
+		panicked := make(chan any, 1)
+		go func() {
+			defer func() { panicked <- recover() }()
+			tenant.Shutdown()
+		}()
+		<-worker.entered // tenant's pass shuts the worker down
+		jobsDone := make(chan *ShutdownReport, 1)
+		go func() { jobsDone <- jobs.Shutdown() }()
+		synctest.Wait() // jobs.Shutdown joined tenant's pass
+		close(worker.release)
+
+		is.Equal("logf", <-panicked)
+		report := <-jobsDone
+		is.False(report.Succeed)
+		is.ErrorContains(report.Errors[newServiceDescription(jobs.ID(), jobs.Name(), "")], "DI: scope shutdown did not complete")
 	})
-	tenant := root.Scope("tenant")
-	jobs := tenant.Scope("jobs")
-	Provide(jobs, func(Injector) (*exPool, error) { return &exPool{label: "jobs", record: recorder.record}, nil })
-	MustExport[*exPool](jobs)
-	ProvideNamed(tenant, "worker", nodeInvoking("tenant", "", recorder.record))
-	MustInvokeNamed[*exNode](tenant, "worker")
+}
 
-	tenant.Shutdown()
+func TestScopeShutdown_ExportCycle(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, 3*time.Second)
 
-	assert.Equal(t, []string{
-		"closing tenant", "shutdown tenant",
-		"closing jobs", "shutdown jobs", "closed jobs",
-		"closed tenant",
-	}, recorder.list())
+	root := New()
+	redis := root.Scope("redis")
+	recorder := &exRecorder{}
+	var kept Injector // the pool provider's injector
+	Provide(redis, func(i Injector) (*exPool, error) {
+		kept = i
+		return &exPool{record: recorder.record}, nil
+	})
+	MustExport[*exPool](redis)
+	MustInvoke[*exPool](root) // built before app: the kept injector's chain does not hold app
+	ProvideNamed(root, "app", nodeInvoking("app", "", recorder.record))
+	MustInvokeNamed[*exNode](root, "app")
+	// app is built: no chain cycle, only the edge pool -> app closing the cycle
+	MustInvokeNamed[*exNode](kept, "app")
+
+	report := root.Shutdown()
+
+	assert.True(t, report.Succeed, "report: %v", report.Errors)
+	assert.ElementsMatch(t, []string{"shutdown app", "shutdown pool"}, recorder.list())
+}
+
+func TestScopeShutdown_ExportReport(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, 3*time.Second)
+
+	root := New()
+	redis := root.Scope("redis")
+	Provide(redis, func(Injector) (*exPool, error) { return &exPool{}, nil })
+	MustExport[*exPool](redis)
+	MustInvoke[*exPool](root)
+
+	report := root.Shutdown()
+
+	name := NameOf[*exPool]()
+	assert.Contains(t, report.Services, newServiceDescription(root.ID(), root.Name(), name))
+	assert.Contains(t, report.Services, newServiceDescription(redis.ID(), redis.Name(), name))
+}
+
+func TestScopeShutdown_ExportingChildWaitsForStart(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, 3*time.Second)
+
+	synctest.Test(t, func(t *testing.T) {
+		is := assert.New(t)
+
+		root := New()
+		require.NoError(t, root.Start())
+		tenant := root.Scope("tenant")
+		jobs := tenant.Scope("jobs")
+		events := &callRecorder{}
+		w := newGatedStarter(events)
+		ProvideNamed(jobs, "w", func(Injector) (*gatedStarter, error) { return w, nil })
+		MustExportNamed[*gatedStarter](jobs, "w")
+		runErr := make(chan error, 1)
+		go func() { runErr <- jobs.Start() }()
+		<-w.entered
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+		defer cancel()
+
+		report := tenant.ShutdownWithContext(ctx)
+
+		is.False(report.Succeed)
+		is.ErrorIs(report.Errors[newServiceDescription(jobs.ID(), jobs.Name(), "")], context.DeadlineExceeded)
+		// as without exports: the shutdown of w, still starting, gets the ended context
+		is.ErrorIs(report.Errors[newServiceDescription(jobs.ID(), jobs.Name(), "w")], context.DeadlineExceeded)
+		close(w.release)
+		<-runErr
+		is.Equal(0, count(events.list(), "shutdown"), "Shutdown of w called")
+	})
 }
 
 func TestScope_ExportCount(t *testing.T) {

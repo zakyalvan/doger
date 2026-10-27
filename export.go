@@ -62,13 +62,19 @@ func ExportAs(name string) ExportOption {
 // returns nil and leaves it in place. The private default never yields to
 // its own export.
 //
-// Shutdown order: when the parent shuts down, its services with a dependency
-// path to the export (invoked, DependsOn or DeclareDependency edges, through
-// any scope) shut down before from, so they never see the exported service
-// closed. The parent's other child scopes shut down first, as before, and its
-// other services after from. from therefore runs its HookScopeClosing and
-// HookScopeClosed hooks inside its parent's pair, not before it. A parent
-// Starter that depends on the export starts after the exported Starter.
+// Shutdown order: when the parent shuts down, the services of the parent and
+// of its exporting descendants (from, and the children exporting into from,
+// recursively) shut down in one pass, in dependency order (invoked, DependsOn
+// or DeclareDependency edges), whatever scope each belongs to: a service
+// shuts down once no service still running in the pass depends on it. The
+// parent's services that use the export therefore shut down before the
+// exported service, and so do the services of from, or of an exporting
+// sibling, that use them. The children that export nothing shut down first,
+// as before. from runs its HookScopeClosing hooks just before its first
+// service shuts down and its HookScopeClosed hooks once its services and its
+// own exporting children are done, inside its parent's pair. A Shutdown of
+// from during the pass waits for it. A parent Starter that depends on the
+// export starts after the exported Starter.
 //
 // The source is found by the name of from among the direct children of its
 // parent, at every invocation: a clone of the container resolves the cloned
@@ -81,12 +87,12 @@ func Export[T any](from *Scope, opts ...ExportOption) error {
 // The service is published as name unless [ExportAs] renames it.
 func ExportNamed[T any](from *Scope, name string, opts ...ExportOption) error {
 	published := buildExportOptions(name, opts).published
-	if err := validateExport(from, name, published, reflect.TypeFor[T]()); err != nil {
+	source, err := validateExport(from, name, published, reflect.TypeFor[T]())
+	if err != nil {
 		return err
 	}
 
 	owner := from.parentScope
-	source, _ := from.serviceGet(name)
 	export := wrapExportIfDefault(source, newServiceExport[T](published, owner, from.name, name))
 
 	root := owner.rootScope
@@ -118,27 +124,28 @@ func wrapExportIfDefault[T any](source any, export *serviceExport[T]) serviceWra
 	return export
 }
 
-// validateExport returns the error of an export of sourceName from from,
-// published as publishedName and typed target, or nil when it is valid.
-func validateExport(from *Scope, sourceName, publishedName string, target reflect.Type) error {
+// validateExport returns the source of an export of sourceName from from,
+// published as publishedName and typed target, or the error of the export
+// when it is invalid.
+func validateExport(from *Scope, sourceName, publishedName string, target reflect.Type) (any, error) {
 	if from == nil {
-		return errors.New("DI: cannot export from a nil scope")
+		return nil, errors.New("DI: cannot export from a nil scope")
 	}
 	if from.parentScope == nil {
-		return fmt.Errorf("DI: scope `%s` has no parent scope to export to", from.name)
+		return nil, fmt.Errorf("DI: scope `%s` has no parent scope to export to", from.name)
 	}
 	if publishedName == "" {
-		return errors.New("DI: export name cannot be empty")
+		return nil, errors.New("DI: export name cannot be empty")
 	}
 	source, ok := from.serviceGet(sourceName)
 	if !ok {
-		return fmt.Errorf("DI: service `%s` has not been declared", sourceName)
+		return nil, fmt.Errorf("DI: service `%s` has not been declared", sourceName)
 	}
 	if !serviceCanCastToType(source, target) {
-		return fmt.Errorf("DI: service `%s` is not assignable to `%s`", sourceName, typetostring.GetReflectType(target))
+		return nil, fmt.Errorf("DI: service `%s` is not assignable to `%s`", sourceName, typetostring.GetReflectType(target))
 	}
 
-	return nil
+	return source, nil
 }
 
 // MustExport is like [Export] but panics with the error Export returns.
@@ -174,8 +181,9 @@ type serviceWrapperExport interface {
 // serviceWrapperUnwrapExport is implemented by the wrappers that decorate
 // another one, such as defaults, which may decorate an export.
 type serviceWrapperUnwrapExport interface {
-	unwrapExport() (serviceWrapperExport, bool)
-	decoratesExport() bool // whether it decorates an export, whatever it decided
+	// unwrapExport returns the export the wrapper decorates (nil when it
+	// decorates none), and whether the wrapper yielded to another service.
+	unwrapExport() (export serviceWrapperExport, yielded bool)
 }
 
 // wrapsExport reports whether service is an export, or a default decorating
@@ -185,7 +193,8 @@ func wrapsExport(service any) bool {
 	case serviceWrapperExport:
 		return true
 	case serviceWrapperUnwrapExport:
-		return wrapper.decoratesExport()
+		export, _ := wrapper.unwrapExport()
+		return export != nil
 	default:
 		return false
 	}
@@ -211,16 +220,11 @@ func asExport(service any) (serviceWrapperExport, bool) {
 	case serviceWrapperExport:
 		return wrapper, true
 	case serviceWrapperUnwrapExport:
-		return wrapper.unwrapExport()
+		export, yielded := wrapper.unwrapExport()
+		return export, export != nil && !yielded
 	default:
 		return nil, false
 	}
-}
-
-// isExport reports whether service is an export.
-func isExport(service any) bool {
-	_, ok := asExport(service)
-	return ok
 }
 
 // readerSeesSource reports whether export is an export and reader is inside
