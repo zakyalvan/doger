@@ -472,6 +472,34 @@ Examples:
 <!-- cases: N/A 9 panics: a panic in the replacing Extend is a failing replacement -->
 <!-- cases: N/A 10 compatibility: new API -->
 
+### Requirement: A declined replacement keeps the required install
+When the explicit `Extend` that replaces a required install declines with `ErrExtensionDisabled`, the required install SHALL be installed again from its value, and `Extend` SHALL return an `*ExtensionError` matching `ErrExtensionConflict` and not `ErrExtensionDisabled`. The identity SHALL stay installed through `Require`, not disabled.
+
+#### Scenario: A declined replacement restores the required install
+```gherkin
+Given a root scope
+And extension "cache" whose Extend calls x.Require(redis.Extension(redis.Addr("default:6379")))
+And doger.Extend(root, cacheExt) returned nil
+When the consumer calls doger.Extend(root, redis.Extension(redis.Addr("off:6379"))) whose Extend returns doger.ErrExtensionDisabled
+Then the error is an *ExtensionError named "redis" matching ErrExtensionConflict
+And the error does not match ErrExtensionDisabled
+And <then>
+
+Examples:
+  | then                                                                                                   |
+  | invoking "*redis.Client" from the root returns a client using "default:6379"                           |
+  | a later doger.Extend(root, redis.Extension(redis.Addr("prod:6379"))) returns nil, the restored install being unresolved |
+```
+
+<!-- cases: 2 overrides: the explicit Extend is the override; its decline cannot remove a required install -->
+<!-- cases: N/A 3 zero values, 4 boundaries: no input -->
+<!-- cases: 5 errors: ErrExtensionConflict, not ErrExtensionDisabled -->
+<!-- cases: 6 duplicate: the restored install stays replaceable while unresolved (second row) -->
+<!-- cases: 7 lifecycle: the declined attempt is rolled back, then the required install is installed again -->
+<!-- cases: N/A 8 concurrency: as in "An explicit Extend replaces an unused required install" -->
+<!-- cases: N/A 9 panics: a panic is a failing replacement -->
+<!-- cases: N/A 10 compatibility: new API -->
+
 ### Requirement: Extend follows the container phase
 `Extend` SHALL be allowed while the container is idle, starting, started, ready or failed. Services an extension adds after a successful Start SHALL be started by the next `Refresh`; after a failed Start, `Refresh` fails with `ErrNotStarted` as today. In the closing or closed phase, `Extend` SHALL fail with an error matching `ErrStartAfterShutdown` and install nothing.
 

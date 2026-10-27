@@ -17,9 +17,9 @@ type Extension interface {
 
 `Name` is lowercase alphanumeric words joined by single dashes, such as `redis` or `redis-cluster`. `Extend` registers the services through `x`. Further extension points are optional interfaces, never new methods, so your extension keeps compiling as the SPI grows:
 
-| Optional interface | Purpose |
-|---|---|
-| `ExtensionInstance` (`Instance() string`) | an instance key, to install the extension more than once |
+| Optional interface                             | Purpose                                                                      |
+| ---------------------------------------------- | ---------------------------------------------------------------------------- |
+| `ExtensionInstance` (`Instance() string`)      | an instance key, to install the extension more than once                     |
 | `ExtensionPlacement` (`Placement() Placement`) | `PlacementFlat` to register into the root; the default is `PlacementPrivate` |
 
 ## A complete extension {#example}
@@ -102,7 +102,7 @@ func (e *extension) Extend(x *doger.ExtensionContext) error {
 
 `Require` returns `nil` when the identity is already installed, whatever its options, so several extensions can require the same one. A cycle (`a` requires `b` requires `a`), on one goroutine or across goroutines installing concurrently, fails with `ErrExtensionCycle` instead of deadlocking. A `doger.Extend` called from inside `Extend` is not tracked this way: if it leads back to an extension being installed, it deadlocks, as a `sync.Once.Do` called from its own function does.
 
-An install made only through `Require` is replaced by a later explicit `doger.Extend` of the same identity with other options, as long as none of its services, nor any service of a scope below its private scope, was resolved; afterwards, that `Extend` conflicts. The replacing `Extend` may rename the private scope or flatten the extension. A required install that its author places flat (`PlacementFlat`) cannot be rolled back, so it is never replaced. If the replacing `Extend` fails, the required install is installed again from its value, so the extensions that required it keep working. Resolving the required extension's services while an `Extend` replaces it is unsupported: such a resolution may get a service that is then shut down.
+An install made only through `Require` is replaced by a later explicit `doger.Extend` of the same identity with other options, as long as none of its services, nor any service of a scope below its private scope, was resolved; afterwards, that `Extend` conflicts. The replacing `Extend` may rename the private scope or flatten the extension. A required install that its author places flat (`PlacementFlat`) cannot be rolled back, so it is never replaced. If the replacing `Extend` fails, or declines with `ErrExtensionDisabled`, the required install is installed again from its value, so the extensions that required it keep working. A declined replacement returns an `*ExtensionError` matching `ErrExtensionConflict`, not `ErrExtensionDisabled`: the decline cannot take effect while the install is required. Resolving the required extension's services while an `Extend` replaces it is unsupported: such a resolution may get a service that is then shut down.
 
 ## Configuration {#configuration}
 

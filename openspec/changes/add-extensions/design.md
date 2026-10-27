@@ -48,7 +48,7 @@ func ExtensionProperties(i Injector) (Properties, bool)
 - **Context validity.** An `ExtensionContext` is valid only while its `Extend` runs. A `closed` flag set on return makes `ExtensionExport*` and `Require` fail with `ErrInvalidExtension`, and makes its `Properties` view miss and log once. Providers use `ExtensionProperties(i)` instead, which is clone-safe because it binds to the provider's own container.
 
 ### D2. Installation entries and a waits-for graph
-- `RootScope` gains one field, `ext atomic.Pointer[extensionRegistry]`, set on the first `Extend`. The registry holds a mutex (short critical sections only) and `entries map[extensionID]*extensionEntry`, where `extensionID{typ reflect.Type; instance string}`, plus the private scope names and the waits-for graph. A lazily allocated registry keeps containers without extensions on their old paths. `RootScope` is exactly at a 352-byte allocation size class and one pointer moves it to the next; a benchmark probe and the final benchstat showed no measurable effect.
+- `RootScope` gains one field, `ext atomic.Pointer[extensionRegistry]`, set on the first `Extend`, the first property read, or the first clone (D10). The registry holds a mutex (short critical sections only) and `entries map[extensionID]*extensionEntry`, where `extensionID{typ reflect.Type; instance string}`, plus the private scope names and the waits-for graph. A container without extensions holds no registry, or an empty one after a clone; with no entry, every path is today's. `RootScope` is exactly at a 352-byte allocation size class and one pointer moves it to the next; a benchmark probe and the final benchstat showed no measurable effect.
 - **Entry states:**
   - **installing**: a `done` channel and the session ID that owns it;
   - **installed**: value, effective options, scope name, `viaRequire` flag, export names;
@@ -85,7 +85,8 @@ func ExtensionProperties(i Injector) (Properties, bool)
 - **Explicit `Extend` over a `viaRequire` entry with an unequal value:**
   - If no service of its private scope or that scope's descendants was resolved, the old install is rolled back (D4) and the new one installed. "Resolved" is judged by each scope's own `orderedInvocation`, read under its lock. Resolving an export invokes its source there, so exports count too.
   - The replacement claims the identity in the claim step and keeps the private scope name reserved when the new plan uses the same name; otherwise it reserves the new name (or none, when flat) and releases the old one.
-  - **A failed replacement restores the required install** (proposal Defect F1): when the new install fails, including a failure of the old install's rollback shutdown, the old value is installed again in the same call, as a required install (`viaRequire`), and the returned `*ExtensionError` joins the replacement's failure with any failure of that reinstall. Reinstalling is safe because nothing of the old install had been resolved.
+  - **A failed or declined replacement restores the required install** (proposal Defects F1 and F13): when the new install fails, including a failure of the old install's rollback shutdown, or declines with `ErrExtensionDisabled`, the old value is installed again in the same call, as a required install (`viaRequire`), and the returned `*ExtensionError` joins the replacement's outcome with any failure of that reinstall. Reinstalling is safe because nothing of the old install had been resolved.
+  - **A declined replacement is a conflict.** Its error matches `ErrExtensionConflict`, not `ErrExtensionDisabled`: the installer's decline cannot take effect while the install is required. Nothing is recorded as disabled and no disabled line is logged.
   - **Concurrent resolution is unsupported.** A resolution of the old install's services that starts between the claim's check and the rollback would get a service that is then shut down. Closing that window would need an exclusive lock on every invocation of the scope; instead it is documented (godoc of `Require` and the authors' guide), like `Extend` concurrent with `Start`. It was not reproduced (review finding F2).
   - Otherwise `ErrExtensionConflict`.
   - Flattened `viaRequire` installs cannot be rolled back, so they always conflict.
@@ -101,6 +102,7 @@ func ExtensionProperties(i Injector) (Properties, bool)
   - Flattened, nothing is rolled back (D4), so the registrations stay; the identity is still recorded as disabled.
   - When the rollback's shutdown fails, `Extend` returns an `*ExtensionError` wrapping the report and not the `ErrExtensionDisabled` cause, so callers checking `errors.Is(err, ErrExtensionDisabled)` do not mistake a leak for a clean decline; the identity is still recorded as disabled.
   - A `Require` whose own install ends disabled returns `ErrRequiredExtensionDisabled`, like a `Require` of an identity already disabled. When that declined attempt's shutdown failed, the `*ExtensionError` holding the report is joined to it, so the leak is reported through the requirer too.
+- **An explicit `Extend` replacing a required install that declines** restores it and conflicts (D5).
 - **A failure while installing a dependency** fails the requirer through the error `Require` returns. Each attempt rolls back only its own scope, and dependencies that installed successfully stay installed (spec).
 
 ### D7. Errors
@@ -122,7 +124,7 @@ The root's own services and each extension scope's own services are queued by on
 - **`PropertySource`** is `interface{ Lookup(key string) (string, bool) }`.
 - **`EnvPropertySource(prefix)`** maps a key by upper-casing it, replacing `-` with `__`, `.` with `_` and `/` with `___`, and prepending the prefix, then calls `os.LookupEnv`. With the D1 grammar, a run of underscores is 1 (a dot), 2 (a dash) or 3 (the instance separator) long and two runs are never adjacent, so distinct keys never map to the same variable.
 - **Full keys** are `<name>.<key>` or `<name>/<instance>.<key>`. The `/` keeps an instance view out of the default view's key space (proposal Defect F7: `redis.queue.addr` was both the default view's `queue.addr` and the `queue` instance's `addr`), and it mirrors the private scope name `ext:<name>/<instance>`. The key a view is given cannot contain `/`: the key grammar rejects it.
-- **`Properties`** is a value type: the root, the identity prefix, and a pointer to its context's `closed` flag (nil for views from `ExtensionProperties`). `Lookup` builds the full key, validates it against a package-level compiled regexp, and asks the root's source.
+- **`Properties`** is a value type: the root, the identity prefix, and a pointer to its context (nil for views from `ExtensionProperties`), whose `closed` flag ends the view and whose once-only log line reports the first late read. `Lookup` builds the full key, validates it against a package-level compiled regexp, and asks the root's source.
 - **Source decision:** once per root, at the first `Lookup`, under a mutex with a stored result and a decided flag, not a `sync.Once`: a panic while deciding (a registration hook, for example) propagates to the reader and leaves the decision undecided, so the next read decides again (proposal Defect F5: `sync.Once` marked a panicking decision as done, leaving a nil source). Readers on other goroutines wait for the decision rather than missing. The order is:
   1. `opts.PropertySource`;
   2. else register `EnvPropertySource("DOGER_")` under `NameOf[PropertySource]()` with `AsDefault()`, unless a service of that name is already registered in the root, then invoke that name. An explicit service registered by the application wins over the default (default-registrations), so this one step covers both the application's service and the default, with no window between a check and a registration.
@@ -136,7 +138,7 @@ The root's own services and each extension scope's own services are queued by on
 
 ### D10. Clone
 `CloneWithOpts` copies the installed and disabled entries (not installing ones) and the scope-to-identity index, as it does for kind entries. Exports in the clone re-bind through `add-scope-export`'s clone rule. Sessions and the waits-for graph are never copied.
-- **Consistent with a running `Extend`** (proposal Defect F3). The scope tree is cloned and the entries copied while holding the source's registry mutex, so no installation ends between the two. Installations still running at that moment are not copied, and their partly built private scopes are detached from the clone, so the clone can install those identities itself. The lock order (registry, then scope) is the one the claim step already uses.
+- **Consistent with a running `Extend`** (proposal Defect F3). The scope tree is cloned and the entries copied while holding the source's registry mutex, so no installation ends between the two. Installations still running at that moment are not copied, and their partly built private scopes are detached from the clone, so the clone can install those identities itself. The lock order (registry, then scope) is the one the claim step already uses. To hold that mutex, a clone creates the source's registry if it has none yet, so a first `Extend` racing the clone takes the same lock; an empty registry changes no path.
 
 ## Risks / Trade-offs
 
@@ -198,6 +200,7 @@ Tests are table-driven with testify and run under `-race`. Tests that wait on ch
 | An explicit Extend after Require | extension_test.go: `TestExtend_AfterRequire/{unresolved_replaces,unrelated_root_invoked,resolved_conflicts,other_scope_name,flatten,descendant_resolved}` | unit, table |
 | A required install placed flat by its author is never replaced | extension_test.go: `TestExtend_AfterRequireAuthorFlat` | unit |
 | A failing replacement restores the required install | extension_test.go: `TestExtend_FailedReplacementRestores/{invoke,replace_again}` | unit, table |
+| A declined replacement restores the required install | extension_test.go: `TestExtend_DeclinedReplacementRestores/{invoke,replace_again}` | unit, table |
 | Concurrent Require calls of one Extend | extension_test.go: `TestRequire_ConcurrentSameSession` (10 goroutines, `testWithTimeout`) | race, timeout |
 | A Require cycle across goroutines fails instead of deadlocking | extension_test.go: `TestRequire_CrossGoroutineCycle` (channel handshake, `testWithTimeout`) | race, timeout |
 | A cycle through concurrent Require calls of one Extend fails | extension_test.go: `TestRequire_ConcurrentCycle` (channel gates, `testWithTimeout`) | race, timeout |
@@ -233,7 +236,7 @@ The Risks section adds `TestExtend_FuncOptionConflicts` and `TestExtend_Rollback
 - Health-check aggregation: the lifecycle and checked-once tests, plus the existing health-check suite. A container without extensions is unchanged.
 - `Properties.Lookup` and `ExtensionProperties`: the prefixed, invalid-key, selection, concurrent and clone tests.
 - Rollback (D4): the failure, around-the-extension, own-exports and declined-shutdown tests; the deferred cleanup is shown failing by removing the defer.
-- Replacement (D5): the after-require rows, the author-flat and failing-replacement tests; the restore is shown failing by removing the reinstall.
+- Replacement (D5): the after-require rows, the author-flat, failing-replacement and declined-replacement tests; the restore is shown failing by removing the reinstall.
 - The waits-for multigraph (D2): the concurrent same-session and concurrent-cycle tests, run with `-count=10`.
 - Clone under the registry lock (D10): the clone-states rows.
 - The source decision (D9): the retried and provider-failure tests.

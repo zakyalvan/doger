@@ -602,7 +602,8 @@ func scopeResolved(scope *Scope) bool {
 // runInstall runs the installation of req that c claimed, rolling back the
 // required install c replaces first, and records its outcome: installed on
 // success, disabled when the extension declined, forgotten on failure. When
-// the replacement fails, the required install is installed again.
+// the replacement fails or declines, the required install is installed
+// again.
 func runInstall(root *RootScope, registry *extensionRegistry, c claim, req installRequest) (disabled bool, err error) {
 	outcome := extensionInstalling // failed, until decided
 	x := newExtensionContext(root, req)
@@ -621,8 +622,14 @@ func runInstall(root *RootScope, registry *extensionRegistry, c claim, req insta
 	if err == nil {
 		outcome, err = attemptInstall(root, req, x)
 	}
-	if outcome != extensionInstalling || c.replaced == nil {
-		return outcome == extensionDisabled, err
+	switch {
+	case c.replaced == nil && outcome == extensionDisabled:
+		return true, recordDisabled(root, req, err)
+	case c.replaced == nil || outcome == extensionInstalled:
+		return false, err
+	case outcome == extensionDisabled: // the decline cannot take effect: the install is required
+		declined := fmt.Errorf("%w: extension %s declined, but stays installed because it is required", ErrExtensionConflict, describeExtension(req.name, req.id.instance))
+		err = &ExtensionError{Name: req.name, Instance: req.id.instance, Err: errors.Join(declined, err)}
 	}
 
 	released = true
@@ -648,7 +655,10 @@ func restoreReplaced(root *RootScope, registry *extensionRegistry, c claim, req 
 	}
 	recorded, x = restored, newExtensionContext(root, restored)
 	var err error
-	if outcome, err = attemptInstall(root, restored, x); err != nil {
+	if outcome, err = attemptInstall(root, restored, x); outcome == extensionDisabled {
+		err = recordDisabled(root, restored, err)
+	}
+	if err != nil {
 		return fmt.Errorf("restoring the required install: %w", err)
 	}
 
@@ -666,7 +676,8 @@ func newExtensionContext(root *RootScope, req installRequest) *ExtensionContext 
 
 // attemptInstall installs req through x once, rolling a private install
 // back when it fails or declines, and returns its outcome: installed,
-// disabled, or failed (extensionInstalling).
+// disabled, or failed (extensionInstalling). For a decline, err is the
+// failed shutdown report of the rollback, if any.
 func attemptInstall(root *RootScope, req installRequest, x *ExtensionContext) (outcome extensionState, err error) {
 	if !req.plan.flat {
 		x.scope, err = newPrivateScope(root, req.plan.scopeName, req.name, req.id.instance)
@@ -681,7 +692,7 @@ func attemptInstall(root *RootScope, req installRequest, x *ExtensionContext) (o
 			rollbackErr = rollbackInstall(root, req.plan, x.scope, x.applied)
 		}
 		if errors.Is(err, ErrExtensionDisabled) {
-			return extensionDisabled, recordDisabled(root, req, rollbackErr)
+			return extensionDisabled, rollbackErr
 		}
 		if rollbackErr != nil {
 			err = errors.Join(err, rollbackErr)

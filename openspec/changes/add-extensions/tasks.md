@@ -163,6 +163,14 @@ Prerequisites: `consolidate-pending-lifecycle-work`, `add-default-registrations`
 - [x] 23.4 Godoc of `ErrRequiredExtensionDisabled` and `ExtensionContext.Require`: a failed shutdown of the declined attempt is joined; verify `go doc ErrRequiredExtensionDisabled` shows it.
 - [x] 23.5 Record the root health check's flat-only path as an equivalent mutant in the design's untestable list (task 20.1's third mutation cannot fail any test); verify `openspec validate add-extensions --strict` passes.
 
+## 24. A declined replacement keeps the required install
+
+- [x] 24.1 RED: add `TestExtend_DeclinedReplacementRestores` (rows invoke, replace_again; scenario "A declined replacement restores the required install"); verify `go test -race -run TestExtend_DeclinedReplacementRestores .` fails because `Extend` returns nil and the invoke row fails with "could not find service" (proposal Defect F13).
+- [x] 24.2 GREEN: implement design D5: a replacement whose attempt declines restores the required install as a failed one does, and returns an `*ExtensionError` matching `ErrExtensionConflict`, not `ErrExtensionDisabled`, with nothing recorded as disabled and no disabled line logged; verify the 24.1 command and `make test` pass.
+- [x] 24.3 REFACTOR: none expected; verify `make test` and `make lint` pass.
+- [x] 24.4 Godoc of `ExtensionContext.Require` and the authors' guide: a declined replacement keeps the required install and conflicts; verify `go doc ExtensionContext.Require` shows it and `npm run build` in `docs/` passes.
+- [x] 24.5 Integration: `make test`, `make lint`, and `go build ./...` plus `go test ./...` in every `go.work` module under `http/*` and `examples/*` (remove any binaries the builds leave); cross-check every `#### Scenario:` header against a passing test; verify `openspec validate add-extensions --strict` passes.
+
 ## Workflow follow-up
 
 - Archive this change after review, after `add-default-registrations` and `add-scope-export`.

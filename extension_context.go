@@ -63,9 +63,12 @@ func (x *ExtensionContext) Instance() string { return x.instance }
 // the private scope ([ExtendScopeName]) or flatten the extension
 // ([Flatten]). An install its author places flat ([PlacementFlat]) cannot be
 // rolled back, so it is never replaced: the explicit Extend conflicts. When
-// the replacing Extend fails, the required install is installed again from
-// its value, so the extensions that required it keep working, and the error
-// also reports a failure of that reinstall. Resolving the required
+// the replacing Extend fails, or declines with [ErrExtensionDisabled], the
+// required install is installed again from its value, so the extensions
+// that required it keep working, and the error also reports a failure of
+// that reinstall. A declined replacement returns an [*ExtensionError]
+// matching [ErrExtensionConflict], not ErrExtensionDisabled: the decline
+// cannot take effect while the install is required. Resolving the required
 // extension's services while an Extend replaces it is unsupported, as is an
 // Extend concurrent with Start: such a resolution may get a service that is
 // then shut down.

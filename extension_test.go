@@ -288,6 +288,7 @@ type redisExtension struct {
 	Addr        string
 	InstanceKey string
 	Fail        bool // Extend registers the client, then fails
+	Decline     bool // Extend registers the client, then declines
 	calls       *atomic.Int32
 }
 
@@ -301,10 +302,63 @@ func (e redisExtension) Extend(x *ExtensionContext) error {
 	if e.Fail {
 		return errors.New("dial failed")
 	}
+	if e.Decline {
+		return ErrExtensionDisabled
+	}
 	if e.InstanceKey != "" { // each instance publishes its own client
 		return ExtensionExport[*extClient](x, ExportAs(NameOf[*extClient]()+"#"+e.InstanceKey))
 	}
 	return ExtensionExport[*extClient](x)
+}
+
+func TestExtend_DeclinedReplacementRestores(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		check func(t *testing.T, root *RootScope, calls *atomic.Int32)
+	}{
+		{
+			name: "invoke",
+			check: func(t *testing.T, root *RootScope, _ *atomic.Int32) {
+				t.Helper()
+				client, err := Invoke[*extClient](root)
+				require.NoError(t, err)
+				assert.Equal(t, "default:6379", client.addr)
+			},
+		},
+		{
+			name: "replace_again", // the restored install is unresolved, so it is replaced again
+			check: func(t *testing.T, root *RootScope, calls *atomic.Int32) {
+				t.Helper()
+				require.NoError(t, extendNoPanic(t, root, &redisExtension{Addr: "prod:6379", calls: calls}))
+				client, err := Invoke[*extClient](root)
+				require.NoError(t, err)
+				assert.Equal(t, "prod:6379", client.addr)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var logs logLines
+			root := NewWithOpts(&InjectorOpts{Logf: logs.logf})
+			var calls atomic.Int32
+			require.NoError(t, extendNoPanic(t, root, requiringExtension[kindCache]("cache", &redisExtension{Addr: "default:6379", calls: &calls})))
+
+			err := extendNoPanic(t, root, &redisExtension{Addr: "off:6379", Decline: true, calls: &calls})
+
+			var extErr *ExtensionError
+			require.ErrorAs(t, err, &extErr)
+			assert.Equal(t, "redis", extErr.Name)
+			require.ErrorIs(t, err, ErrExtensionConflict)
+			require.NotErrorIs(t, err, ErrExtensionDisabled)
+			assert.Empty(t, logs.containing("disabled"), "nothing is recorded as disabled")
+			tt.check(t, root, &calls)
+		})
+	}
 }
 
 func TestExtend_ReplacedRollbackFailsRestores(t *testing.T) {

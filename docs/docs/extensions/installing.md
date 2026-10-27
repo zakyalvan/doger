@@ -24,11 +24,11 @@ client := doger.MustInvoke[*redis.Client](root)
 
 By default, an extension registers its services into a **private child scope** of the root, named `ext:<name>`, or `ext:<name>/<instance>` for an extension with an instance key. Only the services it **exports** are visible from the root; its internals (a pool, a dialer...) stay private.
 
-| Control | Effect |
-|---|---|
-| (default) | the extension's choice: private scope plus exports, or flat |
-| `doger.Flatten()` | register into the root's own scope, whatever the extension chose; exports are then no-ops |
-| `doger.ExtendScopeName("cache")` | name the private scope `cache` instead of `ext:<name>`, for example to avoid a clash |
+| Control                          | Effect                                                                                    |
+| -------------------------------- | ----------------------------------------------------------------------------------------- |
+| (default)                        | the extension's choice: private scope plus exports, or flat                               |
+| `doger.Flatten()`                | register into the root's own scope, whatever the extension chose; exports are then no-ops |
+| `doger.ExtendScopeName("cache")` | name the private scope `cache` instead of `ext:<name>`, for example to avoid a clash      |
 
 ```go
 doger.Extend(root, dogerredis.Extension(), doger.Flatten())
@@ -89,13 +89,13 @@ A root `Shutdown` follows the usual rules: once its context ended, the services 
 
 ## Errors {#errors}
 
-| Error | Meaning |
-|---|---|
-| `ErrInvalidExtension` | nil extension, invalid name or instance key, empty `ExtendScopeName` |
-| `ErrExtensionConflict` | the identity is installed differently, or the private scope name is taken |
+| Error                           | Meaning                                                                     |
+| ------------------------------- | --------------------------------------------------------------------------- |
+| `ErrInvalidExtension`           | nil extension, invalid name or instance key, empty `ExtendScopeName`        |
+| `ErrExtensionConflict`          | the identity is installed differently, or the private scope name is taken   |
 | `*ExtensionError` (`errors.As`) | the extension failed to install; `Name`, `Instance`, and the cause in `Err` |
-| `ErrExtensionCycle` | extensions require each other in a cycle |
-| `ErrStartAfterShutdown` | `Extend` after shutdown began |
+| `ErrExtensionCycle`             | extensions require each other in a cycle                                    |
+| `ErrStartAfterShutdown`         | `Extend` after shutdown began                                               |
 
 A failing install leaves nothing behind: the private scope is shut down and removed, its exports are removed, and a later `Extend` can retry.
 
