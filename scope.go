@@ -144,6 +144,49 @@ func (s *Scope) Scope(name string, packages ...func(Injector)) *Scope {
 	return child
 }
 
+// hasChild reports whether s has a direct child scope named name.
+func (s *Scope) hasChild(name string) bool {
+	return s.directChild(name) != nil
+}
+
+// directChild returns the direct child scope of s named name, or nil.
+func (s *Scope) directChild(name string) *Scope {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return s.childScopes[name]
+}
+
+// detachChild removes the child scope name from s, without shutting it
+// down, so that the name can be used again.
+func (s *Scope) detachChild(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	delete(s.childScopes, name)
+}
+
+// removeService removes the service name from s, if match accepts it,
+// without shutting it down or running any hook.
+func (s *Scope) removeService(name string, match func(service any) bool) {
+	s.mu.Lock()
+	service, ok := s.services[name]
+	removed := ok && match(service)
+	if removed {
+		delete(s.services, name)
+		s.countDefault(service, -1)
+		s.countExport(service, -1)
+		s.typeMatches = nil
+		delete(s.orderedInvocation, name)
+		s.RootScope().dag.removeService(s.id, s.name, name)
+	}
+	s.mu.Unlock()
+
+	if removed {
+		s.RootScope().forget(service)
+	}
+}
+
 // RootScope returns the root scope of the scope hierarchy.
 // All scopes in a hierarchy share the same root scope, regardless of their depth.
 //
@@ -338,6 +381,14 @@ func (s *Scope) HealthCheck() map[string]error {
 //
 // Play: https://go.dev/play/p/pJcJGOF5zeK
 func (s *Scope) HealthCheckWithContext(ctx context.Context) map[string]error {
+	return s.healthCheckQueued(ctx, func(ctx context.Context) map[string]<-chan error {
+		return s.asyncHealthCheckWithContext(ctx, s)
+	})
+}
+
+// healthCheckQueued runs the health checks queue queues, under the global
+// health check timeout, and returns their results by name.
+func (s *Scope) healthCheckQueued(ctx context.Context, queue func(ctx context.Context) map[string]<-chan error) map[string]error {
 	s.logf("requested health check")
 
 	if s.rootScope.opts.HealthCheckGlobalTimeout > 0 {
@@ -350,7 +401,7 @@ func (s *Scope) HealthCheckWithContext(ctx context.Context) map[string]error {
 
 	results := map[string]error{}
 
-	asyncResults := s.asyncHealthCheckWithContext(ctx, s)
+	asyncResults := queue(ctx)
 	for name, err := range asyncResults {
 		results[name] = <-err
 	}

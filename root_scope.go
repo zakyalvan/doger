@@ -116,6 +116,10 @@ type RootScope struct {
 	nextRegIndex atomic.Uint64 // next registration index, shared by every scope of this container
 	declareMu    sync.Mutex    // serializes DeclareDependency (cycle check plus add)
 
+	// ext holds the installed extensions; nil until the first Extend, so a
+	// container without extensions holds none.
+	ext atomic.Pointer[extensionRegistry]
+
 	kindsMu sync.Mutex
 	kinds   []kindEntry // kind handlers, in order of first Handle; copied before written, as it may be shared
 
@@ -190,11 +194,42 @@ func (s *RootScope) ListProvidedServices() []ServiceDescription { return s.self.
 func (s *RootScope) ListInvokedServices() []ServiceDescription { return s.self.ListInvokedServices() }
 
 // HealthCheck performs health checks on all services in the root scope and all its descendant scopes.
-func (s *RootScope) HealthCheck() map[string]error { return s.self.HealthCheck() }
+func (s *RootScope) HealthCheck() map[string]error {
+	return s.HealthCheckWithContext(context.Background())
+}
 
 // HealthCheckWithContext performs health checks with context support for cancellation and timeouts.
 func (s *RootScope) HealthCheckWithContext(ctx context.Context) map[string]error {
-	return s.self.HealthCheckWithContext(ctx)
+	scopes := s.extensionScopes()
+	if len(scopes) == 0 {
+		return s.self.HealthCheckWithContext(ctx)
+	}
+
+	return s.self.healthCheckQueued(ctx, func(ctx context.Context) map[string]<-chan error {
+		results := map[string]<-chan error{}
+
+		s.self.mu.RLock()
+		for name, service := range s.self.services {
+			if isYieldedDefaultIn(s.self, service) || slices.ContainsFunc(scopes, func(scope *Scope) bool { return isExportFrom(service, scope) }) {
+				continue
+			}
+			results[name] = s.queueServiceHealthcheck(ctx, s.self, name)
+		}
+		s.self.mu.RUnlock()
+
+		for _, scope := range scopes {
+			scope.mu.RLock()
+			for name, service := range scope.services {
+				if isYieldedDefaultIn(scope, service) {
+					continue
+				}
+				results[scope.name+"/"+name] = s.queueServiceHealthcheck(ctx, scope, name)
+			}
+			scope.mu.RUnlock()
+		}
+
+		return results
+	})
 }
 
 // Shutdown gracefully shuts down the root scope and all its descendant scopes.
@@ -736,13 +771,17 @@ func (s *RootScope) Clone() *RootScope {
 // CloneWithOpts clones injector with provided services but not with invoked instances, with options.
 // The clone uses only opts (hooks included), and keeps the source's kind
 // handlers, in order. Handling a kind on the clone replaces its handler on
-// the clone only.
+// the clone only. Installed extensions are copied with their private
+// scopes: Extend of an installed identity on the clone follows the repeat
+// rules of [Extend], and the clone's exports resolve from its own scopes.
 //
 // Play: https://go.dev/play/p/fT-v63fbFk5
 func (s *RootScope) CloneWithOpts(opts *InjectorOpts) *RootScope {
 	clone := NewWithOpts(opts)
 	clone.self = s.clone(clone, nil)
 	s.copyKindsTo(clone)
+
+	s.copyExtensionsTo(clone)
 
 	// Read after copying: every copied wrapper got its index before it was
 	// stored, so later registrations in the clone come after all of them.
@@ -764,6 +803,33 @@ func (s *RootScope) copyKindsTo(clone *RootScope) {
 	clone.kindsMu.Lock()
 	clone.kinds = kinds
 	clone.kindsMu.Unlock()
+}
+
+// copyExtensionsTo gives clone the installed and disabled extensions, bound
+// to clone's private scopes of the same names, so that Extend on the clone
+// follows the repeat rules. Running installations, sessions and the
+// waits-for graph are not copied. Call it after cloning the scope tree.
+func (s *RootScope) copyExtensionsTo(clone *RootScope) {
+	registry := s.ext.Load()
+	if registry == nil {
+		return
+	}
+
+	cloned := clone.extensionRegistry()
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+
+	for id, entry := range registry.entries {
+		if entry.state == extensionInstalling {
+			continue
+		}
+		copied := *entry
+		if entry.scope != nil {
+			copied.scope = clone.self.directChild(entry.scope.name)
+			cloned.scopes[entry.plan.scopeName] = id
+		}
+		cloned.entries[id] = &copied
+	}
 }
 
 // ShutdownOnSignals listens for the provided signals in order to gracefully stop services.
