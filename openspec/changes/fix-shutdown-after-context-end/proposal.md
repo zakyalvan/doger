@@ -11,7 +11,7 @@ This came up while verifying `add-scope-export`. A richer policy (calling contex
 
 ## What Changes
 
-- **Fix:** `ShutdownOnSignalsWithContext` shuts down with a context that keeps the values of its `ctx` but not its cancellation when `ctx` ends before a signal arrives, so every service is shut down, as with `ShutdownOnSignals`. BEHAVIOR CHANGE (flagged): until now it shut nothing down in that case and returned a report of context errors.
+- **Fix:** `ShutdownOnSignalsWithContext` shuts down with a context that keeps the values of its `ctx` but not its cancellation when `ctx` ends before a signal arrives, so every service is shut down, as with `ShutdownOnSignals`. The `HookContainerClosing` and `HookContainerClosed` hooks receive that same context, so its `Err()` is nil and it has no deadline. BEHAVIOR CHANGE (flagged): until now it shut nothing down in that case, returned a report of context errors, and gave the hooks the ended context.
 - **Specify and test the existing behavior:** a shutdown that reaches a service after its context ended skips that service's `Shutdown`, reports the context error under the service's name, and drops the service. Nothing changes in code; the behavior gets a spec, characterization tests and an executable example.
 - **Docs:** the godoc of `Scope.ShutdownWithContext` and `RootScope.ShutdownWithContext` says what happens after the context ended, including after a timed-out start wait; the godoc of `ShutdownOnSignalsWithContext` says how it shuts down; the Shutdowner page gets a "Shutdown with a deadline" section warning against passing the signal context, with the right pattern, and its broken example is fixed; an upgrading page flags the helper's behavior change.
 - **Not BREAKING:** no exported identifier changes.
@@ -26,7 +26,7 @@ This came up while verifying `add-scope-export`. A richer policy (calling contex
 
 ## Impact
 
-- Code: `root_scope.go` (`ShutdownOnSignalsWithContext`, one line). Tests: `root_scope_test.go` (the empty `TestRootScope_ShutdownOnSignalsWithContext` placeholder becomes real tests), `di_lifecycle_test.go`, `root_refresh_test.go`; an example in `di_lifecycle_example_test.go`.
+- Code: `root_scope.go` (`ShutdownOnSignalsWithContext`, one line). Tests: `root_scope_test.go` (the empty `TestRootScope_ShutdownOnSignalsWithContext` placeholder becomes real tests), `scope_test.go`, `root_refresh_test.go`, `container_hooks_test.go`; an example in `di_lifecycle_example_test.go`.
 - Docs: godoc of `Scope.ShutdownWithContext`, `RootScope.ShutdownWithContext` and `RootScope.ShutdownOnSignalsWithContext`; `docs/docs/service-lifecycle/shutdowner.md`; a new upgrading page.
 - No dependency or module path change.
 
@@ -35,10 +35,11 @@ This came up while verifying `add-scope-export`. A richer policy (calling contex
 | Behavior | Zero-config default | Consumer control |
 |---|---|---|
 | A service reached after the shutdown context ended | Its `Shutdown` is skipped; the report has the context error under its name; the service is dropped | Pass a context that is still live with enough time, for example `context.WithTimeout(context.Background(), grace)` created after the signal; a context-aware shutdowner bounds its own work with the context it receives |
-| `ShutdownOnSignalsWithContext` when `ctx` ends before a signal | Shuts every service down, with `ctx`'s values and no cancellation or deadline, as `ShutdownOnSignals` does | To bound that shutdown, wait for the signal or `ctx` yourself (`signal.NotifyContext`) and call `ShutdownWithContext` with your own deadline |
+| `ShutdownOnSignalsWithContext` when `ctx` ends before a signal | Shuts every service down, with `ctx`'s values and no cancellation or deadline, as `ShutdownOnSignals` does; the Closing and Closed hooks receive that context | To bound that shutdown, wait for the signal or `ctx` yourself (`signal.NotifyContext`) and call `ShutdownWithContext` with your own deadline |
 
 ## Defect
 
 - **Observed:** with a built lazy service implementing `Shutdown() error` and a context cancelled before any signal, `root.ShutdownOnSignalsWithContext(ctx)` returns a nil signal and a failed report whose only error is `context canceled` for that service, and its `Shutdown` was called 0 times (probe run during `add-scope-export` verification, not committed).
 - **Expected:** a nil signal, a succeeded report, and `Shutdown` called once.
+- **Re-checked:** the reproduction gives the observed result on main at `357f47d`.
 - **Reproduction:** `root := New()`; register and invoke a lazy `*countedShutdowner`; `ctx, cancel := context.WithCancel(context.Background()); cancel()`; `sig, report := root.ShutdownOnSignalsWithContext(ctx)`. The fix starts with this as a failing regression test.
