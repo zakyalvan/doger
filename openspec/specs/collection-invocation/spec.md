@@ -7,7 +7,7 @@ Lets a consumer resolve every visible service assignable to a type in one call, 
 ## Requirements
 
 ### Requirement: Collect every visible service assignable to a type
-`InvokeAll[T]` SHALL return one element per visible, non-alias service whose registered type is assignable to `T`, building lazy members as needed. It SHALL NOT build services whose registered type is not assignable to `T`. A nil injector SHALL mean the default root scope.
+`InvokeAll[T]` SHALL return one element per visible, non-alias service whose registered type is assignable to `T`, building lazy members as needed, except defaults excluded as specified in "Collections exclude a default replaced by type". It SHALL NOT build services whose registered type is not assignable to `T`. A nil injector SHALL mean the default root scope.
 
 #### Scenario: Membership by registered type
 ```gherkin
@@ -59,14 +59,14 @@ And the error is nil
 <!-- cases: N/A 2 overrides: membership has no option; ordering options are covered by collection-ordering -->
 <!-- cases: N/A 4 boundaries: zero, one and several members are covered by the Stringer, *AuditHandler and EventHandler rows -->
 <!-- cases: N/A 5 errors: covered by "A failing member fails the whole call" -->
-<!-- cases: N/A 6 duplicates: aliases and shadowing are covered by their own requirements -->
+<!-- cases: N/A 6 duplicates: aliases, shadowing and defaults are covered by their own requirements -->
 <!-- cases: N/A 7 lifecycle: covered by "Collections after shutdown" and the self-exclusion requirement -->
 <!-- cases: N/A 8 concurrency: covered by "Concurrent collection callers" -->
 <!-- cases: N/A 9 panics: provider panics are covered by "A failing member fails the whole call" -->
-<!-- cases: N/A 10 compatibility: covered by "InvokeAs behavior is unchanged" -->
+<!-- cases: N/A 10 compatibility: covered by "InvokeAs behavior is unchanged"; the default exception applies only to registrations given AsDefault() -->
 
 ### Requirement: Visibility follows scope ancestry with nearest-name shadowing
-A collection invoked from a scope SHALL include services of that scope and its ancestors only. When the same service name exists in several visible scopes, only the nearest one SHALL be considered, even if the nearest one is not assignable to `T`. Inside a provider, the invoking scope SHALL be the scope where that provider's service is registered.
+A collection invoked from a scope SHALL include services of that scope and its ancestors only. When the same service name exists in several visible scopes, only the nearest one SHALL be considered, even if the nearest one is not assignable to `T`, except that an unresolved or yielded default SHALL NOT hide a non-default of the same name (see "A default that yields does not shadow its target"). Inside a provider, the invoking scope SHALL be the scope where that provider's service is registered.
 
 #### Scenario: Scope visibility and shadowing
 ```gherkin
@@ -83,6 +83,7 @@ Examples:
   | x        | *AHandler       | x         | *BHandler       | child   | child "x" only           |
   | x        | *AHandler       | x         | *sql.DB         | child   | none                     |
   | x        | *AHandler       | x         | *BHandler       | sibling | root "x", sibling "s"    |
+  | x        | *AHandler       | x (registered with doger.AsDefault()) | *BHandler | child | root "x" only |
 ```
 
 #### Scenario: Interface type any matches every non-alias service
@@ -108,7 +109,7 @@ Then the recorded names are exactly "a"
 <!-- cases: N/A 5 errors: visibility cannot fail -->
 <!-- cases: N/A 8 concurrency: covered by "Concurrent collection callers" -->
 <!-- cases: N/A 9 panics: no panicking path -->
-<!-- cases: N/A 10 compatibility: matches what InvokeNamed resolves for each name -->
+<!-- cases: N/A 10 compatibility: matches what InvokeNamed resolves for each name; the default row applies only to registrations given AsDefault() -->
 
 ### Requirement: Aliases are excluded from collections
 Services registered through `As`/`Bind` aliases SHALL NOT appear in a collection. The aliased original SHALL represent itself when its registered type is assignable to `T`.
@@ -393,3 +394,82 @@ And goleak reports no leaked goroutine
 <!-- cases: N/A 2 overrides, 3 zero values, 4 boundaries: covered by earlier requirements; this requirement is about interleaving only -->
 <!-- cases: N/A 9 panics: no panicking path -->
 <!-- cases: 10 compatibility: Invoke, InvokeNamed and InvokeAs behavior is unchanged; covered by the existing invoke_test.go and di_test.go suites and "InvokeAs behavior is unchanged" -->
+
+### Requirement: Collections exclude a default replaced by type
+`InvokeAll`, `InvokeAllMap` and live collections SHALL exclude an unresolved default when a visible non-default member is assignable to the default's registered type; including a default in a collection resolves it. A default that already chose its own provider SHALL stay a member. Defaults meant to be replaced by type SHALL be registered under the interface type.
+
+#### Scenario: Default membership by registered type
+```gherkin
+Given a root scope
+And "envSource" registered with doger.AsDefault() under type <registered_as>, never invoked
+And <explicit>
+When the consumer calls doger.InvokeAll[app.PropertySource] on the root
+Then the members are <members>
+
+Examples:
+  | registered_as      | explicit                                       | members                  |
+  | app.PropertySource | a lazy "mySource" (an *app.MySource)           | mySource                 |
+  | app.PropertySource | nothing                                        | envSource                |
+  | *app.EnvSource     | a lazy "mySource" (an *app.MySource)           | envSource, mySource      |
+  | *app.EnvSource     | a lazy "envSource2" (an *app.EnvSource)        | envSource2               |
+```
+
+#### Scenario: A default that chose its own provider stays a member
+```gherkin
+Given a root scope
+And "envSource" registered with doger.AsDefault() under type app.PropertySource
+And "envSource" was invoked
+And a lazy "mySource" (an *app.MySource) registered afterwards
+When the consumer calls doger.InvokeAll[app.PropertySource] on the root
+Then the members are envSource, mySource
+```
+
+#### Scenario: A default does not exclude unrelated members
+```gherkin
+Given a root scope
+And a lazy "*app.Pool" registered with doger.AsDefault(), implementing HealthCheck() error
+And a lazy "*app.Server" registered without options, implementing HealthCheck() error
+When the consumer calls doger.InvokeAll[doger.Healthchecker] on the root
+Then the members are "*app.Pool" and "*app.Server"
+```
+
+<!-- cases: 2 overrides: invoking the default by name still returns it; registering an explicit service is the override -->
+<!-- cases: N/A 3 zero values: an empty collection is unchanged ("No match yields an empty collection") -->
+<!-- cases: 4 boundaries: zero and one replacing member are rows; several members follow the same rule -->
+<!-- cases: N/A 5 invalid input: unchanged collection errors -->
+<!-- cases: 6 same name: covered by "A default that yields does not shadow its target" -->
+<!-- cases: 7 lifecycle: the chosen-default scenario pins the frozen decision -->
+<!-- cases: N/A 8 concurrency: covered by "Concurrent collection callers" unchanged -->
+<!-- cases: N/A 9 panics: membership does not panic -->
+<!-- cases: 10 compatibility: without defaults, membership is unchanged -->
+
+### Requirement: A default that yields does not shadow its target
+In a collection, a default whose name matches a visible non-default service in an ancestor SHALL NOT shadow that service and SHALL NOT be a member itself, so the non-default service is a member exactly once.
+
+#### Scenario: Same-name default in a nearer scope
+```gherkin
+Given a root scope with child scope "ext"
+And an explicit lazy "*app.Pool" registered in the root, implementing HealthCheck() error
+And a lazy "*app.Pool" registered in scope "ext" with doger.AsDefault(), never invoked
+When the consumer calls doger.InvokeAllMap[doger.Healthchecker] from scope "ext"
+Then the map has exactly 1 entry, "*app.Pool", holding the root instance
+```
+
+#### Scenario: A chosen or nearer default keeps one entry per name
+```gherkin
+Given a root scope with child scope "ext"
+And <setup>
+When the consumer calls doger.InvokeAllMap[doger.Healthchecker] from scope "ext"
+Then the map has exactly 1 entry, "*app.Pool", holding the instance of scope "ext"
+
+Examples:
+  | setup                                                                                                                  |
+  | a default "*app.Pool" in "ext" invoked from "ext", then an explicit "*app.Pool" registered in the root                 |
+  | a default "*app.Pool" in the root and a default "*app.Pool" in "ext", both never invoked                               |
+```
+
+<!-- cases: N/A 2 overrides, 3 zero values, 5 invalid input: no input -->
+<!-- cases: 4 boundaries: unresolved, chosen and two-default cases -->
+<!-- cases: 7 lifecycle: membership follows the default's decision; a chosen default shadows like a non-default -->
+<!-- cases: N/A 8 concurrency, 9 panics: unchanged -->
+<!-- cases: 10 compatibility: nearest-name shadowing between non-default services is unchanged -->
