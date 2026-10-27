@@ -31,9 +31,11 @@ var ErrInvalidExtension = errors.New("DI: invalid extension")
 var ErrExtensionDisabled = errors.New("DI: extension disabled")
 
 // ErrRequiredExtensionDisabled is matched by the error
-// [ExtensionContext.Require] returns for a disabled extension. It does not
-// match [ErrExtensionDisabled], so an extension returning it fails instead
-// of being disabled in turn.
+// [ExtensionContext.Require] returns for a disabled extension, including
+// one that declines during that Require. It does not match
+// [ErrExtensionDisabled], so an extension returning it fails instead of
+// being disabled in turn. When shutting the declined attempt down failed,
+// the error also holds that failure, as an [*ExtensionError].
 var ErrRequiredExtensionDisabled = errors.New("DI: required extension is disabled")
 
 // ErrExtensionCycle is matched by the error of a cycle of
@@ -382,6 +384,9 @@ func installExtension(root *RootScope, registry *extensionRegistry, req installR
 		if c.owner {
 			disabled, err := runInstall(root, registry, c, req)
 			if disabled && req.viaRequire {
+				if err != nil { // a failed shutdown of the declined attempt
+					return errors.Join(requiredDisabled(req), err)
+				}
 				return requiredDisabled(req)
 			}
 			return err

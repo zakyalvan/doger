@@ -100,7 +100,7 @@ func ExtensionProperties(i Injector) (Properties, bool)
 - **Disabled outcome:** when `ext.Extend` returns an error matching `ErrExtensionDisabled`, the attempt is rolled back (D4), the entry is recorded as disabled, `Logf("DI: extension %s disabled", name)` is called (`name/instance` for an instance), and `Extend` returns nil.
   - Flattened, nothing is rolled back (D4), so the registrations stay; the identity is still recorded as disabled.
   - When the rollback's shutdown fails, `Extend` returns an `*ExtensionError` wrapping the report and not the `ErrExtensionDisabled` cause, so callers checking `errors.Is(err, ErrExtensionDisabled)` do not mistake a leak for a clean decline; the identity is still recorded as disabled.
-  - A `Require` whose own install ends disabled returns `ErrRequiredExtensionDisabled`, like a `Require` of an identity already disabled.
+  - A `Require` whose own install ends disabled returns `ErrRequiredExtensionDisabled`, like a `Require` of an identity already disabled. When that declined attempt's shutdown failed, the `*ExtensionError` holding the report is joined to it, so the leak is reported through the requirer too.
 - **A failure while installing a dependency** fails the requirer through the error `Require` returns. Each attempt rolls back only its own scope, and dependencies that installed successfully stay installed (spec).
 
 ### D7. Errors
@@ -192,6 +192,7 @@ Tests are table-driven with testify and run under `-race`. Tests that wait on ch
 | A flattened declined install keeps its registrations | extension_test.go: `TestExtend_DisabledFlattened` | unit |
 | A declined install whose shutdown fails is reported | extension_test.go: `TestExtend_DisabledShutdownFails` | unit |
 | Requiring a disabled extension fails | extension_test.go: `TestRequire_Disabled/{installed_disabled,declines_now}` | unit, table |
+| A required install that declines and fails its shutdown is reported | extension_test.go: `TestRequire_DisabledShutdownFails` | unit |
 | Require is idempotent | extension_test.go: `TestRequire_Idempotent` | unit |
 | A Require cycle fails | extension_test.go: `TestRequire_Cycle` (in `testWithTimeout`) | unit, timeout |
 | An explicit Extend after Require | extension_test.go: `TestExtend_AfterRequire/{unresolved_replaces,unrelated_root_invoked,resolved_conflicts,other_scope_name,flatten,descendant_resolved}` | unit, table |
@@ -236,7 +237,7 @@ The Risks section adds `TestExtend_FuncOptionConflicts` and `TestExtend_Rollback
 - The waits-for multigraph (D2): the concurrent same-session and concurrent-cycle tests, run with `-count=10`.
 - Clone under the registry lock (D10): the clone-states rows.
 - The source decision (D9): the retried and provider-failure tests.
-- Untestable by design: the duplicate-scope panic recovery in `newPrivateScope` (see Risks).
+- Untestable by design: the duplicate-scope panic recovery in `newPrivateScope` (see Risks); and the root health check's choice of today's path when every extension is flattened. With no private extension scope, the extension path queues exactly the root's own services and skips exactly what today's path skips, so a mutation sending such a container down the extension path is equivalent: no test can observe it. The choice is a performance guarantee, and `TestExtend_FlattenedHealthCheck` pins the observable contract (no `ext:` keys, no child scope walked).
 - `Extend` is not on an invocation hot path. `benchstat` on `HealthCheck` and `InvokeAs` confirms there is no regression without extensions, also after the health-check queue refactor (D8).
 
 ## Migration Plan

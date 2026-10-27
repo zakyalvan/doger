@@ -155,6 +155,14 @@ Prerequisites: `consolidate-pending-lifecycle-work`, `add-default-registrations`
 - [x] 22.2 Integration check: `make test`, `make lint`, and `go build ./...` plus `go test ./...` in every `go.work` module under `http/*` and `examples/*` (iterate line by line; remove any binaries the builds leave); verify all pass.
 - [x] 22.3 Cross-check every `#### Scenario:` header in this change's specs against a passing Go test from the design Test Strategy table; verify none is missing and `openspec validate add-extensions --strict` passes.
 
+## 23. A required install that declines and fails its shutdown
+
+- [x] 23.1 RED: add `TestRequire_DisabledShutdownFails` (scenario "A required install that declines and fails its shutdown is reported"); verify `go test -race -run TestRequire_DisabledShutdownFails .` fails because the error does not contain "close failed" (the shutdown report is dropped).
+- [x] 23.2 GREEN: in `installExtension`, join the error of the declined attempt to `ErrRequiredExtensionDisabled` when it is non-nil (design D6); verify the 23.1 command and `make test` pass.
+- [x] 23.3 REFACTOR: none needed; verify `make test` and `make lint` pass.
+- [x] 23.4 Godoc of `ErrRequiredExtensionDisabled` and `ExtensionContext.Require`: a failed shutdown of the declined attempt is joined; verify `go doc ErrRequiredExtensionDisabled` shows it.
+- [x] 23.5 Record the root health check's flat-only path as an equivalent mutant in the design's untestable list (task 20.1's third mutation cannot fail any test); verify `openspec validate add-extensions --strict` passes.
+
 ## Workflow follow-up
 
 - Archive this change after review, after `add-default-registrations` and `add-scope-export`.

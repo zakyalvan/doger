@@ -48,7 +48,8 @@ func (x *ExtensionContext) Instance() string { return x.instance }
 // would without options, and returns nil when dep's identity is already
 // installed, whatever its value or options, so several extensions can
 // require the same one. It returns an error matching
-// [ErrRequiredExtensionDisabled] when dep is disabled, and an error matching
+// [ErrRequiredExtensionDisabled] when dep is disabled (joined with the
+// failure of shutting dep's declined attempt down, if any), and an error matching
 // [ErrExtensionCycle] when dep is being installed by this chain of Require
 // calls, or by a concurrent Extend that waits for this one. A failure of dep
 // fails this call; extensions that dep or this extension required and that

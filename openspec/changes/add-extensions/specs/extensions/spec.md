@@ -328,6 +328,28 @@ And a second doger.Extend(root, metricsExt) returns nil
 <!-- cases: N/A 8 concurrency, 9 panics: as for any Extend -->
 <!-- cases: N/A 10 compatibility: new API -->
 
+### Requirement: A required install that declines reports its failed shutdown
+A `Require` whose install declines and fails its shutdown SHALL return an error matching `ErrRequiredExtensionDisabled` that also holds the failed report, and does not match `ErrExtensionDisabled`.
+
+#### Scenario: A required install that declines and fails its shutdown is reported
+```gherkin
+Given a root scope
+And an extension "metrics" whose Extend registers a value "*metrics.Exporter" whose Shutdown returns errors.New("close failed"), then returns doger.ErrExtensionDisabled
+And an extension "tracing" whose Extend calls x.Require(metricsExt) and returns its error
+When the consumer calls doger.Extend(root, tracingExt)
+Then the error is an *ExtensionError named "tracing" matching ErrRequiredExtensionDisabled and containing "close failed"
+And the error does not match ErrExtensionDisabled
+And the root has no child scopes
+```
+
+<!-- cases: N/A 1 default, 2 overrides: as for any declined install -->
+<!-- cases: N/A 3 zero values, 4 boundaries: no input -->
+<!-- cases: 5 errors: the failed report is joined to ErrRequiredExtensionDisabled -->
+<!-- cases: N/A 6 duplicate: covered by "Identity and repeated installation" -->
+<!-- cases: 7 lifecycle: the declined attempt is shut down and removed -->
+<!-- cases: N/A 8 concurrency, 9 panics: as for any Extend -->
+<!-- cases: N/A 10 compatibility: new API -->
+
 ### Requirement: Require installs dependency extensions
 `x.Require(dep)` SHALL install `dep` as `Extend` would and return nil when its identity is already installed, whatever its options; concurrent `Require` calls of one identity install it once. A cycle of `Require` calls SHALL fail with `ErrExtensionCycle`, on one goroutine, across goroutines, or through concurrent `Require` calls made by one `Extend`.
 

@@ -967,6 +967,26 @@ func TestRequire_Disabled(t *testing.T) {
 	}
 }
 
+func TestRequire_DisabledShutdownFails(t *testing.T) {
+	t.Parallel()
+
+	root := New()
+	metrics := newTypedExtension[kindMetrics]("metrics", func(x *ExtensionContext) error {
+		ProvideValue(x.Scope(), &extFailingExporter{})
+		return ErrExtensionDisabled
+	})
+
+	err := extendNoPanic(t, root, requiringExtension[kindTracing]("tracing", metrics))
+
+	require.ErrorIs(t, err, ErrRequiredExtensionDisabled)
+	require.NotErrorIs(t, err, ErrExtensionDisabled)
+	assert.Contains(t, err.Error(), "close failed")
+	var extErr *ExtensionError
+	require.ErrorAs(t, err, &extErr)
+	assert.Equal(t, "tracing", extErr.Name)
+	assert.Empty(t, childNames(root))
+}
+
 func TestRequire_Idempotent(t *testing.T) {
 	t.Parallel()
 
