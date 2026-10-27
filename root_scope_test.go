@@ -297,11 +297,68 @@ func TestRootScope_ShutdownOnSignals(t *testing.T) {
 
 func TestRootScope_ShutdownOnSignalsWithContext(t *testing.T) {
 	t.Parallel()
-	testWithTimeout(t, 100*time.Millisecond)
-	// Note: This test cannot be fully automated because it waits for OS signals (SIGINT, SIGTERM)
-	// which require user input or external process termination. In a real scenario, this method
-	// would block until the application receives a termination signal from the OS or the context
-	// is canceled.
+
+	// The signal branch needs an OS signal, which a test cannot deliver
+	// safely; these rows end the context instead.
+	tests := []struct {
+		name string
+		ctx  func(t *testing.T, parent context.Context) context.Context
+	}{
+		{
+			name: "cancelled_before",
+			ctx: func(_ *testing.T, parent context.Context) context.Context {
+				ctx, cancel := context.WithCancel(parent)
+				cancel()
+				return ctx
+			},
+		},
+		{
+			name: "timeout_while_waiting",
+			ctx: func(t *testing.T, parent context.Context) context.Context {
+				ctx, cancel := context.WithTimeout(parent, 10*time.Millisecond)
+				t.Cleanup(cancel)
+				return ctx
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, time.Second)
+			is := assert.New(t)
+
+			root := New()
+			probe := &ctxShutdownProbe{}
+			ProvideNamed(root, "s", func(Injector) (*ctxShutdownProbe, error) { return probe, nil })
+			MustInvokeNamed[*ctxShutdownProbe](root, "s")
+			hookCtxs := map[string][]context.Context{}
+			root.AddContainerClosingHook(func(ctx context.Context, _ *RootScope) {
+				hookCtxs["closing"] = append(hookCtxs["closing"], ctx)
+			})
+			root.AddContainerClosedHook(func(ctx context.Context, _ *RootScope, _ *ShutdownReport) {
+				hookCtxs["closed"] = append(hookCtxs["closed"], ctx)
+			})
+			ctx := tt.ctx(t, context.WithValue(context.Background(), ctxTestKey, "r-1"))
+
+			sig, report := root.ShutdownOnSignalsWithContext(ctx)
+
+			is.Nil(sig)
+			is.True(report.Succeed, report.Error())
+			probe.mu.Lock()
+			defer probe.mu.Unlock()
+			if is.Len(probe.ctxs, 1, "Shutdown calls") {
+				is.NoError(probe.ctxs[0].Err())
+				is.Equal("r-1", probe.ctxs[0].Value(ctxTestKey))
+			}
+			for _, hook := range []string{"closing", "closed"} {
+				if is.Len(hookCtxs[hook], 1, hook) {
+					is.NoError(hookCtxs[hook][0].Err(), hook)
+					is.Equal("r-1", hookCtxs[hook][0].Value(ctxTestKey), hook)
+				}
+			}
+		})
+	}
 }
 
 // rootShutdownProbe counts its Shutdown() error calls and returns err.
@@ -508,6 +565,67 @@ func TestRootScope_ShutdownWithEndedContext(t *testing.T) {
 			is.Equal(int32(1), probe.calls.Load())
 		})
 	}
+}
+
+func TestRootScope_ShutdownExportedAfterContextEnded(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, time.Second)
+	is := assert.New(t)
+
+	root := New()
+	tenant := root.Scope("tenant")
+	service := &countedShutdowner{}
+	ProvideNamed(tenant, "s", func(Injector) (*countedShutdowner, error) { return service, nil })
+	require.NoError(t, ExportNamed[*countedShutdowner](tenant, "s"))
+	MustInvokeNamed[*countedShutdowner](root, "s")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	report := root.ShutdownWithContext(ctx)
+
+	is.Equal(int32(0), service.calls.Load())
+	is.False(report.Succeed)
+	is.ErrorIs(report.Errors[newServiceDescription(tenant.ID(), tenant.Name(), "s")], context.Canceled)
+	is.ErrorIs(ShutdownNamed(tenant, "s"), ErrServiceNotFound)
+}
+
+// sleepingShutdowner sleeps for d in Shutdown() error, counting its calls.
+type sleepingShutdowner struct {
+	calls atomic.Int32
+	d     time.Duration
+}
+
+func (s *sleepingShutdowner) Shutdown() error {
+	s.calls.Add(1)
+	time.Sleep(s.d)
+	return nil
+}
+
+func TestRootScope_ShutdownDeadlineDuringShutdown(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		is := assert.New(t)
+
+		root := New()
+		b := &countedShutdowner{}
+		a := &sleepingShutdowner{d: 2 * time.Second}
+		ProvideNamed(root, "b", func(Injector) (*countedShutdowner, error) { return b, nil })
+		ProvideNamed(root, "a", func(i Injector) (*sleepingShutdowner, error) {
+			MustInvokeNamed[*countedShutdowner](i, "b")
+			return a, nil
+		})
+		MustInvokeNamed[*sleepingShutdowner](root, "a")
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+		defer cancel()
+
+		report := root.ShutdownWithContext(ctx)
+
+		is.Equal(int32(1), a.calls.Load())
+		is.NotContains(report.Errors, newServiceDescription(root.ID(), root.Name(), "a"))
+		is.Equal(int32(0), b.calls.Load())
+		is.False(report.Succeed)
+		is.ErrorIs(report.Errors[newServiceDescription(root.ID(), root.Name(), "b")], context.DeadlineExceeded)
+	})
 }
 
 // ctxShutdownProbe records the contexts its Shutdown(ctx) error receives.

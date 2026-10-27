@@ -67,6 +67,48 @@ Only the root scope methods follow this rule. `Shutdown()` on a child scope, and
 
 :::
 
+### Shutdown with a deadline {#shutdown-with-a-deadline}
+
+`ShutdownWithContext()`, on the root or on a child scope, stops shutting services down once its context has ended. Every service it reaches after that:
+
+- is **not** shut down: its `Shutdown` method is not called, whatever its signature;
+- is reported, if it is a built service implementing a [Shutdowner interface](#shutdowner-interfaces): the report holds `ctx.Err()` (`context.Canceled` or `context.DeadlineExceeded`) under the service's name;
+- is dropped: it is removed from its scope, so a later shutdown does not find it.
+
+Any other service (never built, without a `Shutdown` method, an alias, a transient service or an export) has nothing to skip and is removed without an error. The `HookBeforeShutdown` and `HookAfterShutdown` hooks still run for every service reached, skipped or not; `HookAfterShutdown` receives the same error as the report (`nil` when none), so a hook that logs "shut down" should check it. The context can end before the call, during the shutdown (slow services used up the deadline), or while a child scope shutdown waits for a running start; in each case the shutdown proceeds with the ended context and skips the remaining services.
+
+:::caution
+
+Do not pass the context of `signal.NotifyContext` to `ShutdownWithContext()`. It is cancelled as soon as the signal arrives, so the shutdown would skip every service. Wait for the signal, then create a new context for the shutdown:
+
+```go
+ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+defer stop()
+
+// ... run the application until a signal arrives
+<-ctx.Done()
+
+// a fresh context, with a grace period for the shutdown
+shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+defer cancel()
+
+report := injector.ShutdownWithContext(shutdownCtx)
+if !report.Succeed {
+	log.Println("shutdown error:", report.Error())
+}
+```
+
+:::
+
+`ShutdownOnSignalsWithContext()` uses its context only to stop waiting for a signal; the context neither bounds nor cancels the shutdown. Whichever comes first, a signal or the end of the context, it shuts every service down with a context that keeps the values of its context but has no cancellation or deadline, as `ShutdownOnSignals()` does, and returns the signal (`nil` when the context ended first). The `HookContainerClosing` and `HookContainerClosed` hooks receive that same context. So passing a `signal.NotifyContext` context to it is safe, and its shutdown is unbounded.
+
+#### Defaults & control {#shutdown-with-a-deadline-control}
+
+| Behavior                                                                      | Zero-config default                                                                                                                                                                                                    | Consumer control                                                                                                                                                                                                         |
+| ----------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| A service reached after the shutdown context ended                            | If it is a built Shutdowner, its `Shutdown` is skipped and the report holds the context error under its name; any other service gets no error. Either way it is dropped, and the Before/After shutdown hooks still run | Pass a context that is still live with enough time, for example `context.WithTimeout(context.Background(), grace)` created after the signal; a context-aware shutdowner bounds its own work with the context it receives |
+| `ShutdownOnSignalsWithContext`, after a signal or when its context ends first | Shuts every service down, with the context's values and no cancellation or deadline; the Closing and Closed hooks receive that context                                                                                 | To bound that shutdown, wait for the signal or the context yourself (`signal.NotifyContext`) and call `ShutdownWithContext` with your own deadline                                                                       |
+
 ## Shutdowner interfaces {#shutdowner-interfaces}
 
 Your service can implement one of the following signatures:
@@ -104,13 +146,15 @@ func (*MyService) Shutdown(context.Context) error {
 
 i := doger.New()
 
-Provide(i, ...)
-Invoke(i, ...)
+doger.Provide(i, ...)
+doger.Invoke[*MyService](i)
 
-ctx := context.WithTimeout(10 * time.Second)
-errors := i.ShutdownWithContext(ctx)
-if err != nil {
-	log.Println("shutdown error:", err)
+ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+defer cancel()
+
+report := i.ShutdownWithContext(ctx)
+if !report.Succeed {
+	log.Println("shutdown error:", report.Error())
 }
 ```
 

@@ -411,9 +411,23 @@ func (s *Scope) Shutdown() *ShutdownReport {
 // Start, Refresh or Scope.Start that is starting services of this scope, and
 // a run that begins while the scope shuts down skips it and its descendants.
 // If ctx ends first, the report fails with an error keyed by this scope with
-// an empty service name, wrapping ctx.Err(), and the shutdown proceeds. Never
-// shut down, synchronously from code running in such a start, a scope that
-// the start is starting: it would wait for itself.
+// an empty service name, wrapping ctx.Err(), and the shutdown proceeds with
+// the ended context, so it skips the services it then reaches (see below).
+// Never shut down, synchronously from code running in such a start, a scope
+// that the start is starting: it would wait for itself.
+//
+// Once ctx has ended, the services the shutdown then reaches are not shut
+// down: their Shutdown method is not called, whatever its signature, and
+// they are removed from their scope. The report holds ctx.Err() under the
+// name of each built service implementing a Shutdowner interface; any other
+// service (never built, without a Shutdown method, an alias, a transient
+// service or an export) gets no error. The HookBeforeShutdown and
+// HookAfterShutdown hooks still run for each of them, the latter with that
+// error (nil when none).
+// To give services time to shut down, pass a context that is still live,
+// for example context.WithTimeout(context.Background(), grace) created when
+// the shutdown begins, not one that has already ended, such as a
+// [os/signal.NotifyContext] context once its signal arrived.
 //
 // A child scope is shut down once at a time: a call that finds a shutdown of
 // it running, its own or root Shutdown's, waits for that shutdown and

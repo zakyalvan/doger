@@ -1,7 +1,9 @@
 package doger
 
 import (
+	"context"
 	"fmt"
+	"time"
 )
 
 func ExampleNew() {
@@ -159,14 +161,31 @@ func ExampleRootScope_ShutdownOnSignals() {
 	// fmt.Println(errors.Len())
 }
 
+type exampleSignalDB struct{}
+
+func (*exampleSignalDB) Shutdown(ctx context.Context) error {
+	fmt.Println("db shut down, ctx.Err():", ctx.Err())
+	return nil
+}
+
 func ExampleRootScope_ShutdownOnSignalsWithContext() {
-	// This example is commented out because it would block waiting for signals
-	// injector := New()
-	// ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-	// defer cancel()
-	// signal, errors := injector.ShutdownOnSignalsWithContext(ctx, syscall.SIGINT, syscall.SIGTERM)
-	// fmt.Println(signal)
-	// fmt.Println(errors.Len())
+	injector := New()
+	ProvideNamed(injector, "db", func(Injector) (*exampleSignalDB, error) { return &exampleSignalDB{}, nil })
+	MustInvokeNamed[*exampleSignalDB](injector, "db")
+
+	// The context only ends the wait for a signal: when it ends first, the
+	// call still shuts every service down, with a context that is not
+	// cancelled.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+
+	sig, report := injector.ShutdownOnSignalsWithContext(ctx)
+	fmt.Println("signal:", sig)
+	fmt.Println("succeeded:", report.Succeed)
+	// Output:
+	// db shut down, ctx.Err(): <nil>
+	// signal: <nil>
+	// succeeded: true
 }
 
 type exampleBuiltCache struct{}
