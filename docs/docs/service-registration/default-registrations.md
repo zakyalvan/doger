@@ -24,11 +24,11 @@ Every registration form accepts the option: `Provide*` (lazy), `ProvideValue*` (
 
 On its first resolution, a default looks for an explicit service of **the same name** in an **ancestor** of its own scope (its parent, grandparent, up to the root). If it finds one, the default **yields**: it resolves to that service's instance, and its own provider is never called. Otherwise it **chooses** its own provider or value.
 
-| Explicit service of the same name in        | The default                               |
-| ------------------------------------------- | ----------------------------------------- |
-| an ancestor scope                           | yields to it                              |
-| a sibling or a descendant scope             | is not affected: it uses its own provider |
-| nowhere                                     | uses its own provider                     |
+| Explicit service of the same name in         | The default                                       |
+| -------------------------------------------- | ------------------------------------------------- |
+| an ancestor scope                            | yields to it                                      |
+| a sibling or a descendant scope              | is not affected: it uses its own provider         |
+| nowhere                                      | uses its own provider                             |
 | an ancestor, but registered with AsDefault() | is not affected: defaults never yield to defaults |
 
 Because the decision happens at first resolution, not at registration, the order of registration does not matter.
@@ -47,12 +47,12 @@ An alias of a default (`As`, `Bind`) resolves through the default's decision.
 
 ## In the same scope {#same-scope}
 
-| First registration  | Then                                        | Outcome                                    |
-| ------------------- | ------------------------------------------- | ------------------------------------------ |
-| a default           | an explicit registration of the name        | the explicit one replaces the default, keeping its registration position |
-| an explicit service | a default of the name                       | the default is skipped, silently           |
-| a default, resolved | an explicit registration of the name        | panics: `DI: service ... has already been declared` |
-| a default           | a second default of the name                | panics: `DI: service ... has already been declared` |
+| First registration  | Then                                 | Outcome                                                                  |
+| ------------------- | ------------------------------------ | ------------------------------------------------------------------------ |
+| a default           | an explicit registration of the name | the explicit one replaces the default, keeping its registration position |
+| an explicit service | a default of the name                | the default is skipped, silently                                         |
+| a default, resolved | an explicit registration of the name | panics: `DI: service ... has already been declared`                      |
+| a default           | a second default of the name         | panics: `DI: service ... has already been declared`                      |
 
 An instance a default built is never silently dropped: once resolved, it can only be replaced with `Override*`.
 
@@ -102,13 +102,13 @@ A default registered under its concrete type (`*EnvSource`) is replaced only by 
 
 ## Defaults & control {#control}
 
-| Behavior                                                 | Zero-config default                                   | Consumer control                                       |
-| -------------------------------------------------------- | ----------------------------------------------------- | ------------------------------------------------------ |
-| Registration without `AsDefault()`                       | Unchanged: explicit, and a duplicate name panics      | -                                                      |
-| A default meets an explicit service of the same name     | The explicit service wins, whichever came first       | Don't mark the service as a default, or use `Override*` |
-| A default and an explicit service of a compatible type   | The explicit service wins by type; the default is skipped | Invoke the default by name, or register the explicit service under the default's name |
-| Explicit registration after the default was resolved     | Panics like a duplicate                               | Register before resolving, or use `Override*`          |
-| A default that yields                                    | No start, shutdown, health check or kind handling     | Not overridable: lifecycle belongs to the service that provides the instance |
+| Behavior                                               | Zero-config default                                       | Consumer control                                                                      |
+| ------------------------------------------------------ | --------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| Registration without `AsDefault()`                     | Unchanged: explicit, and a duplicate name panics          | -                                                                                     |
+| A default meets an explicit service of the same name   | The explicit service wins, whichever came first           | Don't mark the service as a default, or use `Override*`                               |
+| A default and an explicit service of a compatible type | The explicit service wins by type; the default is skipped | Invoke the default by name, or register the explicit service under the default's name |
+| Explicit registration after the default was resolved   | Panics like a duplicate                                   | Register before resolving, or use `Override*`                                         |
+| A default that yields                                  | No start, shutdown, health check or kind handling         | Not overridable: lifecycle belongs to the service that provides the instance          |
 
 ## Explain {#explain}
 
