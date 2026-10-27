@@ -159,6 +159,9 @@ func TestExtend_Invalid(t *testing.T) {
 		{name: "bad_name", ext: &testExtension{name: "Redis Cache"}, message: "invalid extension name"},
 		{name: "bad_instance", ext: &testExtension{name: "redis", instance: "cache.v2"}, message: "invalid instance key", named: true},
 		{name: "empty_scope_name", ext: &testExtension{name: "redis"}, opts: []ExtendOption{ExtendScopeName("")}, message: "scope name is empty", named: true},
+		{name: "name_panics", ext: &panickingExtension{panicsIn: "Name"}, message: "Name panicked"},
+		{name: "instance_panics", ext: &panickingExtension{panicsIn: "Instance"}, message: "Instance panicked", named: true},
+		{name: "placement_panics", ext: &panickingExtension{panicsIn: "Placement"}, message: "Placement panicked", named: true},
 	}
 
 	for _, tt := range tests {
@@ -177,6 +180,48 @@ func TestExtend_Invalid(t *testing.T) {
 			if assert.Equal(t, tt.named, errors.As(err, &extErr)) && tt.named {
 				assert.Equal(t, "redis", extErr.Name)
 			}
+		})
+	}
+}
+
+// panickingExtension is an extension named "redis" whose method named
+// panicsIn panics.
+type panickingExtension struct{ panicsIn string }
+
+func (e *panickingExtension) panicIn(method string) {
+	if e.panicsIn == method {
+		panic(method + " boom")
+	}
+}
+
+func (e *panickingExtension) Name() string                   { e.panicIn("Name"); return "redis" }
+func (e *panickingExtension) Instance() string               { e.panicIn("Instance"); return "" }
+func (e *panickingExtension) Placement() Placement           { e.panicIn("Placement"); return PlacementPrivate }
+func (e *panickingExtension) Extend(*ExtensionContext) error { return nil }
+
+func TestRequire_Invalid(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		dep     Extension
+		message string
+	}{
+		{name: "nil", dep: nil, message: "extension is nil"},
+		{name: "bad_name", dep: &testExtension{name: "Redis Cache"}, message: "invalid extension name"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			root := New()
+
+			err := extendNoPanic(t, root, requiringExtension[kindCache]("cache", tt.dep))
+
+			require.ErrorIs(t, err, ErrInvalidExtension)
+			assert.Contains(t, err.Error(), tt.message)
+			assert.Empty(t, childNames(root))
 		})
 	}
 }
@@ -242,6 +287,7 @@ func TestExtend_Placement(t *testing.T) {
 type redisExtension struct {
 	Addr        string
 	InstanceKey string
+	Fail        bool // Extend registers the client, then fails
 	calls       *atomic.Int32
 }
 
@@ -252,10 +298,54 @@ func (e redisExtension) Extend(x *ExtensionContext) error {
 	e.calls.Add(1)
 	addr := e.Addr
 	Provide(x.Scope(), func(Injector) (*extClient, error) { return &extClient{addr: addr}, nil })
+	if e.Fail {
+		return errors.New("dial failed")
+	}
 	if e.InstanceKey != "" { // each instance publishes its own client
 		return ExtensionExport[*extClient](x, ExportAs(NameOf[*extClient]()+"#"+e.InstanceKey))
 	}
 	return ExtensionExport[*extClient](x)
+}
+
+func TestExtend_ReplacedRollbackFailsRestores(t *testing.T) {
+	t.Parallel()
+
+	var calls atomic.Int32
+	redis := func(addr string) Extension {
+		return newTypedExtension[kindRedis]("redis", func(x *ExtensionContext) error {
+			calls.Add(1)
+			ProvideValue(x.Scope(), &extFailingExporter{}) // shut down by the rollback of the required install, failing
+			Provide(x.Scope(), func(Injector) (*extClient, error) { return &extClient{addr: addr}, nil })
+			return ExtensionExport[*extClient](x)
+		})
+	}
+	root := New()
+	require.NoError(t, extendNoPanic(t, root, requiringExtension[kindCache]("cache", redis("default:6379"))))
+
+	err := extendNoPanic(t, root, redis("prod:6379"))
+
+	var extErr *ExtensionError
+	require.ErrorAs(t, err, &extErr)
+	assert.Contains(t, err.Error(), "close failed")
+	assert.Equal(t, int32(2), calls.Load(), "the required install, then its reinstall; never the replacement")
+	client, err := Invoke[*extClient](root)
+	require.NoError(t, err)
+	assert.Equal(t, "default:6379", client.addr)
+}
+
+// metricsExtension is a comparable extension named "metrics" that declines
+// to install; calls counts its Extend calls.
+type metricsExtension struct {
+	Region string
+	calls  *atomic.Int32
+}
+
+func (e metricsExtension) Name() string { return "metrics" }
+
+func (e metricsExtension) Extend(x *ExtensionContext) error {
+	e.calls.Add(1)
+	provideExtPool(x.Scope())
+	return ErrExtensionDisabled
 }
 
 // otherRedisExtension is another extension type also named "redis".
@@ -323,6 +413,21 @@ func TestExtend_Repeat(t *testing.T) {
 			opts:     []ExtendOption{Flatten()},
 			conflict: true,
 			children: []string{"ext:redis"},
+			calls:    1,
+		},
+		{
+			name:     "disabled_equal",
+			first:    func(c *atomic.Int32) Extension { return &metricsExtension{Region: "eu", calls: c} },
+			second:   func(c *atomic.Int32) Extension { return &metricsExtension{Region: "eu", calls: c} },
+			children: []string{},
+			calls:    1,
+		},
+		{
+			name:     "disabled_unequal",
+			first:    func(c *atomic.Int32) Extension { return &metricsExtension{Region: "eu", calls: c} },
+			second:   func(c *atomic.Int32) Extension { return &metricsExtension{Region: "us", calls: c} },
+			conflict: true,
+			children: []string{},
 			calls:    1,
 		},
 		{
@@ -585,6 +690,122 @@ func TestExtend_RollbackFiresHooks(t *testing.T) {
 	assert.Equal(t, int32(1), shutdowns.Load())
 }
 
+// extClosingClient is a client whose Shutdown returns err.
+type extClosingClient struct{ err error }
+
+func (c *extClosingClient) Shutdown() error { return c.err }
+
+func TestExtend_RollbackAround(t *testing.T) {
+	t.Parallel()
+
+	clientName := NameOf[*extClosingClient]()
+	tests := []struct {
+		name        string
+		opts        func() *InjectorOpts
+		shutdownErr error
+		first       error
+		panics      any      // the value the first call panics with; nil: it returns an error
+		contains    []string // in the error of the first call
+	}{
+		{
+			name: "export_hook_panic",
+			opts: func() *InjectorOpts {
+				var fired atomic.Bool
+				return &InjectorOpts{HookAfterRegistration: []func(*Scope, string){func(scope *Scope, name string) {
+					if scope.Name() == DefaultRootScopeName && name == clientName && fired.CompareAndSwap(false, true) {
+						panic("hook boom")
+					}
+				}}}
+			},
+			contains: []string{"hook boom"},
+		},
+		{
+			name: "closed_hook_panic",
+			opts: func() *InjectorOpts {
+				var fired atomic.Bool
+				return &InjectorOpts{HookScopeClosed: []func(context.Context, *Scope){func(context.Context, *Scope) {
+					if fired.CompareAndSwap(false, true) {
+						panic("closed boom")
+					}
+				}}}
+			},
+			first:  errors.New("dial failed"),
+			panics: "closed boom",
+		},
+		{
+			name:        "shutdown_fails",
+			opts:        func() *InjectorOpts { return &InjectorOpts{} },
+			shutdownErr: errors.New("close failed"),
+			first:       errors.New("dial failed"),
+			contains:    []string{"dial failed", "close failed"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, 5*time.Second)
+
+			root := NewWithOpts(tt.opts())
+			var attempts atomic.Int32
+			ext := &testExtension{name: "redis", extend: func(x *ExtensionContext) error {
+				first := attempts.Add(1) == 1
+				Provide(x.Scope(), func(Injector) (*extClosingClient, error) {
+					if first {
+						return &extClosingClient{err: tt.shutdownErr}, nil
+					}
+					return &extClosingClient{}, nil
+				})
+				if _, err := Invoke[*extClosingClient](x.Scope()); err != nil {
+					return err
+				}
+				if err := ExtensionExport[*extClosingClient](x); err != nil {
+					return err
+				}
+				if first {
+					return tt.first
+				}
+				return nil
+			}}
+
+			if tt.panics != nil {
+				assert.PanicsWithValue(t, tt.panics, func() { _ = Extend(root, ext) })
+			} else {
+				err := extendNoPanic(t, root, ext)
+				var extErr *ExtensionError
+				require.ErrorAs(t, err, &extErr)
+				for _, text := range tt.contains {
+					assert.Contains(t, err.Error(), text)
+				}
+			}
+			assert.Empty(t, childNames(root))
+
+			require.NoError(t, extendNoPanic(t, root, ext))
+		})
+	}
+}
+
+func TestExtend_RollbackKeepsAppService(t *testing.T) {
+	t.Parallel()
+
+	root := New()
+	ProvideValue(root, &extClient{addr: "app-client"})
+	ext := &testExtension{name: "redis", extend: func(x *ExtensionContext) error {
+		Provide(x.Scope(), func(Injector) (*extClient, error) { return &extClient{addr: "ext-client"}, nil }, AsDefault())
+		if err := ExtensionExport[*extClient](x); err != nil {
+			return err
+		}
+		return ExtensionExport[*extPool](x) // never registered: applied after the client's, this export fails
+	}}
+
+	err := extendNoPanic(t, root, ext)
+
+	require.ErrorContains(t, err, NameOf[*extPool]())
+	client, err := Invoke[*extClient](root)
+	require.NoError(t, err)
+	assert.Equal(t, "app-client", client.addr)
+}
+
 // logLines records the lines a container logs.
 type logLines struct {
 	mu    sync.Mutex
@@ -624,6 +845,7 @@ type (
 	kindSession struct{}
 	kindMetrics struct{}
 	kindTracing struct{}
+	kindRedis   struct{}
 )
 
 // newTypedExtension returns an extension of type K named name.
@@ -649,29 +871,100 @@ func requiringExtension[K any](name string, dep Extension) *typedExtension[K] {
 func TestExtend_Disabled(t *testing.T) {
 	t.Parallel()
 
-	var logs logLines
-	root := NewWithOpts(&InjectorOpts{Logf: logs.logf})
+	tests := []struct {
+		name     string
+		instance string
+		line     string
+	}{
+		{name: "no_instance", instance: "", line: "extension metrics disabled"},
+		{name: "instance", instance: "eu", line: "extension metrics/eu disabled"},
+	}
 
-	err := extendNoPanic(t, root, disabledExtension[kindMetrics]("metrics"))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var logs logLines
+			root := NewWithOpts(&InjectorOpts{Logf: logs.logf})
+			ext := disabledExtension[kindMetrics]("metrics")
+			ext.instance = tt.instance
+
+			err := extendNoPanic(t, root, ext)
+
+			require.NoError(t, err)
+			assert.Len(t, logs.containing(tt.line), 1)
+			assert.Empty(t, childNames(root))
+		})
+	}
+}
+
+func TestExtend_DisabledFlattened(t *testing.T) {
+	t.Parallel()
+
+	root := New()
+	ext := disabledExtension[kindMetrics]("metrics")
+
+	err := extendNoPanic(t, root, ext, Flatten())
 
 	require.NoError(t, err)
-	assert.Len(t, logs.containing("extension metrics disabled"), 1)
+	assert.True(t, root.self.serviceExist(NameOf[*extPool]()))
+	require.NoError(t, extendNoPanic(t, root, ext, Flatten()))
+}
+
+// extFailingExporter is a value whose Shutdown fails.
+type extFailingExporter struct{}
+
+func (*extFailingExporter) Shutdown() error { return errors.New("close failed") }
+
+func TestExtend_DisabledShutdownFails(t *testing.T) {
+	t.Parallel()
+
+	root := New()
+	ext := newTypedExtension[kindMetrics]("metrics", func(x *ExtensionContext) error {
+		ProvideValue(x.Scope(), &extFailingExporter{})
+		return ErrExtensionDisabled
+	})
+
+	err := extendNoPanic(t, root, ext)
+
+	var extErr *ExtensionError
+	require.ErrorAs(t, err, &extErr)
+	assert.Equal(t, "metrics", extErr.Name)
+	assert.Contains(t, err.Error(), "close failed")
+	require.NotErrorIs(t, err, ErrExtensionDisabled)
 	assert.Empty(t, childNames(root))
+	require.NoError(t, extendNoPanic(t, root, ext))
 }
 
 func TestRequire_Disabled(t *testing.T) {
 	t.Parallel()
 
-	root := New()
-	metrics := disabledExtension[kindMetrics]("metrics")
-	require.NoError(t, extendNoPanic(t, root, metrics))
+	tests := []struct {
+		name      string
+		installed bool // metrics was installed as disabled before tracing requires it
+	}{
+		{name: "installed_disabled", installed: true},
+		{name: "declines_now", installed: false},
+	}
 
-	err := extendNoPanic(t, root, requiringExtension[kindTracing]("tracing", metrics))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	require.ErrorIs(t, err, ErrRequiredExtensionDisabled)
-	require.NotErrorIs(t, err, ErrExtensionDisabled)
-	assert.Contains(t, err.Error(), "metrics")
-	assert.Empty(t, childNames(root))
+			root := New()
+			metrics := disabledExtension[kindMetrics]("metrics")
+			if tt.installed {
+				require.NoError(t, extendNoPanic(t, root, metrics))
+			}
+
+			err := extendNoPanic(t, root, requiringExtension[kindTracing]("tracing", metrics))
+
+			require.ErrorIs(t, err, ErrRequiredExtensionDisabled)
+			require.NotErrorIs(t, err, ErrExtensionDisabled)
+			assert.Contains(t, err.Error(), "metrics")
+			assert.Empty(t, childNames(root))
+		})
+	}
 }
 
 func TestRequire_Idempotent(t *testing.T) {
@@ -733,14 +1026,85 @@ func TestRequire_CrossGoroutineCycle(t *testing.T) {
 	assert.True(t, errors.Is(errA, ErrExtensionCycle) || errors.Is(errB, ErrExtensionCycle), "errA: %v, errB: %v", errA, errB)
 }
 
+func TestRequire_ConcurrentSameSession(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, 5*time.Second)
+
+	root := New()
+	var calls atomic.Int32
+	const goroutines = 10
+	errs := make([]error, goroutines)
+	cache := newTypedExtension[kindCache]("cache", func(x *ExtensionContext) error {
+		var wg sync.WaitGroup
+		for index := range goroutines {
+			wg.Go(func() { errs[index] = x.Require(&redisExtension{calls: &calls}) })
+		}
+		wg.Wait()
+		return nil
+	})
+
+	err := extendNoPanic(t, root, cache)
+
+	require.NoError(t, err)
+	for index, err := range errs {
+		assert.NoError(t, err, "goroutine %d", index)
+	}
+	assert.Equal(t, int32(1), calls.Load())
+}
+
+func TestRequire_ConcurrentCycle(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, 2*time.Second)
+
+	root := New()
+	bStarted, cStarted := make(chan struct{}), make(chan struct{})
+	signalB, signalC := sync.OnceFunc(func() { close(bStarted) }), sync.OnceFunc(func() { close(cStarted) })
+	releaseB, releaseC := make(chan struct{}), make(chan struct{})
+	a := newTypedExtension[kindA]("a", nil)
+	b := newTypedExtension[kindB]("b", func(x *ExtensionContext) error {
+		signalB()
+		<-releaseB
+		return x.Require(a)
+	})
+	c := newTypedExtension[kindCache]("c", func(*ExtensionContext) error {
+		signalC()
+		<-releaseC
+		return nil
+	})
+	a.extend = func(x *ExtensionContext) error {
+		requiredB, requiredC := make(chan error, 1), make(chan error, 1)
+		go func() { requiredB <- x.Require(b) }()
+		go func() { requiredC <- x.Require(c) }()
+		time.Sleep(50 * time.Millisecond) // both Require calls wait: for b, then for c
+		close(releaseC)
+		errC := <-requiredC // c installed: the wait for c ended, the wait for b remains
+		close(releaseB)
+		return errors.Join(<-requiredB, errC)
+	}
+
+	var errA, errB, errC error
+	var wg sync.WaitGroup
+	wg.Go(func() { errB = extendNoPanic(t, root, b) })
+	wg.Go(func() { errC = extendNoPanic(t, root, c) })
+	<-bStarted
+	<-cStarted
+	wg.Go(func() { errA = extendNoPanic(t, root, a) })
+	wg.Wait()
+
+	assert.True(t, errors.Is(errA, ErrExtensionCycle) || errors.Is(errB, ErrExtensionCycle), "errA: %v, errB: %v, errC: %v", errA, errB, errC)
+}
+
 func TestExtend_AfterRequire(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name     string
 		step     func(t *testing.T, root *RootScope)
+		opts     []ExtendOption
 		conflict bool
 		addr     string
+		child    string // a child scope of the root after the explicit Extend; empty: none checked
+		noChild  bool   // the root has no child "ext:redis" after the explicit Extend, and the name is free again
 	}{
 		{
 			name: "unresolved_replaces",
@@ -767,6 +1131,33 @@ func TestExtend_AfterRequire(t *testing.T) {
 			conflict: true,
 			addr:     "default:6379",
 		},
+		{
+			name:    "other_scope_name",
+			step:    func(*testing.T, *RootScope) {},
+			opts:    []ExtendOption{ExtendScopeName("redis-prod")},
+			addr:    "prod:6379",
+			child:   "redis-prod",
+			noChild: true,
+		},
+		{
+			name:    "flatten",
+			step:    func(*testing.T, *RootScope) {},
+			opts:    []ExtendOption{Flatten()},
+			addr:    "prod:6379",
+			noChild: true,
+		},
+		{
+			name: "descendant_resolved",
+			step: func(t *testing.T, root *RootScope) {
+				t.Helper()
+				pool := root.self.directChild("ext:redis").Scope("pool")
+				provideExtPool(pool)
+				_, err := Invoke[*extPool](pool)
+				require.NoError(t, err)
+			},
+			conflict: true,
+			addr:     "default:6379",
+		},
 	}
 
 	for _, tt := range tests {
@@ -778,16 +1169,84 @@ func TestExtend_AfterRequire(t *testing.T) {
 			require.NoError(t, extendNoPanic(t, root, requiringExtension[kindCache]("cache", &redisExtension{Addr: "default:6379", calls: &calls})))
 			tt.step(t, root)
 
-			err := extendNoPanic(t, root, &redisExtension{Addr: "prod:6379", calls: &calls})
+			err := extendNoPanic(t, root, &redisExtension{Addr: "prod:6379", calls: &calls}, tt.opts...)
 
 			if tt.conflict {
 				require.ErrorIs(t, err, ErrExtensionConflict)
 			} else {
 				require.NoError(t, err)
 			}
+			if tt.child != "" {
+				assert.Contains(t, childNames(root), tt.child)
+			}
 			client, err := Invoke[*extClient](root)
 			require.NoError(t, err)
 			assert.Equal(t, tt.addr, client.addr)
+			if tt.noChild {
+				assert.NotContains(t, childNames(root), "ext:redis")
+				require.NoError(t, extendNoPanic(t, root, &otherRedisExtension{}), "the name ext:redis is free again")
+			}
+		})
+	}
+}
+
+// flatRedisExtension is a redisExtension its author places flat.
+type flatRedisExtension struct{ redisExtension }
+
+func (flatRedisExtension) Placement() Placement { return PlacementFlat }
+
+func TestExtend_AfterRequireAuthorFlat(t *testing.T) {
+	t.Parallel()
+
+	root := New()
+	var calls atomic.Int32
+	require.NoError(t, extendNoPanic(t, root, requiringExtension[kindCache]("cache", &flatRedisExtension{redisExtension{Addr: "default:6379", calls: &calls}})))
+
+	err := extendNoPanic(t, root, &flatRedisExtension{redisExtension{Addr: "prod:6379", calls: &calls}})
+
+	require.ErrorIs(t, err, ErrExtensionConflict)
+}
+
+func TestExtend_FailedReplacementRestores(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		check func(t *testing.T, root *RootScope, calls *atomic.Int32)
+	}{
+		{
+			name: "invoke",
+			check: func(t *testing.T, root *RootScope, _ *atomic.Int32) {
+				t.Helper()
+				client, err := Invoke[*extClient](root)
+				require.NoError(t, err)
+				assert.Equal(t, "default:6379", client.addr)
+			},
+		},
+		{
+			name: "replace_again", // the restored install is unresolved, so it is replaced again
+			check: func(t *testing.T, root *RootScope, calls *atomic.Int32) {
+				t.Helper()
+				require.NoError(t, extendNoPanic(t, root, &redisExtension{Addr: "prod:6379", calls: calls}))
+				client, err := Invoke[*extClient](root)
+				require.NoError(t, err)
+				assert.Equal(t, "prod:6379", client.addr)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			root := New()
+			var calls atomic.Int32
+			require.NoError(t, extendNoPanic(t, root, requiringExtension[kindCache]("cache", &redisExtension{Addr: "default:6379", calls: &calls})))
+
+			err := extendNoPanic(t, root, &redisExtension{Addr: "bad:6379", Fail: true, calls: &calls})
+
+			require.ErrorContains(t, err, "dial failed")
+			tt.check(t, root, &calls)
 		})
 	}
 }
@@ -819,10 +1278,12 @@ func TestExtensionContext_AfterExtend(t *testing.T) {
 				t.Helper()
 				before := len(logs.containing("redis"))
 
-				value, ok := x.Properties().Lookup("addr")
+				for range 2 {
+					value, ok := x.Properties().Lookup("addr")
 
-				assert.False(t, ok)
-				assert.Empty(t, value)
+					assert.False(t, ok)
+					assert.Empty(t, value)
+				}
 				assert.Len(t, logs.containing("redis"), before+1)
 			},
 		},
@@ -1144,6 +1605,35 @@ func (e cloneExtension) Extend(x *ExtensionContext) error {
 	return ExtensionExport[*extClient](x)
 }
 
+// extCheckedPool is a pool with a health check.
+type extCheckedPool struct{}
+
+func (*extCheckedPool) HealthCheck() error { return nil }
+
+func TestExtend_FlattenedHealthCheck(t *testing.T) {
+	t.Parallel()
+
+	root := New()
+	require.NoError(t, extendNoPanic(t, root, &testExtension{name: "redis", extend: func(x *ExtensionContext) error {
+		Provide(x.Scope(), func(Injector) (*extCheckedPool, error) { return &extCheckedPool{}, nil })
+		return nil
+	}}, Flatten()))
+	_, err := Invoke[*extCheckedPool](root)
+	require.NoError(t, err)
+	jobs := root.Scope("jobs")
+	Provide(jobs, func(Injector) (*extJob, error) { return &extJob{}, nil })
+	_, err = Invoke[*extJob](jobs)
+	require.NoError(t, err)
+
+	health := root.HealthCheck()
+
+	assert.Contains(t, health, NameOf[*extCheckedPool]())
+	for name := range health {
+		assert.NotContains(t, name, "ext:")
+		assert.NotContains(t, name, NameOf[*extJob]())
+	}
+}
+
 func TestExtend_Clone(t *testing.T) {
 	t.Parallel()
 
@@ -1161,4 +1651,75 @@ func TestExtend_Clone(t *testing.T) {
 	cloned, ok := clone.ChildByName("ext:redis")
 	require.True(t, ok)
 	assert.Same(t, cloned, ext.builtIn.Load())
+}
+
+func TestExtend_CloneStates(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "disabled",
+			run: func(t *testing.T) {
+				t.Helper()
+				root := New()
+				var calls atomic.Int32
+				ext := &metricsExtension{Region: "eu", calls: &calls}
+				require.NoError(t, extendNoPanic(t, root, ext))
+				clone := root.Clone()
+
+				require.NoError(t, extendNoPanic(t, clone, ext))
+
+				assert.Equal(t, int32(1), calls.Load())
+				assert.NotContains(t, childNames(clone), "ext:metrics")
+			},
+		},
+		{
+			name: "running",
+			run: func(t *testing.T) {
+				t.Helper()
+				root := New()
+				var calls atomic.Int32
+				var builtIn atomic.Pointer[Scope]
+				started, release := make(chan struct{}), make(chan struct{})
+				ext := &testExtension{name: "redis", extend: func(x *ExtensionContext) error {
+					Provide(x.Scope(), func(i Injector) (*extClient, error) {
+						builtIn.Store(injectorScope(i))
+						return &extClient{}, nil
+					})
+					if calls.Add(1) == 1 { // the install the clone is taken during
+						close(started)
+						<-release
+					}
+					return ExtensionExport[*extClient](x)
+				}}
+				installed := make(chan error, 1)
+				go func() { installed <- extendNoPanic(t, root, ext) }()
+				<-started
+				clone := root.Clone()
+				close(release)
+				require.NoError(t, <-installed)
+
+				require.NoError(t, extendNoPanic(t, clone, ext))
+
+				assert.Equal(t, int32(2), calls.Load())
+				_, err := Invoke[*extClient](clone)
+				require.NoError(t, err)
+				cloned, ok := clone.ChildByName("ext:redis")
+				require.True(t, ok)
+				assert.Same(t, cloned, builtIn.Load())
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, 5*time.Second)
+
+			tt.run(t)
+		})
+	}
 }

@@ -22,7 +22,7 @@ type ExtensionContext struct {
 	chain   []extensionLink // the extensions being installed by Require up to this one, outermost first
 	closed  atomic.Bool     // set when Extend returned
 	lateLog sync.Once       // logs the first property read after Extend returned
-	applied []string        // the published names of the exports applied; written once Extend returned
+	applied []string        // the published names of the exports applied; written by applyExports
 
 	mu      sync.Mutex
 	exports []pendingExport // applied when Extend succeeds
@@ -58,7 +58,16 @@ func (x *ExtensionContext) Instance() string { return x.instance }
 // An install made through Require only is replaced by a later explicit
 // Extend of the same identity with a different value, as long as no service
 // of its private scope (or its descendants) was resolved; once one was, that
-// Extend fails with [ErrExtensionConflict].
+// Extend fails with [ErrExtensionConflict]. The replacing Extend may rename
+// the private scope ([ExtendScopeName]) or flatten the extension
+// ([Flatten]). An install its author places flat ([PlacementFlat]) cannot be
+// rolled back, so it is never replaced: the explicit Extend conflicts. When
+// the replacing Extend fails, the required install is installed again from
+// its value, so the extensions that required it keep working, and the error
+// also reports a failure of that reinstall. Resolving the required
+// extension's services while an Extend replaces it is unsupported, as is an
+// Extend concurrent with Start: such a resolution may get a service that is
+// then shut down.
 //
 // Like the context, Require is valid only while this extension's Extend
 // runs: called later, it returns an error matching [ErrInvalidExtension].
@@ -117,34 +126,21 @@ func ExtensionExportNamed[T any](x *ExtensionContext, name string, opts ...Expor
 	return nil
 }
 
-// applyExports applies the exports recorded during Extend, in order. It
-// stops at the first error and returns the published names of the exports
-// it applied.
-func (x *ExtensionContext) applyExports() (applied []string, err error) {
+// applyExports applies the exports recorded during Extend, in order, and
+// stops at the first error. x.applied holds the published names of the
+// exports it applied, and of the one it was applying when that failed or
+// panicked, which may have registered it.
+func (x *ExtensionContext) applyExports() error {
 	x.mu.Lock()
 	exports := x.exports
 	x.mu.Unlock()
 
 	for _, export := range exports {
+		x.applied = append(x.applied, export.published)
 		if err := export.apply(); err != nil {
-			return applied, err
+			return err
 		}
-		applied = append(applied, export.published)
 	}
 
-	return applied, nil
-}
-
-// isExportFrom reports whether service is an export of the scope source, or
-// a default decorating one.
-func isExportFrom(service any, source *Scope) bool {
-	switch wrapper := service.(type) {
-	case serviceWrapperExport:
-		return wrapper.withinSource(source)
-	case serviceWrapperUnwrapExport:
-		export, _ := wrapper.unwrapExport()
-		return export != nil && export.withinSource(source)
-	default:
-		return false
-	}
+	return nil
 }

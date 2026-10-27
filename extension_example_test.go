@@ -16,13 +16,15 @@ type exampleKVPool struct{ addr string }
 // it: options as plain data, a pointer constructor, services registered as
 // defaults and the client exported.
 type exampleKVExtension struct {
-	Addr string // the code option; empty means: from properties, then "localhost:6379"
+	Addr        string // the code option; empty means: from properties, then "localhost:6379"
+	InstanceKey string // the instance option; empty means: no instance
 }
 
 // exampleKVExtensionOf is the extension's constructor.
 func exampleKVExtensionOf(addr string) *exampleKVExtension { return &exampleKVExtension{Addr: addr} }
 
-func (e *exampleKVExtension) Name() string { return "example-kv" }
+func (e *exampleKVExtension) Name() string     { return "example-kv" }
+func (e *exampleKVExtension) Instance() string { return e.InstanceKey }
 
 func (e *exampleKVExtension) Extend(x *ExtensionContext) error {
 	// precedence: code option, then properties, then the extension's default
@@ -86,7 +88,8 @@ func ExampleExtensionExport() {
 }
 
 func ExampleEnvPropertySource() {
-	// the default source reads DOGER_<KEY>: a dot becomes "_", a dash "__"
+	// the default source reads DOGER_<KEY>: a dot becomes "_", a dash "__",
+	// and the slash before an instance key "___"
 	_ = os.Setenv("DOGER_EXAMPLE__KV_ADDR", "env:6379")
 	defer func() { _ = os.Unsetenv("DOGER_EXAMPLE__KV_ADDR") }()
 
@@ -98,7 +101,16 @@ func ExampleEnvPropertySource() {
 	fromOpts := NewWithOpts(&InjectorOpts{PropertySource: EnvPropertySource("MYAPP_")})
 	_ = Extend(fromOpts, exampleKVExtensionOf(""))
 	fmt.Println(MustInvoke[*exampleKV](fromOpts).addr)
+
+	// an instance reads "<name>/<instance>.<key>": the slash becomes "___"
+	_ = os.Setenv("DOGER_EXAMPLE__KV___QUEUE_ADDR", "queue:6379")
+	defer func() { _ = os.Unsetenv("DOGER_EXAMPLE__KV___QUEUE_ADDR") }()
+
+	queue := New()
+	_ = Extend(queue, &exampleKVExtension{InstanceKey: "queue"})
+	fmt.Println(MustInvoke[*exampleKV](queue).addr)
 	// Output:
 	// env:6379
 	// localhost:6379
+	// queue:6379
 }

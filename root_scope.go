@@ -208,24 +208,15 @@ func (s *RootScope) HealthCheckWithContext(ctx context.Context) map[string]error
 	return s.self.healthCheckQueued(ctx, func(ctx context.Context) map[string]<-chan error {
 		results := map[string]<-chan error{}
 
-		s.self.mu.RLock()
-		for name, service := range s.self.services {
-			if isYieldedDefaultIn(s.self, service) || slices.ContainsFunc(scopes, func(scope *Scope) bool { return isExportFrom(service, scope) }) {
-				continue
-			}
-			results[name] = s.queueServiceHealthcheck(ctx, s.self, name)
-		}
-		s.self.mu.RUnlock()
-
+		// an export from an extension scope is checked there, under the
+		// scope's key; a yielded default keeps the result of the service it
+		// yielded to
+		s.self.queueOwnHealthChecks(ctx, results, "", func(service any) bool {
+			return isYieldedDefaultIn(s.self, service) ||
+				s.self.exportCount() > 0 && slices.ContainsFunc(scopes, func(scope *Scope) bool { return readerSeesSource(scope, service) })
+		})
 		for _, scope := range scopes {
-			scope.mu.RLock()
-			for name, service := range scope.services {
-				if isYieldedDefaultIn(scope, service) {
-					continue
-				}
-				results[scope.name+"/"+name] = s.queueServiceHealthcheck(ctx, scope, name)
-			}
-			scope.mu.RUnlock()
+			scope.queueOwnHealthChecks(ctx, results, scope.name+"/", func(service any) bool { return isYieldedDefaultIn(scope, service) })
 		}
 
 		return results
@@ -772,16 +763,17 @@ func (s *RootScope) Clone() *RootScope {
 // The clone uses only opts (hooks included), and keeps the source's kind
 // handlers, in order. Handling a kind on the clone replaces its handler on
 // the clone only. Installed extensions are copied with their private
-// scopes: Extend of an installed identity on the clone follows the repeat
-// rules of [Extend], and the clone's exports resolve from its own scopes.
+// scopes, and disabled ones as disabled: Extend of such an identity on the
+// clone follows the repeat rules of [Extend], and the clone's exports
+// resolve from its own scopes. An installation still running when the clone
+// is taken is not copied, nor is its partly built private scope, so the
+// clone can install that extension itself.
 //
 // Play: https://go.dev/play/p/fT-v63fbFk5
 func (s *RootScope) CloneWithOpts(opts *InjectorOpts) *RootScope {
 	clone := NewWithOpts(opts)
-	clone.self = s.clone(clone, nil)
+	s.cloneWithExtensions(clone)
 	s.copyKindsTo(clone)
-
-	s.copyExtensionsTo(clone)
 
 	// Read after copying: every copied wrapper got its index before it was
 	// stored, so later registrations in the clone come after all of them.
@@ -805,20 +797,31 @@ func (s *RootScope) copyKindsTo(clone *RootScope) {
 	clone.kindsMu.Unlock()
 }
 
-// copyExtensionsTo gives clone the installed and disabled extensions, bound
-// to clone's private scopes of the same names, so that Extend on the clone
-// follows the repeat rules. Running installations, sessions and the
-// waits-for graph are not copied. Call it after cloning the scope tree.
-func (s *RootScope) copyExtensionsTo(clone *RootScope) {
-	registry := s.ext.Load()
-	if registry == nil {
+// cloneWithExtensions gives clone the scope tree and the extensions of s,
+// copied under the registry mutex, so that no installation ends between the
+// two copies.
+func (s *RootScope) cloneWithExtensions(clone *RootScope) {
+	registry := s.extensionRegistry()
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+
+	clone.self = s.clone(clone, nil)
+	s.copyExtensionsTo(clone, registry)
+}
+
+// copyExtensionsTo gives clone the installed and disabled extensions of
+// registry, the container's, bound to clone's private scopes of the same
+// names, so that Extend on the clone follows the repeat rules. Running
+// installations, sessions and the waits-for graph are not copied, and the
+// private scopes of running installations are detached from clone, so that
+// it can install them itself. Call it after cloning the scope tree, with
+// registry.mu held since before that.
+func (s *RootScope) copyExtensionsTo(clone *RootScope, registry *extensionRegistry) {
+	if len(registry.entries) == 0 {
 		return
 	}
 
 	cloned := clone.extensionRegistry()
-	registry.mu.Lock()
-	defer registry.mu.Unlock()
-
 	for id, entry := range registry.entries {
 		if entry.state == extensionInstalling {
 			continue
@@ -829,6 +832,11 @@ func (s *RootScope) copyExtensionsTo(clone *RootScope) {
 			cloned.scopes[entry.plan.scopeName] = id
 		}
 		cloned.entries[id] = &copied
+	}
+	for scopeName, id := range registry.scopes {
+		if registry.entries[id].state == extensionInstalling {
+			clone.self.detachChild(scopeName)
+		}
 	}
 }
 

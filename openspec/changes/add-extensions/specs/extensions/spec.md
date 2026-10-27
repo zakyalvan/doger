@@ -235,9 +235,9 @@ Examples:
 #### Scenario: A rollback removes only its own exports
 ```gherkin
 Given a root scope where the application registered "*redis.Client" producing "app-client"
-And an extension "redis" whose Extend registers "*redis.Client" with doger.AsDefault(), calls doger.ExtensionExport[*redis.Client](x) and returns errors.New("dial failed")
+And an extension "redis" whose Extend registers "*redis.Client" with doger.AsDefault(), calls doger.ExtensionExport[*redis.Client](x), then doger.ExtensionExport[*redis.Pool](x) for a "*redis.Pool" it never registered, and returns nil
 When the consumer calls doger.Extend(root, redisExt)
-Then the error contains "dial failed"
+Then the error names "*redis.Pool", whose export failed after the client's export was applied
 And invoking "*redis.Client" from the root returns "app-client"
 ```
 
@@ -431,8 +431,12 @@ And extension "cache" whose Extend calls x.Require(redis.Extension(redis.Addr("d
 And doger.Extend(root, cacheExt) returned nil
 When the consumer calls doger.Extend(root, redis.Extension(redis.Addr("bad:6379"))) whose Extend returns errors.New("dial failed")
 Then the error contains "dial failed"
-And invoking "*redis.Client" from the root returns a client using "default:6379"
-And a later doger.Extend(root, redis.Extension(redis.Addr("prod:6379"))) returns nil
+And <then>
+
+Examples:
+  | then                                                                                                   |
+  | invoking "*redis.Client" from the root returns a client using "default:6379"                           |
+  | a later doger.Extend(root, redis.Extension(redis.Addr("prod:6379"))) returns nil, the restored install being unresolved |
 ```
 
 

@@ -328,8 +328,12 @@ type InjectorOpts struct {
 	// PropertySource). Nil means unset: the container then uses a
 	// PropertySource service registered in the root under
 	// NameOf[PropertySource](), or else EnvPropertySource("DOGER_"), decided
-	// at its first property read. Setting it avoids any ordering constraint
-	// with registrations. A clone uses the source of its own options.
+	// at its first property read. If deciding panics (a registration hook,
+	// for example), the panic reaches the reader and the next read decides
+	// again. If that service fails to resolve, every property is unset and
+	// one line naming the error's type, never its message, is logged.
+	// Setting this field avoids any ordering constraint with registrations,
+	// and any provider failure. A clone uses the source of its own options.
 	PropertySource PropertySource
 }
 

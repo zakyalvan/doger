@@ -85,7 +85,7 @@ func newPool(i doger.Injector, addr string) (*redis.Pool, error) {
 - **Keep options as plain data.** Installing the same identity twice is a no-op only when the values are deeply equal; a non-nil `func` field never is, so a second install with such an option conflicts.
 - **Return a pointer from your constructor.** `T` and `*T` are two identities, and they collide on the private scope name.
 - **Export only what the application uses.** Everything else stays private to your scope.
-- **A failing `Extend` is rolled back**: return an error, and the private scope is shut down (with a context that never ends, so built services are shut down) and removed, with its exports. A panic is recovered into an `*ExtensionError` too.
+- **A failing `Extend` is rolled back**: return an error, and the private scope is shut down (with a context that never ends, so built services are shut down) and removed, with its exports. A panic is recovered into an `*ExtensionError` too, whether it happens in `Extend` or while your exports are applied (in a registration hook, for example). The rollback always completes: the scope is detached and the exports removed even when a scope hook panics during the shutdown, and that panic is raised afterwards, as for any shutdown. A shutdown that fails is reported: its report is joined to the returned error. Only the exports of the failed attempt are removed, never an application service registered under the published name.
 
 ## Depending on another extension {#require}
 
@@ -102,12 +102,13 @@ func (e *extension) Extend(x *doger.ExtensionContext) error {
 
 `Require` returns `nil` when the identity is already installed, whatever its options, so several extensions can require the same one. A cycle (`a` requires `b` requires `a`), on one goroutine or across goroutines installing concurrently, fails with `ErrExtensionCycle` instead of deadlocking. A `doger.Extend` called from inside `Extend` is not tracked this way: if it leads back to an extension being installed, it deadlocks, as a `sync.Once.Do` called from its own function does.
 
-An install made only through `Require` is replaced by a later explicit `doger.Extend` of the same identity with other options, as long as none of its services was resolved; afterwards, that `Extend` conflicts.
+An install made only through `Require` is replaced by a later explicit `doger.Extend` of the same identity with other options, as long as none of its services, nor any service of a scope below its private scope, was resolved; afterwards, that `Extend` conflicts. The replacing `Extend` may rename the private scope or flatten the extension. A required install that its author places flat (`PlacementFlat`) cannot be rolled back, so it is never replaced. If the replacing `Extend` fails, the required install is installed again from its value, so the extensions that required it keep working. Resolving the required extension's services while an `Extend` replaces it is unsupported: such a resolution may get a service that is then shut down.
 
 ## Configuration {#configuration}
 
-- During `Extend`, read properties with `x.Properties().Lookup("addr")`. The view is prefixed with your name and instance key: `redis.addr`, or `redis.queue.addr`.
-- In providers, which run later, use `doger.ExtensionProperties(i)` with the injector the provider receives: it follows the container, so a clone with its own property source reads from it. The context `x` is valid only while `Extend` runs.
+- During `Extend`, read properties with `x.Properties().Lookup("addr")`. The view is prefixed with your name and instance key: `redis.addr`, or `redis/queue.addr` for the instance `queue`.
+- In providers, which run later, use `doger.ExtensionProperties(i)` with the injector the provider receives: it follows the container, so a clone with its own property source reads from it. The context `x` is valid only while `Extend` runs. A provider registered in a scope you create below your private scope gets your view too.
+- When the installer flattens your extension (`doger.Flatten()`), your providers run in the root, where `ExtensionProperties` returns a view that always misses (and `false`). To work flattened too, read your configuration in `Extend`, with `x.Properties()`, and capture it in your providers' closures, as the example above does with the `addr` option.
 - Keys are lowercase alphanumeric words joined by single dashes, in dot-separated segments (`pool-size`, `tls.enabled`). An invalid key misses.
 - Give precedence to your constructor's options, then to properties, then to your defaults. The library does not enforce it.
 
@@ -121,4 +122,4 @@ if value, ok := x.Properties().Lookup("enabled"); ok && value == "false" {
 }
 ```
 
-`Extend` then rolls back, logs one line naming the extension, and returns `nil`. An extension that requires a disabled one gets an error matching `ErrRequiredExtensionDisabled`, which fails it instead of disabling it in turn.
+`Extend` then rolls back, logs one line naming the extension, and returns `nil`. Installed with `doger.Flatten()`, nothing is rolled back: what you registered before declining stays in the root, so decline before registering anything. If shutting the declined attempt down fails, `Extend` returns an `*ExtensionError` holding the failed report instead, which does not match `ErrExtensionDisabled`, so a leak is never mistaken for a clean decline; the extension is still recorded as disabled. An extension that requires a disabled one gets an error matching `ErrRequiredExtensionDisabled`, which fails it instead of disabling it in turn.

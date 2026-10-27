@@ -83,76 +83,77 @@ Prerequisites: `consolidate-pending-lifecycle-work`, `add-default-registrations`
 
 ## 12. Validation panics and Require input (existing behavior)
 
-- [ ] 12.1 RED: add the rows name_panics, instance_panics and placement_panics to `TestExtend_Invalid`, and `TestRequire_Invalid` (rows nil, bad_name; scenario "Require validates its input"); they pass on arrival (verify W2), so show each fails by temporarily removing the `recover` in `callExtension` and the validation call in `installInSession` for `Require`; verify `go test -race -run 'TestExtend_Invalid|TestRequire_Invalid' .` passes after restoring.
-- [ ] 12.2 GREEN: no production change expected; verify the 12.1 command and `make test` pass.
-- [ ] 12.3 REFACTOR: none needed; verify `make test` and `make lint` pass.
+- [x] 12.1 RED: add the rows name_panics, instance_panics and placement_panics to `TestExtend_Invalid`, and `TestRequire_Invalid` (rows nil, bad_name; scenario "Require validates its input"); they pass on arrival (verify W2), so show each fails by temporarily removing the `recover` in `callExtension` and the validation call in `installInSession` for `Require`; verify `go test -race -run 'TestExtend_Invalid|TestRequire_Invalid' .` passes after restoring.
+- [x] 12.2 GREEN: no production change expected; verify the 12.1 command and `make test` pass.
+- [x] 12.3 REFACTOR: none needed; verify `make test` and `make lint` pass.
 
 ## 13. A rollback always completes and reports its failures
 
-- [ ] 13.1 RED: add `TestExtend_RollbackAround` (rows export_hook_panic, closed_hook_panic, shutdown_fails; scenario "Failures around the extension are rolled back") and `TestExtend_RollbackKeepsAppService`, the hook rows in `testWithTimeout`; verify `go test -race -run 'TestExtend_Rollback(Around|KeepsAppService)' .` fails on export_hook_panic (the panic escapes, `ext:redis` stays attached: proposal Defect F11) and closed_hook_panic (the retry conflicts: F12); shutdown_fails and KeepsAppService pass on arrival, so show them failing by dropping the joined report and by matching any service in `removeService`.
-- [ ] 13.2 GREEN: implement design D4: recover around `ext.Extend` and the export application together, and run the detach and export removal of `rollbackInstall` in a deferred step; verify the 13.1 command passes with `-count=10` and `make test` is green.
-- [ ] 13.3 REFACTOR: *Inline Function* `isExportFrom` into its callers, then *Substitute Algorithm* with `readerSeesSource(scope, service)` (review finding F10); verify `make test` and `make lint` pass after each step.
-- [ ] 13.4 Godoc of `Extend` and `ExtensionError` and the authors' guide: panics while exports are applied, the rollback completing before a hook panic is raised, failed shutdown reports joined, own exports only; verify `go doc Extend` shows it and `npm run build` in `docs/` passes.
+- [x] 13.1 RED: add `TestExtend_RollbackAround` (rows export_hook_panic, closed_hook_panic, shutdown_fails; scenario "Failures around the extension are rolled back") and `TestExtend_RollbackKeepsAppService`, the hook rows in `testWithTimeout`; verify `go test -race -run 'TestExtend_Rollback(Around|KeepsAppService)' .` fails on export_hook_panic (the panic escapes, `ext:redis` stays attached: proposal Defect F11) and closed_hook_panic (the retry conflicts: F12); shutdown_fails and KeepsAppService pass on arrival, so show them failing by dropping the joined report and by matching any service in `removeService`.
+- [x] 13.2 GREEN: implement design D4: recover around `ext.Extend` and the export application together, and run the detach and export removal of `rollbackInstall` in a deferred step; verify the 13.1 command passes with `-count=10` and `make test` is green.
+- [x] 13.3 REFACTOR: *Inline Function* `isExportFrom` into its callers, then *Substitute Algorithm* with `readerSeesSource(scope, service)` (review finding F10); verify `make test` and `make lint` pass after each step.
+- [x] 13.4 Godoc of `Extend` and `ExtensionError` and the authors' guide: panics while exports are applied, the rollback completing before a hook panic is raised, failed shutdown reports joined, own exports only; verify `go doc Extend` shows it and `npm run build` in `docs/` passes.
 
 ## 14. Declining
 
-- [ ] 14.1 RED: add `TestExtend_Disabled` rows no_instance and instance (log line "extension metrics/eu disabled"), `TestExtend_DisabledFlattened`, `TestExtend_DisabledShutdownFails`, `TestRequire_Disabled` rows installed_disabled and declines_now, and the disabled_equal and disabled_unequal rows of `TestExtend_Repeat`; verify `go test -race -run 'TestExtend_(Disabled|Repeat)|TestRequire_Disabled' .` fails on `TestExtend_DisabledShutdownFails` (nil returned: proposal Defect F6); the other rows pass on arrival, so show them failing by recording a flattened decline as failed and by returning nil from a Require whose install ends disabled.
-- [ ] 14.2 GREEN: implement design D6: a declined attempt whose rollback shutdown fails returns an `*ExtensionError` wrapping the report, not the `ErrExtensionDisabled` cause, with the identity still recorded as disabled; verify the 14.1 command passes and `make test` is green.
-- [ ] 14.3 REFACTOR: *Extract Function* `recordDisabled(root, req, rollbackErr) error` from `runInstall`; verify `make test` and `make lint` pass.
-- [ ] 14.4 Godoc of `ErrExtensionDisabled` and `Flatten`, and the authors' guide ("Declining to install"): flattened declines keep their registrations; a failed shutdown is returned; verify `go doc ErrExtensionDisabled` shows it and `npm run build` in `docs/` passes.
+- [x] 14.1 RED: add `TestExtend_Disabled` rows no_instance and instance (log line "extension metrics/eu disabled"), `TestExtend_DisabledFlattened`, `TestExtend_DisabledShutdownFails`, `TestRequire_Disabled` rows installed_disabled and declines_now, and the disabled_equal and disabled_unequal rows of `TestExtend_Repeat`; verify `go test -race -run 'TestExtend_(Disabled|Repeat)|TestRequire_Disabled' .` fails on `TestExtend_DisabledShutdownFails` (nil returned: proposal Defect F6); the other rows pass on arrival, so show them failing by recording a flattened decline as failed and by returning nil from a Require whose install ends disabled.
+- [x] 14.2 GREEN: implement design D6: a declined attempt whose rollback shutdown fails returns an `*ExtensionError` wrapping the report, not the `ErrExtensionDisabled` cause, with the identity still recorded as disabled; verify the 14.1 command passes and `make test` is green.
+- [x] 14.3 REFACTOR: *Extract Function* `recordDisabled(root, req, rollbackErr) error` from `runInstall`; verify `make test` and `make lint` pass.
+- [x] 14.4 Godoc of `ErrExtensionDisabled` and `Flatten`, and the authors' guide ("Declining to install"): flattened declines keep their registrations; a failed shutdown is returned; verify `go doc ErrExtensionDisabled` shows it and `npm run build` in `docs/` passes.
 
 ## 15. Replacing a required install
 
-- [ ] 15.1 RED: add the `TestExtend_AfterRequire` rows other_scope_name, flatten and descendant_resolved, `TestExtend_AfterRequireAuthorFlat` and `TestExtend_FailedReplacementRestores`; verify `go test -race -run 'TestExtend_(AfterRequire|AfterRequireAuthorFlat|FailedReplacementRestores)' .` fails on `FailedReplacementRestores` ("could not find service": proposal Defect F1); the other rows pass on arrival (verify W3), so show them failing by always keeping the old scope name reservation and by checking only the private scope itself in `scopeResolved`.
-- [ ] 15.2 GREEN: implement design D5: when the replacing install fails, or the old install's rollback fails, install the old value again in the same call as a required install and join that outcome to the error; verify the 15.1 command passes and `make test` is green.
-- [ ] 15.3 REFACTOR: *Extract Function* `restoreReplaced(root, registry, c, req) error`; verify `make test` and `make lint` pass.
-- [ ] 15.4 Godoc of `ExtensionContext.Require` and the authors' guide: replacement may rename or flatten, author-flat installs are never replaced, a failed replacement restores the required install, resolving the required extension's services during a replacing `Extend` is unsupported; verify `go doc ExtensionContext.Require` shows it and `npm run build` in `docs/` passes.
+- [x] 15.1 RED: add the `TestExtend_AfterRequire` rows other_scope_name, flatten and descendant_resolved, `TestExtend_AfterRequireAuthorFlat` and `TestExtend_FailedReplacementRestores`; verify `go test -race -run 'TestExtend_(AfterRequire|AfterRequireAuthorFlat|FailedReplacementRestores)' .` fails on `FailedReplacementRestores` ("could not find service": proposal Defect F1); the other rows pass on arrival (verify W3), so show them failing by always keeping the old scope name reservation and by checking only the private scope itself in `scopeResolved`.
+- [x] 15.2 GREEN: implement design D5: when the replacing install fails, or the old install's rollback fails, install the old value again in the same call as a required install and join that outcome to the error; verify the 15.1 command passes and `make test` is green.
+- [x] 15.3 REFACTOR: *Extract Function* `restoreReplaced(root, registry, c, req) error`; verify `make test` and `make lint` pass.
+- [x] 15.4 Godoc of `ExtensionContext.Require` and the authors' guide: replacement may rename or flatten, author-flat installs are never replaced, a failed replacement restores the required install, resolving the required extension's services during a replacing `Extend` is unsupported; verify `go doc ExtensionContext.Require` shows it and `npm run build` in `docs/` passes.
 
 ## 16. Require concurrency
 
-- [ ] 16.1 RED: add `TestRequire_ConcurrentSameSession` and `TestRequire_ConcurrentCycle` (scenario "A cycle through concurrent Require calls of one Extend fails"), both in `testWithTimeout`; verify `go test -race -run 'TestRequire_Concurrent' .` fails on `ConcurrentCycle` with the timeout panic (proposal Defect F4); `ConcurrentSameSession` passes on arrival (verify W4), so show it failing by adding a self edge for same-session waits.
-- [ ] 16.2 GREEN: implement design D2: the waits-for graph as counted edges per `(waiter, owner)` with a depth-first cycle check; a wait removes one count; verify the 16.1 command passes with `-count=10` and `make test` is green.
-- [ ] 16.3 REFACTOR: *Encapsulate Record* the graph as a `waitsFor` type with `add`, `remove` and `closesCycle`; verify `make test` and `make lint` pass.
-- [ ] 16.4 Godoc of `ErrExtensionCycle`: cycles through concurrent Require calls of one Extend are detected; verify `go doc ErrExtensionCycle` shows it.
+- [x] 16.1 RED: add `TestRequire_ConcurrentSameSession` and `TestRequire_ConcurrentCycle` (scenario "A cycle through concurrent Require calls of one Extend fails"), both in `testWithTimeout`; verify `go test -race -run 'TestRequire_Concurrent' .` fails on `ConcurrentCycle` with the timeout panic (proposal Defect F4); `ConcurrentSameSession` passes on arrival (verify W4), so show it failing by adding a self edge for same-session waits.
+- [x] 16.2 GREEN: implement design D2: the waits-for graph as counted edges per `(waiter, owner)` with a depth-first cycle check; a wait removes one count; verify the 16.1 command passes with `-count=10` and `make test` is green.
+- [x] 16.3 REFACTOR: *Encapsulate Record* the graph as a `waitsFor` type with `add`, `remove` and `closesCycle`; verify `make test` and `make lint` pass.
+- [x] 16.4 Godoc of `ErrExtensionCycle`: cycles through concurrent Require calls of one Extend are detected; verify `go doc ErrExtensionCycle` shows it.
 
 ## 17. Clone during Extend
 
-- [ ] 17.1 RED: add `TestExtend_CloneStates` (rows disabled, running; scenario "Clone of other installation states"), the running row gated by channels in `testWithTimeout`; verify `go test -race -run TestExtend_CloneStates .` fails on running with `ErrExtensionConflict` (proposal Defect F3); disabled passes on arrival, so show it failing by skipping disabled entries in `copyExtensionsTo`.
-- [ ] 17.2 GREEN: implement design D10: clone the scope tree and copy the entries while holding the source registry mutex, and detach from the clone the private scopes of installations still running; verify the 17.1 command passes with `-count=10` and `make test` is green.
-- [ ] 17.3 REFACTOR: *Extract Function* `cloneWithExtensions(clone)` wrapping the tree clone and `copyExtensionsTo`; verify `make test` and `make lint` pass.
-- [ ] 17.4 Godoc of `CloneWithOpts`: disabled identities are copied; installations running when the clone is taken are not; verify `go doc RootScope.CloneWithOpts` shows it.
+- [x] 17.1 RED: add `TestExtend_CloneStates` (rows disabled, running; scenario "Clone of other installation states"), the running row gated by channels in `testWithTimeout`; verify `go test -race -run TestExtend_CloneStates .` fails on running with `ErrExtensionConflict` (proposal Defect F3); disabled passes on arrival, so show it failing by skipping disabled entries in `copyExtensionsTo`.
+- [x] 17.2 GREEN: implement design D10: clone the scope tree and copy the entries while holding the source registry mutex, and detach from the clone the private scopes of installations still running; verify the 17.1 command passes with `-count=10` and `make test` is green.
+- [x] 17.3 REFACTOR: *Extract Function* `cloneWithExtensions(clone)` wrapping the tree clone and `copyExtensionsTo`; verify `make test` and `make lint` pass.
+- [x] 17.4 Godoc of `CloneWithOpts`: disabled identities are copied; installations running when the clone is taken are not; verify `go doc RootScope.CloneWithOpts` shows it.
 
 ## 18. Property namespaces
 
-- [ ] 18.1 RED: update `TestProperties_Prefixed` (the source holds "redis/cache.addr"), add `TestProperties_InstancesDistinct`, the slash row of `TestProperties_InvalidKeys`, the instance row of `TestEnvPropertySource_Mapping` and the third key of `TestEnvPropertySource_Distinct`; verify `go test -race -run 'TestProperties_|TestEnvPropertySource' .` fails on the instance rows and `InstancesDistinct` ("redis.queue.addr" received twice: proposal Defect F7), the slash row passing on arrival.
-- [ ] 18.2 GREEN: implement design D9: the instance prefix `<name>/<instance>`, the full-key grammar with an optional `/instance`, and `/` mapped to `___` by `EnvPropertySource`; verify the 18.1 command passes and `make test` is green.
-- [ ] 18.3 REFACTOR: *Extract Function* `fullPropertyKey(prefix, key string) (string, bool)` from `Properties.Lookup`; verify `make test` and `make lint` pass.
-- [ ] 18.4 Godoc of `Properties`, `EnvPropertySource` and `PropertySource`, `ExampleEnvPropertySource`, and the installers' guide ("Configuration") with the instance mapping; verify `go test -run ExampleEnvPropertySource .` and `npm run build` in `docs/` pass.
+- [x] 18.1 RED: update `TestProperties_Prefixed` (the source holds "redis/cache.addr"), add `TestProperties_InstancesDistinct`, the slash row of `TestProperties_InvalidKeys`, the instance row of `TestEnvPropertySource_Mapping` and the third key of `TestEnvPropertySource_Distinct`; verify `go test -race -run 'TestProperties_|TestEnvPropertySource' .` fails on the instance rows and `InstancesDistinct` ("redis.queue.addr" received twice: proposal Defect F7), the slash row passing on arrival.
+- [x] 18.2 GREEN: implement design D9: the instance prefix `<name>/<instance>`, the full-key grammar with an optional `/instance`, and `/` mapped to `___` by `EnvPropertySource`; verify the 18.1 command passes and `make test` is green.
+- [x] 18.3 REFACTOR: *Extract Function* `fullPropertyKey(prefix, key string) (string, bool)` from `Properties.Lookup`; verify `make test` and `make lint` pass.
+- [x] 18.4 Godoc of `Properties`, `EnvPropertySource` and `PropertySource`, `ExampleEnvPropertySource`, and the installers' guide ("Configuration") with the instance mapping; verify `go test -run ExampleEnvPropertySource .` and `npm run build` in `docs/` pass.
 
 ## 19. Source decision failures
 
-- [ ] 19.1 RED: add `TestPropertySource_DecisionRetried` and `TestPropertySource_ProviderFails` (scenarios "A failed decision is retried" and "A failing source provider leaves every property unset"), both with `t.Setenv`, not parallel; verify `go test -race -run 'TestPropertySource_(DecisionRetried|ProviderFails)' .` fails on `DecisionRetried` (nil pointer dereference: proposal Defect F5) and on `ProviderFails` (the log line holds the error message: verify S3).
-- [ ] 19.2 GREEN: implement design D9: the decision under a mutex with a decided flag, kept only when it returns, and the provider failure logged with `%T`; verify the 19.1 command and `TestPropertySource_ConcurrentFirstRead` pass with `-count=10`, and `make test` is green.
-- [ ] 19.3 REFACTOR: *Move Function* the decision state (mutex, flag, source) into a `propertySourceDecision` type with a `get(root)` method; verify `make test` and `make lint` pass.
-- [ ] 19.4 Godoc of `PropertySource` and `InjectorOpts.PropertySource`: a panicking decision is retried; a failing provider leaves every property unset, logged by type; verify `go doc PropertySource` shows it.
+- [x] 19.1 RED: add `TestPropertySource_DecisionRetried` and `TestPropertySource_ProviderFails` (scenarios "A failed decision is retried" and "A failing source provider leaves every property unset"), both with `t.Setenv`, not parallel; verify `go test -race -run 'TestPropertySource_(DecisionRetried|ProviderFails)' .` fails on `DecisionRetried` (nil pointer dereference: proposal Defect F5) and on `ProviderFails` (the log line holds the error message: verify S3).
+- [x] 19.2 GREEN: implement design D9: the decision under a mutex with a decided flag, kept only when it returns, and the provider failure logged with `%T`; verify the 19.1 command and `TestPropertySource_ConcurrentFirstRead` pass with `-count=10`, and `make test` is green.
+- [x] 19.3 REFACTOR: *Move Function* the decision state (mutex, flag, source) into a `propertySourceDecision` type with a `get(root)` method; verify `make test` and `make lint` pass.
+- [x] 19.4 Godoc of `PropertySource` and `InjectorOpts.PropertySource`: a panicking decision is retried; a failing provider leaves every property unset, logged by type; verify `go doc PropertySource` shows it.
 
 ## 20. Coverage of existing behavior
 
-- [ ] 20.1 RED: replace `TestExtensionProperties_OutsideExtension` with `TestExtensionProperties_Injectors` (rows root, child, descendant, flattened), add `TestExtend_FlattenedHealthCheck`, and make the properties row of `TestExtensionContext_AfterExtend` read twice; they pass on arrival, so show each fails under a mutation (match only the private scope itself in `ExtensionProperties`, take the extension path when every extension is flat, drop the `sync.Once` around the late-read log line).
-- [ ] 20.2 GREEN: no production change expected; verify the 20.1 tests and `make test` pass.
-- [ ] 20.3 REFACTOR: none needed; verify `make test` and `make lint` pass.
-- [ ] 20.4 Godoc of `ExtensionProperties` and the authors' guide ("Configuration"): descendants of a private scope get the view; providers of a flattened extension do not; verify `go doc ExtensionProperties` shows it and `npm run build` in `docs/` passes.
+- [x] 20.1 RED: replace `TestExtensionProperties_OutsideExtension` with `TestExtensionProperties_Injectors` (rows root, child, descendant, flattened), add `TestExtend_FlattenedHealthCheck`, and make the properties row of `TestExtensionContext_AfterExtend` read twice; they pass on arrival, so show each fails under a mutation (match only the private scope itself in `ExtensionProperties`, take the extension path when every extension is flat, drop the `sync.Once` around the late-read log line).
+- [x] 20.2 GREEN: no production change expected; verify the 20.1 tests and `make test` pass.
+- [x] 20.3 REFACTOR: none needed; verify `make test` and `make lint` pass.
+- [x] 20.4 Godoc of `ExtensionProperties` and the authors' guide ("Configuration"): descendants of a private scope get the view; providers of a flattened extension do not; verify `go doc ExtensionProperties` shows it and `npm run build` in `docs/` passes.
 
 ## 21. Refactors (behavior-preserving)
 
-- [ ] 21.1 *Extract Function* `removeLocked(name) (service any, ok bool)` from `Scope.serviceShutdown`, then make `Scope.removeService` use it (review finding F8); verify `make test` passes before and after each step and `make lint` passes.
-- [ ] 21.2 *Extract Function* the own-services loop of `Scope.asyncHealthCheckWithContext` into an internal helper taking a skip predicate, then *Substitute Algorithm* in the root extension path with that helper, guarding the extension-export skip with `exportCount() > 0` (design D8, review finding F9); verify `make test` passes before and after each step, including `TestExtend_Lifecycle`, `TestExtend_AppServiceCheckedOnce` and the existing health-check suite, and `make lint` passes.
+- [x] 21.1 *Extract Function* `removeLocked(name) (service any, ok bool)` from `Scope.serviceShutdown`, then make `Scope.removeService` use it (review finding F8); verify `make test` passes before and after each step and `make lint` passes.
+- [x] 21.2 *Extract Function* the own-services loop of `Scope.asyncHealthCheckWithContext` into an internal helper taking a skip predicate, then *Substitute Algorithm* in the root extension path with that helper, guarding the extension-export skip with `exportCount() > 0` (design D8, review finding F9); verify `make test` passes before and after each step, including `TestExtend_Lifecycle`, `TestExtend_AppServiceCheckedOnce` and the existing health-check suite, and `make lint` passes.
 
 ## 22. Integration
 
-- [ ] 22.1 Benchmark check: rerun the 0.1 command into `<scratch>/bench-after-fixes.txt` and `benchstat` it against the baseline; verify no statistically significant regression in `HealthCheck` or `InvokeAs` (record the output in the task evidence).
-- [ ] 22.2 Integration check: `make test`, `make lint`, and `go build ./...` plus `go test ./...` in every `go.work` module under `http/*` and `examples/*` (iterate line by line; remove any binaries the builds leave); verify all pass.
-- [ ] 22.3 Cross-check every `#### Scenario:` header in this change's specs against a passing Go test from the design Test Strategy table; verify none is missing and `openspec validate add-extensions --strict` passes.
+- [x] 22.1 Benchmark check: rerun the 0.1 command into `<scratch>/bench-after-fixes.txt` and `benchstat` it against the baseline; verify no statistically significant regression in `HealthCheck` or `InvokeAs` (record the output in the task evidence).
+  - Evidence (benchstat against the 0.1 baseline, n=10, Apple M4 Pro): InvokeAs 103.0n → 100.7n (−2.18%, p=0.004, faster); HealthCheck 45.49µ → 42.90µ (−5.70%, p=0.002, faster); B/op 144 B and 34.15 KiB, allocs/op 4 and 625, unchanged.
+- [x] 22.2 Integration check: `make test`, `make lint`, and `go build ./...` plus `go test ./...` in every `go.work` module under `http/*` and `examples/*` (iterate line by line; remove any binaries the builds leave); verify all pass.
+- [x] 22.3 Cross-check every `#### Scenario:` header in this change's specs against a passing Go test from the design Test Strategy table; verify none is missing and `openspec validate add-extensions --strict` passes.
 
 ## Workflow follow-up
 

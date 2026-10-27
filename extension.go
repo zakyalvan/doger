@@ -21,9 +21,13 @@ var ErrInvalidExtension = errors.New("DI: invalid extension")
 // ErrExtensionDisabled is returned, possibly wrapped, by an extension's
 // Extend to decline installing, for example when its configuration turns it
 // off. [Extend] then rolls back what it registered, records the identity as
-// disabled, logs one line naming it, and returns nil. The library has no
-// enable/disable switch of its own: whether to decline is the extension's
-// choice.
+// disabled, logs one line naming it, and returns nil. A flattened extension
+// (see [Flatten]) is not rolled back: what it registered before declining
+// stays in the root. When shutting the declined attempt down fails, Extend
+// returns an [*ExtensionError] wrapping the failed report instead, which
+// does not match ErrExtensionDisabled; the identity is still recorded as
+// disabled. The library has no enable/disable switch of its own: whether to
+// decline is the extension's choice.
 var ErrExtensionDisabled = errors.New("DI: extension disabled")
 
 // ErrRequiredExtensionDisabled is matched by the error
@@ -34,9 +38,10 @@ var ErrRequiredExtensionDisabled = errors.New("DI: required extension is disable
 
 // ErrExtensionCycle is matched by the error of a cycle of
 // [ExtensionContext.Require] calls, such as a requiring b requiring a, on
-// one goroutine (the error names the chain, "a -> b -> a") or across
-// goroutines installing concurrently. The extensions of the cycle fail and
-// are rolled back instead of deadlocking.
+// one goroutine (the error names the chain, "a -> b -> a"), across
+// goroutines installing concurrently, or through concurrent Require calls
+// made by one extension's Extend from several goroutines. The extensions of
+// the cycle fail and are rolled back instead of deadlocking.
 var ErrExtensionCycle = errors.New("DI: extension cycle")
 
 // ErrExtensionConflict is matched by the error [Extend] returns, installing
@@ -50,10 +55,12 @@ var ErrExtensionConflict = errors.New("DI: extension conflict")
 
 // ExtensionError is the error [Extend] returns when an extension fails to
 // install: its Extend returned an error or panicked, or an export it asked
-// for failed, or, once its name is known to be valid, its other inputs are
-// invalid. Find it with [errors.As]; Err is the cause, which [errors.Is] and
-// errors.As also see. A recovered panic becomes an error that wraps the
-// panic value when it is an error.
+// for failed or panicked while applied, or, once its name is known to be
+// valid, its other inputs are invalid. Find it with [errors.As]; Err is the
+// cause, which [errors.Is] and errors.As also see. A recovered panic becomes
+// an error that wraps the panic value when it is an error. When shutting the
+// failed attempt down fails too, Err joins the cause and the
+// [*ShutdownReport].
 type ExtensionError struct {
 	Name     string // the extension's name
 	Instance string // its instance key, empty without one
@@ -131,8 +138,9 @@ type extendOptions struct {
 
 // Flatten installs the extension into the root's own scope instead of a
 // private scope, whatever placement the extension declares, and makes its
-// exports no-ops. A flattened install that fails is not rolled back: the
-// services it registered before failing stay registered in the root.
+// exports no-ops. A flattened install that fails, or declines with
+// [ErrExtensionDisabled], is not rolled back: the services it registered
+// before failing or declining stay registered in the root.
 func Flatten() ExtendOption {
 	return func(options *extendOptions) { options.flatten = true }
 }
@@ -169,12 +177,16 @@ var extensionNamePattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 // even when Name or Instance does.
 //
 // A failing install leaves nothing behind: when ext.Extend returns an error
-// or panics, or an export fails, Extend returns an [*ExtensionError] and
+// or panics, or an export fails or panics while it is applied (in a
+// registration hook, for example), Extend returns an [*ExtensionError] and
 // rolls the private scope back. It shuts the scope down, with a context
 // that never ends, so every service the attempt built is shut down and the
 // scope's shutdown and HookScopeClosing/HookScopeClosed hooks fire, as its
 // registration hooks did; it then detaches the scope, removes the exports
-// already applied, and forgets the identity, so a later Extend can retry. A
+// the attempt applied (never an application service registered under the
+// published name), and forgets the identity, so a later Extend can retry.
+// The detach and the removal complete even when a scope hook panics during
+// that shutdown; the panic is raised afterwards, as for any shutdown. A
 // failed shutdown report is joined to the error. Extensions the failing one
 // required stay installed. A flattened install (see [Flatten]) is not rolled
 // back: its registrations stay in the root.
@@ -305,11 +317,10 @@ type extensionRegistry struct {
 	mu       sync.Mutex
 	entries  map[extensionID]*extensionEntry
 	scopes   map[string]extensionID // private scope names, installing and installed
-	waits    map[uint64]uint64      // waits-for graph: a waiting session to the session it waits for
+	waits    waitsFor               // the waits-for graph of the sessions
 	sessions atomic.Uint64          // the last session ID
 
-	sourceOnce sync.Once      // decides source at the first property read
-	source     PropertySource // the container's property source, once decided
+	source propertySourceDecision // the container's property source, decided at the first property read
 }
 
 // extensionRegistry returns the registry of the container, created on first
@@ -321,7 +332,7 @@ func (s *RootScope) extensionRegistry() *extensionRegistry {
 	s.ext.CompareAndSwap(nil, &extensionRegistry{
 		entries: map[extensionID]*extensionEntry{},
 		scopes:  map[string]extensionID{},
-		waits:   map[uint64]uint64{},
+		waits:   waitsFor{},
 	})
 
 	return s.ext.Load()
@@ -356,6 +367,7 @@ type claim struct {
 	replaced *extensionEntry // the required install the request replaces, when owner
 	wait     <-chan struct{} // the end of a running installation to wait for, then claim again
 	edge     bool            // the wait is recorded in the waits-for graph
+	waitOn   uint64          // the session the recorded wait waits for
 }
 
 // installExtension installs the extension of req: it installs it when its
@@ -380,7 +392,7 @@ func installExtension(root *RootScope, registry *extensionRegistry, req installR
 		<-c.wait
 		if c.edge {
 			registry.mu.Lock()
-			delete(registry.waits, req.session)
+			registry.waits.remove(req.session, c.waitOn)
 			registry.mu.Unlock()
 		}
 	}
@@ -458,6 +470,27 @@ func (r *extensionRegistry) reserveScope(root *RootScope, req installRequest) er
 	return nil
 }
 
+// moveScope moves the private scope name reservation of from to the one of
+// to, or returns an error matching ErrExtensionConflict, keeping the
+// reservation of from, when another extension or scope uses it.
+func (r *extensionRegistry) moveScope(root *RootScope, from, to installRequest) error {
+	if from.plan == to.plan {
+		return nil
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if err := r.reserveScope(root, to); err != nil {
+		return err
+	}
+	if !from.plan.flat {
+		delete(r.scopes, from.plan.scopeName)
+	}
+
+	return nil
+}
+
 // startEntry records the identity of req as being installed by its session.
 // r.mu must be held.
 func (r *extensionRegistry) startEntry(req installRequest) *extensionEntry {
@@ -481,21 +514,56 @@ func (r *extensionRegistry) waitFor(entry *extensionEntry, req installRequest) (
 		return claim{wait: entry.done}, nil
 	}
 
-	if waitsForCycle(r.waits, req.session, entry.session) {
+	if r.waits.closesCycle(req.session, entry.session) {
 		return claim{}, fmt.Errorf("%w: extension %s is being installed by a call that waits for this one", ErrExtensionCycle, describeExtension(req.name, req.id.instance))
 	}
-	r.waits[req.session] = entry.session
+	r.waits.add(req.session, entry.session)
 
-	return claim{wait: entry.done, edge: true}, nil
+	return claim{wait: entry.done, edge: true, waitOn: entry.session}, nil
 }
 
-// waitsForCycle reports whether waiter waiting for owner would close a cycle
-// in graph, the waits-for graph: owner waits, through other sessions, for
-// waiter.
-func waitsForCycle(graph map[uint64]uint64, waiter, owner uint64) bool {
-	for session, ok := owner, true; ok; session, ok = graph[session] {
+// waitsFor is the waits-for graph of the installing sessions: the number of
+// waits of each waiting session for each session it waits for. A session
+// may wait for several sessions at once, and for one more than once, from
+// concurrent Require calls.
+type waitsFor map[uint64]map[uint64]int
+
+// add records a wait of waiter for owner.
+func (w waitsFor) add(waiter, owner uint64) {
+	if w[waiter] == nil {
+		w[waiter] = map[uint64]int{}
+	}
+	w[waiter][owner]++
+}
+
+// remove forgets one wait of waiter for owner.
+func (w waitsFor) remove(waiter, owner uint64) {
+	if w[waiter][owner]--; w[waiter][owner] == 0 {
+		delete(w[waiter], owner)
+	}
+	if len(w[waiter]) == 0 {
+		delete(w, waiter)
+	}
+}
+
+// closesCycle reports whether waiter waiting for owner would close a cycle:
+// owner waits, through other sessions, for waiter. Every outgoing wait of a
+// session is followed.
+func (w waitsFor) closesCycle(waiter, owner uint64) bool {
+	visited := map[uint64]bool{}
+	pending := []uint64{owner}
+	for len(pending) > 0 {
+		session := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
 		if session == waiter {
 			return true
+		}
+		if visited[session] {
+			continue
+		}
+		visited[session] = true
+		for next := range w[session] {
+			pending = append(pending, next)
 		}
 	}
 
@@ -528,43 +596,108 @@ func scopeResolved(scope *Scope) bool {
 
 // runInstall runs the installation of req that c claimed, rolling back the
 // required install c replaces first, and records its outcome: installed on
-// success, disabled when the extension declined, forgotten on failure.
+// success, disabled when the extension declined, forgotten on failure. When
+// the replacement fails, the required install is installed again.
 func runInstall(root *RootScope, registry *extensionRegistry, c claim, req installRequest) (disabled bool, err error) {
-	ext, id, name, plan := req.ext, req.id, req.name, req.plan
 	outcome := extensionInstalling // failed, until decided
-	x := &ExtensionContext{root: root, scope: root.self, instance: id.instance, flat: plan.flat, session: req.session}
-	defer func() { registry.release(c.entry, req, outcome, x) }()
+	x := newExtensionContext(root, req)
+	released := false // by restoreReplaced
+	defer func() {
+		if !released {
+			registry.release(c.entry, req, outcome, x)
+		}
+	}()
 
 	if c.replaced != nil {
-		_ = rollbackInstall(root, c.replaced.plan, c.replaced.scope, c.replaced.exports)
+		if rollbackErr := rollbackInstall(root, c.replaced.plan, c.replaced.scope, c.replaced.exports); rollbackErr != nil {
+			err = &ExtensionError{Name: req.name, Instance: req.id.instance, Err: rollbackErr}
+		}
+	}
+	if err == nil {
+		outcome, err = attemptInstall(root, req, x)
+	}
+	if outcome != extensionInstalling || c.replaced == nil {
+		return outcome == extensionDisabled, err
 	}
 
-	x.chain = append(append([]extensionLink{}, req.chain...), extensionLink{id: id, name: name})
-	if !plan.flat {
-		x.scope, err = newPrivateScope(root, plan.scopeName, name, id.instance)
+	released = true
+	if restoreErr := restoreReplaced(root, registry, c, req); restoreErr != nil {
+		err = errors.Join(err, restoreErr)
+	}
+
+	return false, err
+}
+
+// restoreReplaced installs again, as a required install, the install c
+// replaced for req, whose replacement failed, and records its outcome in
+// the entry c claimed. It returns the error of that reinstall.
+func restoreReplaced(root *RootScope, registry *extensionRegistry, c claim, req installRequest) error {
+	restored := installRequest{ext: c.replaced.value, id: req.id, name: req.name, plan: c.replaced.plan, session: req.session, chain: req.chain, viaRequire: true}
+	recorded := req                // the request whose outcome is recorded
+	outcome := extensionInstalling // failed, until decided
+	var x *ExtensionContext
+	defer func() { registry.release(c.entry, recorded, outcome, x) }()
+
+	if err := registry.moveScope(root, req, restored); err != nil {
+		return fmt.Errorf("restoring the required install: %w", err)
+	}
+	recorded, x = restored, newExtensionContext(root, restored)
+	var err error
+	if outcome, err = attemptInstall(root, restored, x); err != nil {
+		return fmt.Errorf("restoring the required install: %w", err)
+	}
+
+	return nil
+}
+
+// newExtensionContext returns the context of an installation of req, whose
+// scope is the root's own until its private scope is created.
+func newExtensionContext(root *RootScope, req installRequest) *ExtensionContext {
+	return &ExtensionContext{
+		root: root, scope: root.self, instance: req.id.instance, flat: req.plan.flat, session: req.session,
+		chain: append(append([]extensionLink{}, req.chain...), extensionLink{id: req.id, name: req.name}),
+	}
+}
+
+// attemptInstall installs req through x once, rolling a private install
+// back when it fails or declines, and returns its outcome: installed,
+// disabled, or failed (extensionInstalling).
+func attemptInstall(root *RootScope, req installRequest, x *ExtensionContext) (outcome extensionState, err error) {
+	if !req.plan.flat {
+		x.scope, err = newPrivateScope(root, req.plan.scopeName, req.name, req.id.instance)
 		if err != nil {
-			return false, err
+			return extensionInstalling, err
 		}
 	}
 
-	applied, err := extendAndExport(ext, x)
-	x.applied = applied
-	if err != nil {
-		if !plan.flat {
-			if rollbackErr := rollbackInstall(root, plan, x.scope, applied); rollbackErr != nil {
-				err = errors.Join(err, rollbackErr)
-			}
+	if err = extendAndExport(req.ext, x); err != nil {
+		var rollbackErr error
+		if !req.plan.flat {
+			rollbackErr = rollbackInstall(root, req.plan, x.scope, x.applied)
 		}
 		if errors.Is(err, ErrExtensionDisabled) {
-			outcome = extensionDisabled
-			root.opts.Logf("DI: extension %s disabled", plainExtensionName(name, id.instance))
-			return true, nil
+			return extensionDisabled, recordDisabled(root, req, rollbackErr)
 		}
-		return false, &ExtensionError{Name: name, Instance: id.instance, Err: err}
+		if rollbackErr != nil {
+			err = errors.Join(err, rollbackErr)
+		}
+		return extensionInstalling, &ExtensionError{Name: req.name, Instance: req.id.instance, Err: err}
 	}
-	outcome = extensionInstalled
 
-	return false, nil
+	return extensionInstalled, nil
+}
+
+// recordDisabled logs that the extension of req declined to install, and
+// returns the error of that outcome: nil, or, when rollbackErr reports that
+// shutting the declined attempt down failed, an *ExtensionError wrapping it,
+// not the ErrExtensionDisabled cause, since a leak is not a clean decline.
+func recordDisabled(root *RootScope, req installRequest, rollbackErr error) error {
+	root.opts.Logf("DI: extension %s disabled", plainExtensionName(req.name, req.id.instance))
+	if rollbackErr != nil {
+		return &ExtensionError{Name: req.name, Instance: req.id.instance, Err: rollbackErr}
+	}
+
+	return nil
 }
 
 // plainExtensionName names an extension in log lines: name, or
@@ -581,39 +714,44 @@ func plainExtensionName(name, instance string) string {
 // it shuts scope down, with a context that never ends so that every service
 // built there is shut down, detaches it from root so that its name is free
 // again, and removes the exports named appliedExports it published in root.
-// It returns the failed shutdown report, if any.
-func rollbackInstall(root *RootScope, plan installPlan, scope *Scope, appliedExports []string) error {
-	var err error
+// The detach and the removal happen even when a scope hook panics during the
+// shutdown; the panic then propagates. It returns the failed shutdown
+// report, if any.
+func rollbackInstall(root *RootScope, plan installPlan, scope *Scope, appliedExports []string) (err error) {
+	defer func() {
+		root.self.detachChild(plan.scopeName)
+		for _, published := range appliedExports {
+			root.self.removeService(published, func(service any) bool { return readerSeesSource(scope, service) })
+		}
+	}()
+
 	if report := scope.ShutdownWithContext(context.Background()); !report.Succeed {
 		err = report
-	}
-	root.self.detachChild(plan.scopeName)
-	for _, published := range appliedExports {
-		root.self.removeService(published, func(service any) bool { return isExportFrom(service, scope) })
 	}
 
 	return err
 }
 
-// extendAndExport calls ext.Extend with x, turning a panic into an error,
-// closes x, then applies the exports it recorded. It returns the published
-// names of the exports it applied.
-func extendAndExport(ext Extension, x *ExtensionContext) (applied []string, err error) {
+// extendAndExport calls ext.Extend with x, closes x, then applies the
+// exports it recorded, turning a panic of either step into an error.
+// x.applied holds the published names of the exports it applied.
+func extendAndExport(ext Extension, x *ExtensionContext) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			if recoveredErr, ok := recovered.(error); ok {
+				err = fmt.Errorf("panic: %w", recoveredErr)
+			} else {
+				err = fmt.Errorf("panic: %v", recovered)
+			}
+		}
+	}()
+
 	func() {
 		defer x.closed.Store(true)
-		defer func() {
-			if recovered := recover(); recovered != nil {
-				if recoveredErr, ok := recovered.(error); ok {
-					err = fmt.Errorf("panic: %w", recoveredErr)
-				} else {
-					err = fmt.Errorf("panic: %v", recovered)
-				}
-			}
-		}()
 		err = ext.Extend(x)
 	}()
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	return x.applyExports()

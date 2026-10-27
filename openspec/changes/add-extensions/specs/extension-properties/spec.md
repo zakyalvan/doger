@@ -138,9 +138,9 @@ Examples:
 
 #### Scenario: A source registered after the first read is not used
 ```gherkin
-Given a root scope with no InjectorOpts.PropertySource, "DOGER_REDIS_ADDR" set to "env-a" and "DOGER_REDIS_B_ADDR" set to "env-b"
+Given a root scope with no InjectorOpts.PropertySource, "DOGER_REDIS_ADDR" set to "env-a" and "DOGER_REDIS___B_ADDR" set to "env-b"
 And doger.Extend(root, redisExt) read the property "addr"
-And a lazy "*app.MapSource" (registered under its own type name) with "redis.b.addr" = "late" is registered afterwards
+And a lazy "*app.MapSource" (registered under its own type name) with "redis/b.addr" = "late" is registered afterwards
 When a second extension "redis" with instance "b" reads "addr" during its Extend
 Then it reads "env-b"
 ```

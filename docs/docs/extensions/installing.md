@@ -63,7 +63,7 @@ Where the extension or the application resolves by type (`InvokeAs`, collections
 
 Extensions read their configuration through a **property source**. Values given in code, as constructor options, win over properties, which win over the extension's defaults.
 
-The default source reads environment variables prefixed with `DOGER_`. The key `redis.addr` maps to `DOGER_REDIS_ADDR`; a dot becomes `_` and a dash `__`, so `redis.cache-addr` maps to `DOGER_REDIS_CACHE__ADDR`. For an instance, the instance key comes after the name: `redis.queue.addr` maps to `DOGER_REDIS_QUEUE_ADDR`.
+The default source reads environment variables prefixed with `DOGER_`. The key `redis.addr` maps to `DOGER_REDIS_ADDR`; a dot becomes `_` and a dash `__`, so `redis.cache-addr` maps to `DOGER_REDIS_CACHE__ADDR`. For an instance, the instance key comes after the name and a slash: `redis/queue.addr` maps to `DOGER_REDIS___QUEUE_ADDR` (three underscores), so it never shares a variable with `redis.queue.addr` (`DOGER_REDIS_QUEUE_ADDR`), a key of the extension without an instance.
 
 To use another source, set `InjectorOpts.PropertySource`:
 

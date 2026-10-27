@@ -23,6 +23,7 @@ func TestEnvPropertySource_Mapping(t *testing.T) {
 	}{
 		{name: "default", prefix: "DOGER_", key: "redis.addr", variable: "DOGER_REDIS_ADDR"},
 		{name: "two_segments", prefix: "DOGER_", key: "redis.cache.addr", variable: "DOGER_REDIS_CACHE_ADDR"},
+		{name: "instance", prefix: "DOGER_", key: "redis/cache.addr", variable: "DOGER_REDIS___CACHE_ADDR"},
 		{name: "dash", prefix: "DOGER_", key: "redis.cache-addr", variable: "DOGER_REDIS_CACHE__ADDR"},
 		{name: "custom_prefix", prefix: "MYAPP_", key: "redis.addr", variable: "MYAPP_REDIS_ADDR"},
 		{name: "empty_prefix", prefix: "", key: "redis.addr", variable: "REDIS_ADDR"},
@@ -46,15 +47,19 @@ func TestEnvPropertySource_Mapping(t *testing.T) {
 func TestEnvPropertySource_Distinct(t *testing.T) {
 	t.Setenv("DOGER_REDIS_CACHE_ADDR", "dot")
 	t.Setenv("DOGER_REDIS_CACHE__ADDR", "dash")
+	t.Setenv("DOGER_REDIS___CACHE_ADDR", "instance")
 	source := EnvPropertySource("DOGER_")
 
 	dot, dotOK := source.Lookup("redis.cache.addr")
 	dash, dashOK := source.Lookup("redis.cache-addr")
+	instance, instanceOK := source.Lookup("redis/cache.addr")
 
 	require.True(t, dotOK)
 	require.True(t, dashOK)
+	require.True(t, instanceOK)
 	assert.Equal(t, "dot", dot)
 	assert.Equal(t, "dash", dash)
+	assert.Equal(t, "instance", instance)
 }
 
 // TestEnvPropertySource_Unset is not parallel: it changes environment
@@ -125,7 +130,7 @@ func TestProperties_Prefixed(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			root := NewWithOpts(&InjectorOpts{PropertySource: mapSource{"redis.addr": "a:1", "redis.cache.addr": "c:3"}})
+			root := NewWithOpts(&InjectorOpts{PropertySource: mapSource{"redis.addr": "a:1", "redis/cache.addr": "c:3"}})
 			var value string
 			var found bool
 
@@ -135,6 +140,20 @@ func TestProperties_Prefixed(t *testing.T) {
 			assert.Equal(t, tt.found, found)
 		})
 	}
+}
+
+func TestProperties_InstancesDistinct(t *testing.T) {
+	t.Parallel()
+
+	source := &recordingSource{}
+	root := NewWithOpts(&InjectorOpts{PropertySource: source})
+	var value string
+	var found bool
+
+	require.NoError(t, Extend(root, lookupExtension("", "queue.addr", &value, &found)))
+	require.NoError(t, Extend(root, lookupExtension("queue", "addr", &value, &found)))
+
+	assert.Equal(t, []string{"redis.queue.addr", "redis/queue.addr"}, source.received())
 }
 
 func TestProperties_InvalidKeys(t *testing.T) {
@@ -152,6 +171,7 @@ func TestProperties_InvalidKeys(t *testing.T) {
 		{name: "trailing_dash", key: "addr-", received: []string{}},
 		{name: "leading_dash", key: "-addr", received: []string{}},
 		{name: "double_dash", key: "pool--size", received: []string{}},
+		{name: "slash", key: "queue/addr", received: []string{}},
 		{name: "dash", key: "pool-size", received: []string{"redis.pool-size"}},
 	}
 
@@ -231,17 +251,61 @@ func TestPropertySource_Selection(t *testing.T) {
 // environment variables.
 func TestPropertySource_LateServiceIgnored(t *testing.T) {
 	t.Setenv("DOGER_REDIS_ADDR", "env-a")
-	t.Setenv("DOGER_REDIS_B_ADDR", "env-b")
+	t.Setenv("DOGER_REDIS___B_ADDR", "env-b")
 	root := New()
 	var first, second string
 	var found bool
 	require.NoError(t, Extend(root, lookupExtension("", "addr", &first, &found)))
-	Provide(root, func(Injector) (*mapSource, error) { return &mapSource{"redis.b.addr": "late"}, nil })
+	Provide(root, func(Injector) (*mapSource, error) { return &mapSource{"redis/b.addr": "late"}, nil })
 
 	require.NoError(t, Extend(root, lookupExtension("b", "addr", &second, &found)))
 
 	assert.Equal(t, "env-a", first)
 	assert.Equal(t, "env-b", second)
+}
+
+// TestPropertySource_DecisionRetried is not parallel: it sets environment
+// variables.
+func TestPropertySource_DecisionRetried(t *testing.T) {
+	t.Setenv("DOGER_REDIS_ADDR", "from-env")
+	sourceName := NameOf[PropertySource]()
+	var fired atomic.Bool
+	root := NewWithOpts(&InjectorOpts{HookAfterRegistration: []func(*Scope, string){func(_ *Scope, name string) {
+		if name == sourceName && fired.CompareAndSwap(false, true) {
+			panic("hook boom")
+		}
+	}}})
+	var value string
+	var found bool
+	ext := lookupExtension("", "addr", &value, &found)
+
+	err := extendNoPanic(t, root, ext)
+
+	var extErr *ExtensionError
+	require.ErrorAs(t, err, &extErr)
+	assert.Contains(t, err.Error(), "hook boom")
+	require.NoError(t, extendNoPanic(t, root, ext))
+	assert.True(t, found)
+	assert.Equal(t, "from-env", value)
+}
+
+// TestPropertySource_ProviderFails is not parallel: it sets environment
+// variables.
+func TestPropertySource_ProviderFails(t *testing.T) {
+	t.Setenv("DOGER_REDIS_ADDR", "from-env")
+	var logs logLines
+	root := NewWithOpts(&InjectorOpts{Logf: logs.logf})
+	Provide(root, func(Injector) (PropertySource, error) { return nil, errors.New("vault sealed: token s3cret") })
+	var value string
+	found := true
+
+	require.NoError(t, extendNoPanic(t, root, lookupExtension("", "addr", &value, &found)))
+
+	assert.False(t, found)
+	assert.Empty(t, value)
+	assert.Len(t, logs.containing("property source unavailable"), 1)
+	assert.Empty(t, logs.containing("s3cret"))
+	assert.Empty(t, logs.containing("vault sealed"))
 }
 
 func TestPropertySource_LateSameNamePanics(t *testing.T) {
@@ -352,26 +416,69 @@ func TestExtensionProperties_Clone(t *testing.T) {
 	}
 }
 
-func TestExtensionProperties_OutsideExtension(t *testing.T) {
+func TestExtensionProperties_Injectors(t *testing.T) {
 	t.Parallel()
 
-	root := NewWithOpts(&InjectorOpts{PropertySource: mapSource{"redis.addr": "a:1", "addr": "x"}})
-	var (
-		properties Properties
-		ok         bool
-	)
-	Provide(root, func(i Injector) (*appCache, error) {
-		properties, ok = ExtensionProperties(i)
-		return &appCache{}, nil
-	})
+	tests := []struct {
+		name  string
+		scope func(t *testing.T, root *RootScope) Injector // where the provider is registered
+		ok    bool
+		value string
+	}{
+		{
+			name:  "root",
+			scope: func(_ *testing.T, root *RootScope) Injector { return root },
+		},
+		{
+			name:  "child",
+			scope: func(_ *testing.T, root *RootScope) Injector { return root.Scope("jobs") },
+		},
+		{
+			name: "descendant",
+			scope: func(t *testing.T, root *RootScope) Injector {
+				t.Helper()
+				require.NoError(t, Extend(root, &testExtension{name: "redis"}))
+				private, ok := root.ChildByName("ext:redis")
+				require.True(t, ok)
+				return private.Scope("pool")
+			},
+			ok:    true,
+			value: "a:1",
+		},
+		{
+			name: "flattened",
+			scope: func(t *testing.T, root *RootScope) Injector {
+				t.Helper()
+				require.NoError(t, Extend(root, &testExtension{name: "redis"}, Flatten()))
+				return root
+			},
+		},
+	}
 
-	_, err := Invoke[*appCache](root)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	require.NoError(t, err)
-	assert.False(t, ok)
-	for _, key := range []string{"addr", "redis.addr"} {
-		value, found := properties.Lookup(key)
-		assert.False(t, found, key)
-		assert.Empty(t, value, key)
+			root := NewWithOpts(&InjectorOpts{PropertySource: mapSource{"redis.addr": "a:1", "addr": "x"}})
+			scope := tt.scope(t, root)
+			var (
+				ok    bool
+				value string
+				found bool
+			)
+			Provide(scope, func(i Injector) (*appCache, error) {
+				var properties Properties
+				properties, ok = ExtensionProperties(i)
+				value, found = properties.Lookup("addr")
+				return &appCache{}, nil
+			})
+
+			_, err := Invoke[*appCache](scope)
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.ok, ok)
+			assert.Equal(t, tt.ok, found)
+			assert.Equal(t, tt.value, value)
+		})
 	}
 }

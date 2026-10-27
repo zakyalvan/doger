@@ -196,7 +196,7 @@ Tests are table-driven with testify and run under `-race`. Tests that wait on ch
 | A Require cycle fails | extension_test.go: `TestRequire_Cycle` (in `testWithTimeout`) | unit, timeout |
 | An explicit Extend after Require | extension_test.go: `TestExtend_AfterRequire/{unresolved_replaces,unrelated_root_invoked,resolved_conflicts,other_scope_name,flatten,descendant_resolved}` | unit, table |
 | A required install placed flat by its author is never replaced | extension_test.go: `TestExtend_AfterRequireAuthorFlat` | unit |
-| A failing replacement restores the required install | extension_test.go: `TestExtend_FailedReplacementRestores` | unit |
+| A failing replacement restores the required install | extension_test.go: `TestExtend_FailedReplacementRestores/{invoke,replace_again}` | unit, table |
 | Concurrent Require calls of one Extend | extension_test.go: `TestRequire_ConcurrentSameSession` (10 goroutines, `testWithTimeout`) | race, timeout |
 | A Require cycle across goroutines fails instead of deadlocking | extension_test.go: `TestRequire_CrossGoroutineCycle` (channel handshake, `testWithTimeout`) | race, timeout |
 | A cycle through concurrent Require calls of one Extend fails | extension_test.go: `TestRequire_ConcurrentCycle` (channel gates, `testWithTimeout`) | race, timeout |
@@ -225,7 +225,7 @@ Tests are table-driven with testify and run under `-race`. Tests that wait on ch
 | A provider reads properties in the original and the cloned container | properties_test.go: `TestExtensionProperties_Clone/{root,clone}` | unit, table |
 | Injectors inside and outside extension scopes | properties_test.go: `TestExtensionProperties_Injectors/{root,child,descendant,flattened}` (replaces `TestExtensionProperties_OutsideExtension`) | unit, table |
 
-The Risks section adds `TestExtend_FuncOptionConflicts` and `TestExtend_RollbackFiresHooks`.
+The Risks section adds `TestExtend_FuncOptionConflicts` and `TestExtend_RollbackFiresHooks`. D5 adds `TestExtend_ReplacedRollbackFailsRestores` (a failing rollback of the replaced install restores it).
 
 **Hot paths and their coverage:**
 - `Extend`'s state machine (claim, wait with the waits-for graph, repeat, replace, rollback): the repeat, failure, after-require, cycle, concurrent and clone tests.
