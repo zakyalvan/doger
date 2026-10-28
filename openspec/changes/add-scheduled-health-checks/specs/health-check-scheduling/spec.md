@@ -81,8 +81,30 @@ Examples:
 <!-- cases: 6 not found/duplicate: called once per container, even after Refresh; a second Start returns ErrAlreadyStarted as in container-start -->
 <!-- cases: 7 lifecycle: idle, failed, shutdown during start, ready, refresh -->
 <!-- cases: N/A 8 concurrency: the call happens on Start's goroutine, outside the lifecycle lock -->
-<!-- cases: 9 panics: a scheduler panic is recovered; a panic raised by HookContainerPanic propagates from Start -->
+<!-- cases: 9 panics: a scheduler panic is recovered; a panic raised by HookContainerPanic propagates from Start (next requirement) -->
 <!-- cases: N/A 10 backward compatibility: new option -->
+
+### Requirement: A panic HookContainerPanic raises for the scheduler leaves scheduling stopped
+A panic that `HookContainerPanic` raises for a panicking `ScheduleHealthRounds` SHALL propagate from Start, leaving the container unmonitored, and a later Shutdown SHALL return.
+
+#### Scenario: A re-panicking HookContainerPanic leaves scheduling stopped
+```gherkin
+Given an injector whose HealthScheduler's ScheduleHealthRounds panics with "boom", and a HookContainerPanic that panics again with the value it receives
+When the consumer calls Start under a deferred recover(), then Shutdown
+Then the recovered value is "boom"
+And Shutdown returns within 1s
+```
+
+<!-- cases: N/A 1 default: HookContainerPanic is unset by default -->
+<!-- cases: 2 overrides: a HookContainerPanic that panics again -->
+<!-- cases: N/A 3 zero values: a nil hook logs (previous requirement) -->
+<!-- cases: N/A 4 boundaries: not applicable -->
+<!-- cases: N/A 5 errors: not applicable -->
+<!-- cases: N/A 6 not found/duplicate: not applicable -->
+<!-- cases: 7 lifecycle: Start panics, then Shutdown -->
+<!-- cases: N/A 8 concurrency: not applicable -->
+<!-- cases: 9 panics: this requirement (review R3) -->
+<!-- cases: N/A 10 backward compatibility: new behavior -->
 
 ### Requirement: A round checks every eligible service once and returns
 Each call of `round(ctx)` SHALL check each underlying health checker of the container once, joining checks already in flight, and SHALL return once every check is recorded or its bound elapsed. Services not started yet are excluded (health-reports). Each check is bounded by `HealthCheckTimeout` when positive, `DefaultHealthReportCheckTimeout` when 0, and nothing when negative, and by ctx. A round SHALL return at once after scheduling stopped.
@@ -175,8 +197,36 @@ And the check of "db" is released before the test ends
 <!-- cases: 6 not found/duplicate: a second Shutdown returns the first report as in container-start; stop is called once -->
 <!-- cases: 7 lifecycle: order against Closing hooks and service shutdown; the root's own *Scope path; an ended Shutdown context (shutdown-context) -->
 <!-- cases: 8 concurrency: cancellation of a round in progress -->
-<!-- cases: N/A 9 panics: a panic in stop is recovered like a scheduler panic -->
+<!-- cases: N/A 9 panics: a panic in stop is the next requirement -->
 <!-- cases: N/A 10 backward compatibility: Shutdown without a scheduler is unchanged -->
+
+### Requirement: A failing stop does not fail Shutdown
+An error returned by the stop function SHALL be logged with Logf. A panic in it SHALL be recovered and passed to `HookContainerPanic(root, "healthscheduler", value)` when that option is set, and logged otherwise. Neither SHALL fail Shutdown.
+
+#### Scenario: A failing stop does not fail Shutdown
+```gherkin
+Given a started injector whose HealthScheduler's stop function <fails>, with HookContainerPanic <panic hook> and a Logf that records lines
+When the consumer calls Shutdown
+Then the report succeeds
+And <observed>
+
+Examples:
+  | fails                          | panic hook                    | observed                                                         |
+  | returns errors.New("busy")     | nil                           | Logf recorded a line containing "health scheduler" and "busy"     |
+  | panics with "stop boom"        | nil                           | Logf recorded a line containing "health scheduler" and "stop boom" |
+  | panics with "stop boom"        | set, recording (point, value) | HookContainerPanic recorded ("healthscheduler", "stop boom")      |
+```
+
+<!-- cases: N/A 1 default: a stop that returns nil -->
+<!-- cases: 2 overrides: with and without HookContainerPanic -->
+<!-- cases: N/A 3 zero values: a nil error is not logged -->
+<!-- cases: N/A 4 boundaries: not applicable -->
+<!-- cases: 5 errors: an error is logged -->
+<!-- cases: N/A 6 not found/duplicate: not applicable -->
+<!-- cases: 7 lifecycle: root Shutdown -->
+<!-- cases: N/A 8 concurrency: not applicable -->
+<!-- cases: 9 panics: this requirement (review R8) -->
+<!-- cases: N/A 10 backward compatibility: new behavior -->
 
 ### Requirement: A clone is scheduled independently
 A clone SHALL be scheduled only when the clone itself reaches `PhaseReady`, through its own `ScheduleHealthRounds` call, and SHALL NOT share health results with its source. Its own Shutdown SHALL stop only its own schedule. `Clone()` SHALL copy the scheduler and the health hooks with the other options, and `CloneWithOpts(opts)` SHALL use those of `opts`.
@@ -277,7 +327,7 @@ Examples:
 <!-- cases: N/A 10 backward compatibility: new hook; it takes no ctx, like HookContainerPanic, because it is delivered off any caller's request -->
 
 ### Requirement: Overall health changes call the container hooks
-Each `HookContainerHealthChanged(root, previous, current HealthState)` SHALL be called once for each change of the overall state of the container's unfiltered report computed without the phase gate, whether a recorded result or a service appearing or leaving caused it, after the service hooks of the same result. `AddContainerHealthChangedHook` SHALL append to the same list.
+Each `HookContainerHealthChanged(root, previous, current HealthState)` SHALL be called once for each change of the overall state of the container's unfiltered report computed without the phase gate, whether a recorded result or a service appearing or leaving caused it, after the service hooks of the same result. When a service appearing or leaving changes it is the next requirement. `AddContainerHealthChangedHook` SHALL append to the same list.
 
 #### Scenario: Container hook calls follow the overall state
 ```gherkin
@@ -309,11 +359,39 @@ Then within 1s the hook's last recorded call is (Unhealthy, Healthy)
 <!-- cases: 3 zero values: a nil hook is skipped -->
 <!-- cases: 4 boundaries: the first overall result counts as a change -->
 <!-- cases: N/A 5 errors: hooks return nothing -->
-<!-- cases: 6 not found/duplicate: a removed service changes the overall state -->
+<!-- cases: 6 not found/duplicate: a removed service changes the overall state (timing: next requirement) -->
 <!-- cases: 7 lifecycle: rounds after Ready; a child scope shutdown; the phase gate is a read-time view and never fires this hook -->
 <!-- cases: 8 concurrency: the strict Unknown rule of health-reports makes each row's order independent of which result lands first -->
 <!-- cases: 9 panics: the hook-panic requirement below -->
 <!-- cases: N/A 10 backward compatibility: new hook -->
+
+### Requirement: A service leaving changes the overall state at once, one appearing at the next listing
+A service leaving the container SHALL change the overall state of the container hooks at once. A service appearing SHALL change it when the next round or root report lists it, where it counts as unknown until its first result, as in the report, or when its first result is recorded.
+
+#### Scenario: A service appearing changes the overall state at the next round
+```gherkin
+Given a started injector with a manual HealthScheduler, a Healthchecker root/"a" returning nil, and a HookContainerHealthChanged hook that records (previous, current)
+And the test ran the round, so the hook recorded (Unknown, Healthy)
+When a Healthchecker value root/"b" returning <result> is registered
+Then the hook recorded nothing more before the next round
+And after the test runs the round, the hook's calls since "b" appeared are <calls>
+
+Examples:
+  | result             | calls                                        |
+  | nil                | (Healthy, Unknown), (Unknown, Healthy)       |
+  | errors.New("down") | (Healthy, Unknown), (Unknown, Unhealthy)     |
+```
+
+<!-- cases: N/A 1 default: no hook registered -->
+<!-- cases: N/A 2 overrides: none -->
+<!-- cases: N/A 3 zero values: not applicable -->
+<!-- cases: 4 boundaries: before and after the next round -->
+<!-- cases: 5 errors: an appearing service that fails -->
+<!-- cases: 6 not found/duplicate: a registration after the first round -->
+<!-- cases: 7 lifecycle: rounds after Ready; leaving at once is TestHookContainerHealthChanged_Membership -->
+<!-- cases: N/A 8 concurrency: not applicable -->
+<!-- cases: N/A 9 panics: not applicable -->
+<!-- cases: 10 backward compatibility: as alexliesenfeld/health, .NET and Spring Boot, aggregate health is evaluated when checks run or are read, never on registration -->
 
 ### Requirement: A panicking health hook does not stop health recording
 A panic in a `HookServiceHealthChanged` or `HookContainerHealthChanged` hook SHALL be recovered. It SHALL be passed to `HookContainerPanic(root, "healthchanged", value)` when that option is set, and logged with `Logf` otherwise; a panic raised by `HookContainerPanic` SHALL propagate. The remaining hooks for the same change SHALL still be called, and later results SHALL still be recorded.

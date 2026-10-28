@@ -427,7 +427,7 @@ And a third read within the TTL returns HealthHealthy for "db" without a new che
 <!-- cases: 10 backward compatibility: the timeout message matches health-check-timeouts -->
 
 ### Requirement: Results are recorded once per check, timeouts at the report bound
-The result of every completed check SHALL be recorded for reports, whichever path ran it. When a read or a round stops waiting for a check at its report bound, that check SHALL be recorded as timed out at that moment, and its later result SHALL be discarded. A caller's context ending SHALL NOT record a timeout.
+The result of every completed check SHALL be recorded for reports, whichever path ran it. When a read or a round stops waiting for a check at its report bound, that check SHALL be recorded as timed out at that moment, and its later result SHALL be discarded, also when it was waiting for a check it could not join to return. A caller's context ending SHALL NOT record a timeout.
 
 #### Scenario: Forced and single-service checks refresh the report
 ```gherkin
@@ -458,16 +458,30 @@ And the hook recorded only (Unknown, Unhealthy)
 <!-- cases: N/A 1 default: recording has no option -->
 <!-- cases: N/A 2 overrides: none -->
 <!-- cases: N/A 3 zero values: not applicable -->
+#### Scenario: A wait that times out on an abandoned check records the timeout
+```gherkin
+Given an injector with HealthCheckTimeout 20ms, <mode>, and a Healthchecker "db" whose result nil was recorded
+And "db"'s check now blocks until released, ignoring its context
+And a HealthCheck() call on the root scope timed out on it, so the check stays in flight, abandoned
+When <reader> waits for "db"
+Then the entry for "db" is HealthUnhealthy with an error matching ErrHealthCheckTimeout
+
+Examples:
+  | mode                                      | reader                                                |
+  | a manual HealthScheduler, started         | the test, running the round, then reading HealthReport() |
+  | no scheduler, HealthReportCacheTTL -1ns   | the consumer, calling HealthReport()                  |
+```
+
 <!-- cases: 4 boundaries: at the bound and at the late return -->
 <!-- cases: 5 errors: the forced path's error is recorded unchanged; the timeout error at the bound -->
 <!-- cases: N/A 6 not found/duplicate: not applicable -->
-<!-- cases: 7 lifecycle: forced checks; a late result -->
+<!-- cases: 7 lifecycle: forced checks; a late result; a wait for an abandoned check (review R2) -->
 <!-- cases: N/A 8 concurrency: next requirement -->
 <!-- cases: N/A 9 panics: specified in health-check-execution -->
 <!-- cases: 10 backward compatibility: forced paths keep their return values -->
 
-### Requirement: Nothing is recorded for an abandoned check or after shutdown began
-A check cancelled because every caller waiting for it stopped waiting SHALL NOT be recorded. Once root `Shutdown` began, no result SHALL be recorded and no health hook SHALL be called.
+### Requirement: Nothing is recorded for an abandoned check, a service that left, or after shutdown began
+A check cancelled because every caller waiting for it stopped waiting SHALL NOT be recorded, and neither SHALL a check whose service left the container while it was in flight (its scope shut down, or its registration was replaced). Once root `Shutdown` began, no result SHALL be recorded and no health hook SHALL be called.
 
 #### Scenario: An abandoned check is not recorded
 ```gherkin
@@ -492,7 +506,22 @@ Then the hook recorded only (Unknown, Healthy, nil)
 <!-- cases: N/A 4 boundaries: not applicable -->
 <!-- cases: N/A 5 errors: not applicable -->
 <!-- cases: N/A 6 not found/duplicate: not applicable -->
-<!-- cases: 7 lifecycle: during shutdown, no alert is raised for services being shut down -->
-<!-- cases: 8 concurrency: abandonment by every waiter -->
+#### Scenario: A check in flight when its service leaves is not recorded
+```gherkin
+Given an injector that is never started, with a HookContainerHealthChanged hook that records calls
+And a Healthchecker "db" in child scope "child" whose check blocks until released, then returns errors.New("down")
+And a HealthCheck() call on scope "child" is running that check
+When <leaving>, then the check is released and returns
+Then the injector holds no health record for that registration
+And the container hook recorded nothing after the service left
+
+Examples:
+  | leaving                                                     |
+  | scope "child" is shut down                                  |
+  | "db" is replaced in scope "child" with OverrideNamedValue    |
+```
+
+<!-- cases: 7 lifecycle: during shutdown, no alert is raised for services being shut down; a service leaving with its check in flight (review R1) -->
+<!-- cases: 8 concurrency: abandonment by every waiter; a check returning after its service left -->
 <!-- cases: N/A 9 panics: not applicable -->
 <!-- cases: N/A 10 backward compatibility: new behavior -->

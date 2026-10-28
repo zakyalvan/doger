@@ -34,7 +34,7 @@ func TestNew(t *testing.T) {
 	is.Empty(i.opts.HealthCheckGlobalTimeout)
 	is.Empty(i.opts.HealthCheckTimeout)
 
-	is.Nil(i.healthCheckPool)
+	is.Nil(i.healthSlots)
 	is.NotNil(i.self)
 	is.Equal("[root]", i.self.name)
 	is.Equal(i.self.rootScope, i)
@@ -75,7 +75,7 @@ func TestNewWithOpts(t *testing.T) {
 	is.Equal(42*time.Second, i.opts.HealthCheckGlobalTimeout)
 	is.Equal(42*time.Second, i.opts.HealthCheckTimeout)
 
-	is.NotNil(i.healthCheckPool)
+	is.NotNil(i.healthSlots)
 	is.NotNil(i.self)
 	is.Equal("[root]", i.self.name)
 	is.Equal(i.self.rootScope, i)
@@ -100,7 +100,7 @@ func TestRootScope_Ancestors(t *testing.T) {
 	is.Empty(i.Ancestors())
 }
 
-func TestRootScope_queueServiceHealthcheck(t *testing.T) {
+func TestRootScope_HealthCheckTimeouts(t *testing.T) {
 	// Bubble time: the 20ms checks and 10ms/50ms timeouts no longer depend on scheduling.
 	synctest.Test(t, func(t *testing.T) {
 		is := assert.New(t)
@@ -110,10 +110,9 @@ func TestRootScope_queueServiceHealthcheck(t *testing.T) {
 		ProvideValue(i, &lazyTestHeathcheckerOKTimeout{foobar: "foobar"})
 		ProvideValue(i, &lazyTestHeathcheckerOK{})
 
-		err1 := i.queueServiceHealthcheck(context.Background(), i.self, NameOf[*lazyTestHeathcheckerOKTimeout]())
-		err2 := i.queueServiceHealthcheck(context.Background(), i.self, NameOf[*lazyTestHeathcheckerOK]())
-		is.NoError(<-err1)
-		is.NoError(<-err2)
+		errAll := i.HealthCheckWithContext(context.Background())
+		is.NoError(errAll[NameOf[*lazyTestHeathcheckerOKTimeout]()])
+		is.NoError(errAll[NameOf[*lazyTestHeathcheckerOK]()])
 
 		// with 10ms individual timeout
 		i = NewWithOpts(&InjectorOpts{
@@ -122,10 +121,10 @@ func TestRootScope_queueServiceHealthcheck(t *testing.T) {
 		ProvideValue(i, &lazyTestHeathcheckerOKTimeout{})
 		ProvideValue(i, &lazyTestHeathcheckerOK{})
 
-		err1 = i.queueServiceHealthcheck(context.Background(), i.self, NameOf[*lazyTestHeathcheckerOKTimeout]())
-		err2 = i.queueServiceHealthcheck(context.Background(), i.self, NameOf[*lazyTestHeathcheckerOK]())
-		is.EqualError(<-err1, "DI: health check timeout: context deadline exceeded")
-		is.NoError(<-err2)
+		err1 := HealthCheckNamedWithContext(context.Background(), i, NameOf[*lazyTestHeathcheckerOKTimeout]())
+		err2 := HealthCheckNamedWithContext(context.Background(), i, NameOf[*lazyTestHeathcheckerOK]())
+		is.EqualError(err1, "DI: health check timeout: context deadline exceeded")
+		is.NoError(err2)
 
 		// with 10ms global timeout
 		i = NewWithOpts(&InjectorOpts{
@@ -134,7 +133,7 @@ func TestRootScope_queueServiceHealthcheck(t *testing.T) {
 		ProvideValue(i, &lazyTestHeathcheckerOKTimeout{})
 		ProvideValue(i, &lazyTestHeathcheckerOK{})
 
-		errAll := i.HealthCheckWithContext(context.Background())
+		errAll = i.HealthCheckWithContext(context.Background())
 		is.Len(errAll, 2)
 		is.EqualError(errAll[NameOf[*lazyTestHeathcheckerOKTimeout]()], "DI: health check timeout: context deadline exceeded")
 		is.NoError(errAll[NameOf[*lazyTestHeathcheckerOK]()])
@@ -283,8 +282,8 @@ func TestRootScope_CloneWithOpts(t *testing.T) {
 	is.Len(i.Children(), 1)
 	is.Empty(clone.Children())
 
-	is.Nil(i.healthCheckPool)
-	is.NotNil(clone.healthCheckPool)
+	is.Nil(i.healthSlots)
+	is.NotNil(clone.healthSlots)
 }
 
 func TestRootScope_ShutdownOnSignals(t *testing.T) {

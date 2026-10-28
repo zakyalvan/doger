@@ -100,8 +100,8 @@ Conclusion: gocron fits as the backend behind a small root-module interface. It 
   - if shutdown began meanwhile, it calls stop at once;
   - otherwise it stores stop and sets monitored.
 
-  An error or a recovered panic is logged (`DI: health scheduler failed: ...`) or passed to `HookContainerPanic(root, "healthscheduler", v)`. The container stays unmonitored and on-demand reads keep working.
-- **Stop.** Stopping comes first in `shutdownAsWinner`, and on the root-`*Scope` bypass path. Under the mutex the container sets `closing`, so nothing is recorded and no hook fires. It then cancels the monitor context, which cancels the rounds in progress, and calls stop with `context.WithoutCancel(shutdownCtx)`. That way an ended Shutdown context (shutdown-context, #14) cannot make Shutdown return before the scheduler's goroutines exit. Shutdown waits for stop. A stop error is logged. If a schedule call is still in progress, Shutdown waits for it, then calls its stop.
+  An error or a recovered panic is logged (`DI: health scheduler failed: ...`) or passed to `HookContainerPanic(root, "healthscheduler", v)`. The container stays unmonitored and on-demand reads keep working. The state update and the closing of the "starting" signal run in a `defer`, so a panic `HookContainerPanic` raises propagates from Start and leaves scheduling failed; a later Shutdown does not wait for a schedule call that will never finish (review R3).
+- **Stop.** Stopping comes first in `shutdownAsWinner`, and on the root-`*Scope` bypass path. Under the mutex the container sets `closing`, so nothing is recorded and no hook fires. It then cancels the monitor context, which cancels the rounds in progress, and calls stop with `context.WithoutCancel(shutdownCtx)`. That way an ended Shutdown context (shutdown-context, #14) cannot make Shutdown return before the scheduler's goroutines exit. Shutdown waits for stop. A stop error is logged; a stop panic is recovered and passed to `HookContainerPanic(root, "healthscheduler", v)` when set, logged otherwise (review R8). If a schedule call is still in progress, Shutdown waits for it, then calls its stop. The checks in flight have their contexts cancelled but are not waited for: a check may still run while its service shuts down (CR4, flagged behavior change 3).
 - **Rejected:**
   - A built-in timer loop in the root module. It is default-on in the first version and was rejected in the audit: it goes against the prior art, leaks in every `Start`-without-`Shutdown` test, and the TTL cache already solves load amplification. The user prefers gocron.
   - Importing gocron in the root module: forced dependencies on every consumer.
@@ -109,7 +109,7 @@ Conclusion: gocron fits as the backend behind a small root-module interface. It 
 
 **H2. One monitor per root, keyed by service wrapper.**
 - **State.** A `healthMonitor` on `RootScope` holds, under one mutex: `records`, `inflight`, the transition queue, the scheduling state (`idle`/`starting`/`scheduled`/`stopped`) and the stop function, all keyed by wrapper. A wrapper is unique per registration, so an Override or a re-registration starts a fresh record.
-- **Pruning.** A record is pruned when its wrapper is removed: through the internal hooks for registration replacement and scope shutdown, and as a fallback when a read or round lists services.
+- **Pruning.** A record is pruned when its wrapper is removed: through `RootScope.forget`, which the registration-replacement and scope-shutdown paths already call once their scope lock is released, and as a fallback when a read or round lists services. `forget` also marks the service's call in flight as left (H9). Pruning is never done under a scope lock (the earlier extra call in `storeLocked` is removed: CR10).
 - **Lock rule.** The monitor mutex is never held while listing services, calling a check, or calling user code (the scheduler, hooks).
 
 **H3. An in-flight check is a shared call; each waiter has its own bound.**
@@ -133,11 +133,11 @@ Conclusion: gocron fits as the backend behind a small root-module interface. It 
 
 **H5. A context-aware limiter for checks started by forced runs, reads and rounds.**
 - `HealthCheckParallelism > 0` creates a `chan struct{}` of that size in `NewWithOpts`, with no goroutine. A queued call's goroutine acquires a slot before it runs; waiting honors each waiter's ctx and bound through H3. The check's own bound starts after the slot.
-- **Single-service functions take no slot,** as today. When the call they need is queued, they take it over and run it at once on their goroutine; the queued goroutine later finds it done and releases its slot. So composite checks never deadlock, without a nesting marker.
+- **Single-service functions take no slot,** as today. When the call they need is queued, they take it over and run it at once on a new goroutine, without a slot; the queued goroutine then finds it claimed and gives up its wait for a slot. So composite checks never deadlock, without a nesting marker.
 - **Removed:** `jobPool`, `newJobPool`, `RootScope.healthCheckPool` (all unexported). This fixes D2 and D6.
 - **Removed from v1:** the ctx marker for nesting and `ErrHealthCheckCycle` (old H16). The takeover rule makes the marker unnecessary, and cycle detection was beyond the defects (out of scope, as today).
 
-**H6. Panics are recovered where the check runs.** As before: `ErrHealthCheckPanic`, with the error value wrapped. `HookContainerPanic(root, "healthcheck", v)` when set, whose own panic propagates. Nil means the error is the outcome (flagged deviation from #8's rule: no caller is there to receive the panic).
+**H6. Panics are recovered where the check runs.** As before: `ErrHealthCheckPanic`, with the error value wrapped. `HookContainerPanic(root, "healthcheck", v)` when set. Nil means the error is the outcome (flagged deviation from #8's rule: no caller is there to receive the panic). A panic the hook raises is recovered on the check's goroutine and carried with the call's outcome (`checkOutcome{err, hookPanic}`): every waiter re-raises it from `wait` on its own goroutine, so a forced, single-service or report caller can recover it, and a round re-raises it to its scheduler, which recovers job panics (gocron does). When no waiter remains, the check's goroutine re-raises it: an intended crash (review R4).
 
 **H7. A lazy service's check runs outside its lock** (D3), via H4's atomic flag (flagged).
 
@@ -153,7 +153,7 @@ Conclusion: gocron fits as the backend behind a small root-module interface. It 
 The forced paths keep today's semantics (no default bound). Report paths get a default bound, so a `HealthReport()` with no ctx never hangs on a check that ignores its context (audit item 8).
 
 **H9. Recording: one record per check.**
-- **What is recorded.** A completed check is recorded unless it was abandoned, or a report path already recorded its timeout (the late result is discarded, so a slow check does not flap: audit item 9). Nothing is recorded once `closing` is set.
+- **What is recorded.** A completed check is recorded unless it was abandoned, or a report path already recorded its timeout (the late result is discarded, so a slow check does not flap: audit item 9). Nothing is recorded once `closing` is set, nor for a call marked left because its service left the container while it ran: such a call starts no fresh call for its `next` waiters, which get its result (review R1). A report-path waiter that reaches its bound while waiting in `next` for a call it could not join records its timeout too (review R2).
 - **Severity.** It is applied when recording: a failing optional check is stored as `HealthDegraded`. Forced paths return the raw error.
 
 **H10. Reports and read modes.** `HealthReportWithContext` reads `Phase()` and the monitor state:
@@ -169,7 +169,9 @@ The forced paths keep today's semantics (no default bound). Report paths get a d
 - The recording goroutine enqueues transitions with a sequence number under the monitor mutex, then closes `done`.
 - A single deliverer drains the queue with no lock held: service hooks, then container hooks.
 - The adders are copy-on-write. Panics go to `HookContainerPanic(root, "healthchanged", v)` or `Logf`.
-- **The container hook** tracks the overall state of the unfiltered report *without* the phase gate (the gate is a read-time view).
+- **The container hook** tracks the overall state of the unfiltered report *without* the phase gate (the gate is a read-time view). The state is kept incrementally: the monitor counts the members by state and severity, updates the counts on each record, `forget` and membership change, and derives the overall state from them in constant time, so a round costs O(n) (review R7: it was O(n²), 1.34s per round at 2,000 services).
+- **Membership timing.** A service leaving changes the container state at once (`forget`). A service appearing does so when the next round or root report lists it (unknown until its first result, as in the report) or when its first result is recorded; registration and builds never recompute it. This follows alexliesenfeld/health, .NET and Spring Boot, which evaluate aggregate health only when checks run or are read, and avoids an unknown blip on every Starter registered after Ready (W3).
+- **Logging.** "requested health check for service" is logged when a call is created, not when a read lists a service it serves from records (CR8).
 - **No ctx** (audit item 7). A transition is delivered on whichever goroutine recorded it, possibly a scheduler's, so no caller context exists to pass. `HookContainerPanic`, also a `HookContainer*` field, already takes none. Keeping the names groups them with the container hooks in docs.
 
 **H12. The container phase gates readiness and liveness** (Spring Boot's availability model, one-way).
@@ -207,14 +209,15 @@ The forced paths keep today's semantics (no default bound). Report paths get a d
   func New(opts ...Option) (*Scheduler, error)
   func WithInterval(d time.Duration) Option
   func WithJobDefinition(def gocron.JobDefinition) Option // wins over WithInterval
+  func WithStartAt(opt gocron.StartAtOption) Option       // replaces the default WithStartImmediately
   func WithSchedulerOptions(opts ...gocron.SchedulerOption) Option
   func WithJobOptions(opts ...gocron.JobOption) Option
   func WithScheduler(s gocron.Scheduler) Option // shared, not owned
   func (s *Scheduler) ScheduleHealthRounds(clock clockwork.Clock, round func(context.Context)) (func(context.Context) error, error)
   var _ doger.HealthScheduler = (*Scheduler)(nil)
   ```
-- **Own mode.** `gocron.NewScheduler(append([WithClock(clock)], schedulerOpts...)...)`, then `NewJob(def, NewTask(func(ctx context.Context){ round(ctx) }), append([WithName("doger-health-round"), WithSingletonMode(LimitModeReschedule), WithStartAt(WithStartImmediately())], jobOpts...)...)`, then `Start()`. On a `NewJob` error it shuts the scheduler down before returning, so no goroutine remains. Stop is `ShutdownWithContext`.
-- **Shared mode.** It only calls `NewJob` and returns a stop that calls `RemoveJob(id)`.
+- **Own mode.** `gocron.NewScheduler(append([WithClock(clock)], schedulerOpts...)...)`, then `NewJob(def, NewTask(func(ctx context.Context){ round(ctx) }), append([WithName("doger-health-round"), WithSingletonMode(LimitModeReschedule), WithStartAt(startAt)], jobOpts...)...)`, then `Start()`. `startAt` is `WithStartImmediately()` unless `WithStartAt` replaced it: gocron combines start-at options (each sets its own field), so a start-at given through `WithJobOptions` cannot replace the default; hence the dedicated option (decided during implementation, 2026-10-28). On a `NewJob` error it shuts the scheduler down before returning, so no goroutine remains. Stop is `ShutdownWithContext`.
+- **Shared mode.** It only calls `NewJob`, wrapping the round to count the rounds of this job in progress, and returns a stop that calls `RemoveJob(id)`, treats `gocron.ErrJobNotFound` as removed (the owner may have shut its scheduler down first: review R5), then waits within ctx until no round of this job runs (review R6).
 - **Functional options return errors.** The design-pattern rule is to validate configuration at construction.
 - **Docs.** godoc warns against gocron's distributed elector/locker for this job, since health is per instance.
 
@@ -238,6 +241,7 @@ The forced paths keep today's semantics (no default bound). Report paths get a d
 
 - [A joining caller's context values never reach the check] → Flagged; documented on the options.
 - [A check that ignores its context stays in flight until it returns] → One goroutine; each caller stops at its own bound; report paths record a timeout.
+- [A check may run while its service shuts down: root Shutdown cancels checks in flight without waiting] → Kept, as the spec forbids Shutdown from waiting for checks; documented on Shutdown and the health-check APIs (CR4, flagged behavior change 3).
 - [A hung check holding a slot delays others under `HealthCheckParallelism`] → Callers stop at their bounds; documented.
 - [Readiness turns Unknown when a Starter is registered after Ready, until `Refresh`] → Intended (the service is not serving); documented on `Extend` and in the report godoc.
 - [A report covering no service is Healthy, so a mistyped tag yields Healthy] → Use the exported constants; documented on `MatchHealthTags`.
@@ -317,7 +321,7 @@ Compared with the first version of this change, `HealthCheckInterval`, `DefaultH
 
 Test files follow the source files:
 - `health_run.go` → `health_run_test.go`: execution.
-- `health_report.go` → `health_report_test.go`: reports, classification, the gate.
+- `health_report.go` → `health_report_test.go`: reports, classification, the gate, including monitored reads, recording and `BenchmarkHealthReport_Monitored` (moved from `health_monitor_test.go`: S1).
 - `health_monitor.go` → `health_monitor_test.go`: records, scheduling lifecycle, hooks.
 - `scheduler/gocron/scheduler.go` → `scheduler/gocron/scheduler_test.go`, which has its own `TestMain` with goleak.
 
@@ -416,6 +420,13 @@ Conventions:
 | gocron-health-scheduler | A schedule gocron rejects | `TestScheduler_RejectedJob` | goleak |
 | gocron-health-scheduler | Shared scheduler | `TestScheduler_Shared` | unit |
 | gocron-health-scheduler | Clean stop | `TestScheduler_CleanStop/<row>` | table, goleak |
+| health-check-execution | A panic HookContainerPanic raises reaches the waiting callers | `TestHealthCheck_HookPanicPropagates/<row>` (review R4) | table |
+| health-reports | A wait that times out on an abandoned check records the timeout | `TestHealthReport_TimeoutWhileAbandoned/<row>` (review R2) | table |
+| health-reports | A check in flight when its service leaves is not recorded | `TestHealthReport_NotRecordedAfterLeaving/<row>` (review R1) | table |
+| health-check-scheduling | A re-panicking HookContainerPanic leaves scheduling stopped | `TestHealthScheduler_FailurePanicHook` (review R3) | unit |
+| health-check-scheduling | A failing stop does not fail Shutdown | `TestHealthScheduler_StopFailure/<row>` (review R8) | table |
+| health-check-scheduling | A service appearing changes the overall state at the next round | `TestHookContainerHealthChanged_Appearing/<row>` (W3) | table |
+| gocron-health-scheduler | Stopping a shared schedule | `TestScheduler_SharedStop/<row>` (review R5, R6) | table |
 
 **Hot paths and their tests:**
 
@@ -429,7 +440,13 @@ Conventions:
 | Report read: monitored, on-demand, gate | `TestHealthReport_*`, plus `BenchmarkHealthReport_Monitored` (1,000 services) |
 | Scheduler lifecycle: Ready, failure, stop, clone | `TestHealthScheduler_*`, `TestHealthRound_*` |
 | Hooks | `TestHook*HealthChanged*`, `TestHealthHooks_*` |
+| Container state per result (review R7) | `TestHealthRound_AllocsLinear`: allocations of a round at 1,000 services stay under 2.5× those at 500 (they were 3.85×), plus `BenchmarkHealthRound` (1,000 services) |
+| Logging on cached reads (CR8) | `TestHealthReport_CachedReadsLogNothing` |
 | gocron adapter | `scheduler/gocron` suite under `-race` with goleak |
+
+**Benchmark** (`go test -run '^$' -bench BenchmarkHealthReport_Monitored -benchmem -count=3 .`, Go 1.27.3, Apple M4 Pro, 2026-10-28): a monitored read of 1,000 recorded services takes 736–800 µs/op, 1.06 MB/op and 9,053 allocs/op, and runs no check. Listing the services and building the entries dominate; the monitor mutex is held only to copy records.
+
+`BenchmarkHealthRound` (`go test -run '^$' -bench 'BenchmarkHealthRound$' -benchmem -count=3 .`, same machine, 2026-10-28, after review R7's fix): a round re-recording 1,000 results takes 3.01–3.06 ms/op, 2.80 MB/op and 33,085 allocs/op (R7 measured 351 ms and 1.04M allocations before). The same run re-measured `BenchmarkHealthReport_Monitored` at 693–753 µs/op, 0.88 MB/op and 8,052 allocs/op.
 
 **Docs:**
 - `ExampleScope_HealthReport`: an idle container, on-demand reads with the TTL.
@@ -437,6 +454,51 @@ Conventions:
 - `ExampleMatchHealthTags`: readiness and liveness, with an optional service.
 - `ExampleRootScope_AddServiceHealthChangedHook`.
 - `scheduler/gocron`: `ExampleNew` (default) and `ExampleWithJobDefinition` (cron).
+
+## Implementation notes
+
+Recorded while applying the tasks on 2026-10-28; the tests that passed on arrival were each shown to fail by temporarily removing the behavior they guard (not committed).
+
+- H4/D9: the "atomic built flag" is `serviceLazy.published atomic.Pointer[T]` (flag and instance copy in one); set at the end of build, cleared with built at shutdown.
+- 5.1: on 76404ef the export_from_root_scope, export_from_source_scope, yielded_default and both MapShape rows pass on arrival; each failed when its skip rule was dropped temporarily (yielded default: B 0 instead of 1; export: A 2 instead of 1; extension keys: "ext:redis/pool" missing).
+- 5.2: listing from a snapshot (no scope lock held while queueing) exposed the pool-vs-Shutdown race guarded by TestRootScope_HealthCheckDuringShutdown (send on closed channel). Interim fix: RootScope.poolMu; removed with the pool in group 8.
+- 6.1: TestHealthCheck_SequentialCheckAgain passes on arrival on 76404ef (sequential calls already check each time).
+- 6.3: raceWithTimeout and awaitHealthCheck became unused once every path waits on a sharedCall; removed as dead code there (7.3's Inline of them is then a no-op). serviceHealthCheckFunc removed too (wrapperHealthCheckFunc).
+- 7.1: JoinerOwnBound, StarterContext and LastCallerCancels pass on arrival after group 6 (joiners already wait with their own ctx; the check still ran with the starter's ctx). On 76404ef JoinerOwnBound fails on the call count (each caller ran its own check).
+- 7.3: waitSpec is {ctx, bound, pooled}; reportPath is added in group 11 where it is first read (an unused field fails lint). perServiceHealthCheckContext became dead and was removed. raceWithTimeout/awaitHealthCheck were already removed in 6.3.
+- 8.1: SlotWaitHonorsContext and SlotWaitDoesNotBlockProvide fail on 76404ef (run in a temporary worktree: blocked past 1s) but pass on arrival here: groups 5-7 already stopped holding scope locks while queueing and made every waiter honor its own ctx. NoQueueLimit and ParallelismCap pass on arrival (the pool drained its queue). The 8.1 RED failures here are the n=4 goroutine row (4 pool workers) and SingleTakesOverQueued/HealthCheck (deadlock when agg holds the only pool worker).
+- 11.2: spec correction: on Go 1.27 a nil panic's message is "runtime error: panic called with nil argument" (not "... (goexit=false)"); the health-check-execution "Panic results" row was updated, and the test derives the text from runtime.PanicNilError.
+- 11.1: TestHealthReport_LateResultDiscarded's hook assertion ("the hook recorded only (Unknown, Unhealthy)") needs HookServiceHealthChanged; it is added to the test in group 19.
+- 11.2: a report-path waiter records its timeout only when its own bound elapsed (its caller's ctx still live); the record's Duration then runs from when the call was queued.
+- 13.3: reportQuery is {targets, prune, tags}; ignorePhase joins in group 15 with its first reader (an unused field fails lint), and targets/prune stand for the spec's scope field.
+- 14.1: TestHealthCheck_IgnoresClassification passes on arrival; it failed (optional rows) when optional errors were temporarily dropped on forced paths.
+- 17.1: TestHealthRound_PanicKeepsRecording checks the report states; its hook assertions ((Unknown, Unhealthy, boom) then (Unhealthy, Healthy, nil)) are added in group 19 with HookServiceHealthChanged.
+- 18.1: TestHealthRound_AfterStop passes on arrival (after shutdown the round finds no service to check) and TestHealthScheduler_ShutdownSkipsHungCheck too (no lock is held across a check since group 2); the RED failures are the stop order rows, the clone rows, NoRecordAfterShutdown and ShutdownCancelsRound (hung: the round is never cancelled).
+- 18.2: stopScheduling also cancels every check in flight synchronously (cause ErrStartAfterShutdown): cancelling only the round ctx reached the checks asynchronously, so TestHealthScheduler_ShutdownCancelsRound flaked. 18.3: GREEN already wrote the stop as the function stopScheduling(ctx), shared by shutdownAsWinner and the root-*Scope path, so the refactor step had nothing left to extract.
+- 20.1: the TestClock_Health* tests pass on arrival (groups 10-18 read every health time from opts.Clock); they failed when finishCall read a real clock temporarily. 20.2 needed no code change (no health path reads time.Now).
+- 21.1: user chose to pin gocron v2.23.0 although it was released 2026-10-26 (2 days before), an exception to the two-week age rule; v2.22.0 (2026-07-09) was the alternative and has the same APIs.
+- 23.2: a timeout recorded by a report-path waiter is skipped for a call marked left too, since it is a record of a service no longer in the container.
+- 24.1: on the unmonitored row the read's own entry already showed its timeout (reportEntries overrides it with the waiter's result); the test also asserts the recorded state, which stayed HealthHealthy on both rows.
+- 26.2: GREEN carried the hook's panic in a private error type through the existing `func(ctx) error` check signature; 26.3 replaced it with `checkOutcome`, which the check closures now return.
+- 27.2/27.3: GREEN already extracted the per-member count update (`countLocked`); 27.3 renamed it `memberCountsLocked` with gopls.
+- 28.2: the log line moved to `startCall`, which runs once for each call created, by `joinOrStart` and for the `next` waiters of a finished call, outside the monitor mutex (Logf is user code).
+- 31.1: the ported test is renamed `TestRootScope_HealthCheckTimeouts`, since the helper it was named after is removed in 31.2; the no-timeout row goes through `HealthCheckWithContext` (both checks at once, as the queued helper ran them) and the 10ms row through `HealthCheckNamedWithContext`.
+- 32.1: the Clone and CloneWithOpts rows pass on arrival. A goroutine started temporarily in `CloneWithOpts` made both fail only when it outlived goleak's retries (about 2s): one sleeping 200ms passed, one sleeping 5s failed both rows.
+- 33.2: the cross-check found no test for the W3 scenario "A service appearing changes the overall state at the next round" (no task created it); `TestHookContainerHealthChanged_Appearing` was added then. It passes on arrival (W3 specified the existing behavior) and failed on both rows when `keepOnly` temporarily stopped counting an appearing member.
+- 22.2: adding scheduler/gocron to go.work required rows in the existing guard tests TestToolchain_GoDirective and TestModuleIdentity_WorkspaceModules; release.yml pins and tags scheduler/* like http/*.
+
+**Review and verification findings (2026-10-28).** Each was proven before planning its fix, with a throwaway probe test asserting the expected behavior (deleted after the run):
+- R1: a child-scope check returning after `child.Shutdown()` left records=1, members=1, and the container hook reported healthy → unhealthy for the gone service.
+- R2: after `HealthCheck()` abandoned a hung check, two rounds timed out without recording; the monitored report stayed healthy with no error.
+- R3: with a scheduler that panics and a re-panicking `HookContainerPanic`, `Shutdown` after a recovered `Start` did not return within 1s.
+- R4: run in a child process, a re-panicking `HookContainerPanic` on a panicking single-service check killed the process from `runCall`'s goroutine; the caller's `recover` never ran.
+- R5, R6 (gocron, shared mode): stop logged `DI: health scheduler stop failed: gocron: job not found` after the owner shut its scheduler down, and returned while a round still ran.
+- R7: a round cost 94ms / 351ms / 1.34s and 270k / 1.04M / 4.08M allocations at 500 / 1,000 / 2,000 services.
+- R8: a panic in the scheduler's stop never reached `HookContainerPanic`.
+- CR4: a lazy service's `Shutdown` ran while its check was in flight at root Shutdown; the code comment claiming otherwise is corrected (behavior kept: Shutdown must not wait for checks).
+- CR8: 10 cached reads of 50 services logged 500 "requested health check" lines and ran no check.
+- CR9: gopls finds `queueServiceHealthcheck` referenced only by `root_scope_test.go`; CR10: both replace paths (`scope.go`, `di.go`) already call `RootScope.forget`.
+- W3: a service registered after a round produced no container hook call; specified (not changed) after comparing alexliesenfeld/health, .NET and Spring Boot.
 
 ## Migration Plan
 

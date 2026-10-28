@@ -567,6 +567,134 @@ func TestServiceLazy_healthcheck(t *testing.T) {
 	is.ErrorContains(err4, "test-key not found or value is incorrect")
 }
 
+// lazyTestBlockingDB is a Healthchecker whose check blocks until released,
+// ignoring its context.
+type lazyTestBlockingDB struct{ release chan struct{} }
+
+func (d *lazyTestBlockingDB) HealthCheck() error {
+	<-d.release
+	return nil
+}
+
+func TestServiceLazy_HealthCheckWithoutLock(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		action func(i *RootScope)
+	}{
+		{name: "Shutdown", action: func(i *RootScope) { i.Shutdown() }},
+		{name: "Invoke", action: func(i *RootScope) { _, _ = Invoke[*lazyTestBlockingDB](i) }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, 5*time.Second)
+			is := assert.New(t)
+
+			i := NewWithOpts(&InjectorOpts{HealthCheckTimeout: 5 * time.Millisecond})
+			db := &lazyTestBlockingDB{release: make(chan struct{})}
+			Provide(i, func(Injector) (*lazyTestBlockingDB, error) { return db, nil })
+			_, err := Invoke[*lazyTestBlockingDB](i)
+			is.NoError(err)
+
+			results := i.HealthCheck()
+			is.ErrorIs(results[NameOf[*lazyTestBlockingDB]()], ErrHealthCheckTimeout)
+
+			returned := make(chan struct{})
+			go func() {
+				defer close(returned)
+				tt.action(i)
+			}()
+
+			select {
+			case <-returned:
+			case <-time.After(time.Second):
+				is.Fail("the call did not return within 1s while a health check was in flight")
+			}
+
+			close(db.release)
+			<-returned
+			i.Shutdown()
+		})
+	}
+}
+
+func TestServiceLazy_HealthCheckDuringBuild(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		skip  string
+		check func(t *testing.T, i *RootScope)
+	}{
+		{
+			name: "HealthCheckWithContext",
+			check: func(t *testing.T, i *RootScope) {
+				t.Helper()
+				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+				defer cancel()
+				assert.Equal(t, map[string]error{"slow": nil, "db": nil}, i.HealthCheckWithContext(ctx))
+			},
+		},
+		{
+			name: "HealthReport",
+			check: func(t *testing.T, i *RootScope) {
+				t.Helper()
+				report := i.HealthReport()
+				listed := make([]string, 0, len(report.Services))
+				for _, entry := range report.Services {
+					listed = append(listed, entry.Service.Service)
+				}
+				assert.Equal(t, []string{"db"}, listed)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if tt.skip != "" {
+				t.Skip(tt.skip)
+			}
+			testWithTimeout(t, 5*time.Second)
+
+			i := New()
+			started, release := make(chan struct{}), make(chan struct{})
+			ProvideNamed(i, "slow", func(Injector) (*lazyTestHeathcheckerOK, error) {
+				close(started)
+				<-release
+				return &lazyTestHeathcheckerOK{}, nil
+			})
+			ProvideNamedValue(i, "db", &lazyTestHeathcheckerOK{})
+
+			invoked := make(chan struct{})
+			go func() {
+				defer close(invoked)
+				_, _ = InvokeNamed[*lazyTestHeathcheckerOK](i, "slow")
+			}()
+			<-started
+
+			returned := make(chan struct{})
+			go func() {
+				defer close(returned)
+				tt.check(t, i)
+			}()
+
+			select {
+			case <-returned:
+			case <-time.After(time.Second):
+				assert.Fail(t, "the health check did not return within 1s while a provider was in progress")
+			}
+
+			close(release)
+			<-invoked
+			<-returned
+		})
+	}
+}
+
 // @TODO: missing tests for context
 func TestServiceLazy_isShutdowner(t *testing.T) {
 	t.Parallel()

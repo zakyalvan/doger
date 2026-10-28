@@ -46,7 +46,7 @@ Then the health check of "db" was called 2 times, never two at once
 <!-- cases: N/A 10 backward compatibility: new module -->
 
 ### Requirement: Every default can be overridden
-`WithInterval(d)` SHALL set the interval of the default duration job. `WithJobDefinition(def)` SHALL replace the job definition, for example with `gocron.CronJob`. `WithSchedulerOptions(opts...)` and `WithJobOptions(opts...)` SHALL be applied after the adapter's defaults, so a given option wins over the default it overrides. Repeated options SHALL accumulate in order.
+`WithInterval(d)` SHALL set the default job's interval, `WithJobDefinition(def)` SHALL replace the job definition (such as `gocron.CronJob`), and `WithStartAt(opt)` SHALL replace the default immediate first round. `WithSchedulerOptions` and `WithJobOptions` SHALL apply after the defaults, so an option wins over the default it overrides, except start-at options, which gocron combines. Repeated options SHALL accumulate in order.
 
 #### Scenario: Overridden cadence
 ```gherkin
@@ -59,8 +59,8 @@ Examples:
   | WithInterval(10s)                                                                        | 20s     | 3     |
   | WithJobDefinition(gocron.DurationJob(5s))                                                | 5s      | 2     |
   | WithJobDefinition(gocron.DurationJob(5s)), WithInterval(10s)                             | 10s     | 3     |
-  | WithJobOptions(gocron.WithStartAt(gocron.WithStartDateTime(the fake clock's now + 10s))) | 9.999s  | 0     |
-  | WithJobOptions(gocron.WithStartAt(gocron.WithStartDateTime(the fake clock's now + 10s))) | 10s     | 1     |
+  | WithStartAt(gocron.WithStartDateTime(the fake clock's now + 10s))                        | 9.999s  | 0     |
+  | WithStartAt(gocron.WithStartDateTime(the fake clock's now + 10s))                        | 10s     | 1     |
 ```
 
 #### Scenario: Scheduler options reach gocron
@@ -71,7 +71,7 @@ Then L recorded at least 1 call
 ```
 
 <!-- cases: N/A 1 default: previous requirement -->
-<!-- cases: 2 overrides: interval, job definition, job and scheduler options -->
+<!-- cases: 2 overrides: interval, job definition, start-at, job and scheduler options -->
 <!-- cases: N/A 3 zero values: invalid values are the next requirement -->
 <!-- cases: 4 boundaries: before and at a delayed start -->
 <!-- cases: N/A 5 errors: next requirement -->
@@ -82,7 +82,7 @@ Then L recorded at least 1 call
 <!-- cases: N/A 10 backward compatibility: new module -->
 
 ### Requirement: Invalid configuration is reported as an error
-`New` SHALL return an error matching `dogergocron.ErrInvalidOption` for a non-positive `WithInterval` or a nil `WithJobDefinition` or `WithScheduler`. `ScheduleHealthRounds` SHALL return the error gocron reports for a job or scheduler it rejects, leaving no goroutine behind.
+`New` SHALL return an error matching `dogergocron.ErrInvalidOption` for a non-positive `WithInterval` or a nil `WithJobDefinition`, `WithStartAt` or `WithScheduler`. `ScheduleHealthRounds` SHALL return the error gocron reports for a job or scheduler it rejects, leaving no goroutine behind.
 
 #### Scenario: Invalid options
 ```gherkin
@@ -96,6 +96,7 @@ Examples:
   | WithInterval(-1s)                  | an error matching ErrInvalidOption containing "interval must be positive"  |
   | WithJobDefinition(nil)             | an error matching ErrInvalidOption containing "job definition is nil"      |
   | WithScheduler(nil)                 | an error matching ErrInvalidOption containing "scheduler is nil"           |
+  | WithStartAt(nil)                   | an error matching ErrInvalidOption containing "start-at option is nil"     |
   | WithInterval(1ns)                  | a scheduler and a nil error                                                |
 ```
 
@@ -109,7 +110,7 @@ And goleak reports no goroutine started by gocron
 
 <!-- cases: N/A 1 default: defaults are valid -->
 <!-- cases: N/A 2 overrides: each invalid option is a row -->
-<!-- cases: 3 zero values: zero interval, nil definition, nil scheduler -->
+<!-- cases: 3 zero values: zero interval, nil definition, nil start-at, nil scheduler -->
 <!-- cases: 4 boundaries: 0, negative and the smallest positive interval -->
 <!-- cases: 5 errors: ErrInvalidOption and gocron's own error -->
 <!-- cases: N/A 6 not found/duplicate: not applicable -->
@@ -119,7 +120,7 @@ And goleak reports no goroutine started by gocron
 <!-- cases: N/A 10 backward compatibility: new module -->
 
 ### Requirement: A shared gocron scheduler is used without being owned
-With `WithScheduler(s)`, `ScheduleHealthRounds` SHALL add one job to `s` and SHALL NOT create, start or shut down any gocron scheduler. The returned stop function SHALL remove only that job. The clock passed by the container SHALL then be ignored in favor of `s`'s own clock, and starting `s` stays the owner's job.
+With `WithScheduler(s)`, `ScheduleHealthRounds` SHALL add one job to `s` and SHALL NOT create, start or shut down any gocron scheduler. The returned stop function SHALL remove only that job, SHALL return once no round of that job runs (within its context), and SHALL treat a job `s` no longer holds as removed. The clock passed by the container SHALL then be ignored in favor of `s`'s own clock, and starting `s` stays the owner's job.
 
 #### Scenario: Shared scheduler
 ```gherkin
@@ -128,6 +129,19 @@ And an injector whose HealthScheduler is dogergocron.New(WithScheduler(S))
 When the consumer calls Start, then Shutdown on the injector
 Then while the container was ready, S held 2 jobs
 And after Shutdown, S holds only "report" and is still running
+```
+
+#### Scenario: Stopping a shared schedule
+```gherkin
+Given a gocron scheduler S, started by the application, and dogergocron.New(WithScheduler(S)) scheduling a round on S
+And <state>
+When the stop function is called with context.Background()
+Then <returns>
+
+Examples:
+  | state                                                 | returns                                                   |
+  | the round is running, blocked until released          | stop returns only after the round is released and returns |
+  | the application shut S down                           | stop returns nil                                          |
 ```
 
 <!-- cases: N/A 1 default: an own scheduler is the default -->

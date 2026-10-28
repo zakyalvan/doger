@@ -72,18 +72,17 @@ func NewWithOpts(opts *InjectorOpts, packages ...func(Injector)) *RootScope {
 	opts.initDefaults()
 
 	root := &RootScope{
-		opts:            opts,
-		healthCheckPool: nil,
-		kinds:           defaultKinds,
+		opts:  opts,
+		kinds: defaultKinds,
 	}
+	root.health.root = root
 	initScope(&root.selfStorage, DefaultRootScopeName, root, nil)
 	root.self = &root.selfStorage
 	initDAG(&root.dagStorage)
 	root.dag = &root.dagStorage
 
 	if opts.HealthCheckParallelism > 0 {
-		root.healthCheckPool = newJobPool[error](opts.HealthCheckParallelism)
-		root.healthCheckPool.start()
+		root.healthSlots = make(chan struct{}, opts.HealthCheckParallelism)
 	}
 
 	root.opts.Logf("DI: injector created")
@@ -108,10 +107,11 @@ var _ Injector = (*RootScope)(nil)
 //   - Shutdown orchestration
 //   - Dependency graph management
 type RootScope struct {
-	self            *Scope          // The root scope instance
-	opts            *InjectorOpts   // Configuration options
-	dag             *DAG            // Dependency graph for service relationships
-	healthCheckPool *jobPool[error] // Pool for parallel health check operations
+	self        *Scope        // The root scope instance
+	opts        *InjectorOpts // Configuration options
+	dag         *DAG          // Dependency graph for service relationships
+	healthSlots chan struct{} // one value per running health check started by a scope-wide check; nil when unlimited
+	health      healthMonitor // health checks in flight
 
 	nextRegIndex atomic.Uint64 // next registration index, shared by every scope of this container
 	declareMu    sync.Mutex    // serializes DeclareDependency (cycle check plus add)
@@ -193,34 +193,24 @@ func (s *RootScope) ListProvidedServices() []ServiceDescription { return s.self.
 // ListInvokedServices returns all services that have been invoked in the root scope and all its descendant scopes.
 func (s *RootScope) ListInvokedServices() []ServiceDescription { return s.self.ListInvokedServices() }
 
-// HealthCheck performs health checks on all services in the root scope and all its descendant scopes.
+// HealthCheck performs health checks on the services of the root scope and
+// of installed extension scopes (see [Extend]); other child scopes are not
+// covered: use [RootScope.HealthReport] for the whole container.
 func (s *RootScope) HealthCheck() map[string]error {
 	return s.HealthCheckWithContext(context.Background())
 }
 
-// HealthCheckWithContext performs health checks with context support for cancellation and timeouts.
+// HealthCheckWithContext performs health checks with context support for
+// cancellation and timeouts, covering what [RootScope.HealthCheck] covers.
+//
+// Concurrent callers share a service's check in flight: a caller that finds
+// one waits for it within its own context and bounds instead of starting
+// another, and the check runs with the context (values and deadline) of the
+// caller that started it. A panicking check yields an error matching
+// [ErrHealthCheckPanic]. The checks this call starts take a slot of
+// InjectorOpts.HealthCheckParallelism.
 func (s *RootScope) HealthCheckWithContext(ctx context.Context) map[string]error {
-	scopes := s.extensionScopes()
-	if len(scopes) == 0 {
-		return s.self.HealthCheckWithContext(ctx)
-	}
-
-	return s.self.healthCheckQueued(ctx, func(ctx context.Context) map[string]<-chan error {
-		results := map[string]<-chan error{}
-
-		// an export from an extension scope is checked there, under the
-		// scope's key; a yielded default keeps the result of the service it
-		// yielded to
-		s.self.queueOwnHealthChecks(ctx, results, "", func(service any) bool {
-			return isYieldedDefaultIn(s.self, service) ||
-				s.self.exportCount() > 0 && slices.ContainsFunc(scopes, func(scope *Scope) bool { return readerSeesSource(scope, service) })
-		})
-		for _, scope := range scopes {
-			scope.queueOwnHealthChecks(ctx, results, scope.name+"/", func(service any) bool { return isYieldedDefaultIn(scope, service) })
-		}
-
-		return results
-	})
+	return s.self.healthCheckTargets(ctx, rootForcedCheckers(s))
 }
 
 // Shutdown gracefully shuts down the root scope and all its descendant scopes.
@@ -228,7 +218,6 @@ func (s *RootScope) HealthCheckWithContext(ctx context.Context) map[string]error
 func (s *RootScope) Shutdown() *ShutdownReport { return s.ShutdownWithContext(context.Background()) }
 
 // ShutdownWithContext gracefully shuts down the root scope and all its descendant scopes with context support.
-// This method ensures proper cleanup of the health check pool and all registered services.
 //
 // Root shutdown runs once per root container:
 //   - The first caller shuts the services down. Concurrent and later callers
@@ -268,6 +257,13 @@ func (s *RootScope) Shutdown() *ShutdownReport { return s.ShutdownWithContext(co
 // for example context.WithTimeout(context.Background(), grace) created when
 // the shutdown begins, not one that has already ended, such as a
 // [signal.NotifyContext] context once its signal arrived.
+//
+// Health checks: Shutdown first stops the health scheduling of
+// InjectorOpts.HealthScheduler, before the Closing hooks, and cancels the
+// context of every health check in flight, but does not wait for those
+// checks: a check that ignores its context may still run while its service
+// shuts down. A service whose Shutdown releases what its check uses must
+// guard against a check still running.
 //
 // Only the [RootScope] methods follow this model. A shutdown reached through
 // the root's *Scope (a provider's injector, or [Injector.Shutdown] on a
@@ -313,13 +309,8 @@ func (s *RootScope) waitForClose(ctx context.Context, done <-chan struct{}) *Shu
 // even when this goroutine panics, so waiters are always released.
 func (s *RootScope) shutdownAsWinner(ctx context.Context, ticket closeTicket, first *hookPanic) (report *ShutdownReport) {
 	defer func() { s.finishClose(report) }()
-	defer func() {
-		// Only the winner touches the pool.
-		if s.healthCheckPool != nil {
-			s.healthCheckPool.stop()
-			s.healthCheckPool = nil
-		}
-	}()
+
+	s.stopScheduling(ctx)
 
 	startErr := waitForStart(ctx, ticket)
 
@@ -490,38 +481,6 @@ func (s *RootScope) serviceShutdown(ctx context.Context, name string) error {
 	return s.self.serviceShutdown(ctx, name)
 }
 func (s *RootScope) onServiceInvoke(name string) { s.self.onServiceInvoke(name) }
-
-func (s *RootScope) queueServiceHealthcheck(ctx context.Context, scope *Scope, serviceName string) <-chan error {
-	// `ctx` might already contain a timeout, but we add another one
-	ctx, cancel := perServiceHealthCheckContext(ctx, s)
-
-	// when no pooling policy has been defined
-	if s.opts.HealthCheckParallelism == 0 || s.healthCheckPool == nil {
-		err := make(chan error, 1) // a single message will be sent (nil or error)
-
-		go func() {
-			defer cancel()
-			defer close(err)
-
-			check, e := scope.serviceHealthCheckFunc(serviceName)
-			if e != nil || check == nil {
-				err <- e
-				return
-			}
-
-			// returns as soon as ctx is done, even without a deadline
-			err <- awaitHealthCheck(ctx, s.opts.Clock, check)
-		}()
-
-		return err
-	}
-
-	// delegate execution to the healthcheck pool
-	return s.healthCheckPool.rpc(func() error {
-		defer cancel()
-		return scope.serviceHealthCheck(ctx, serviceName)
-	})
-}
 
 /**
  * RootScope stuff

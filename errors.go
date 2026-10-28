@@ -14,6 +14,10 @@ var (
 	ErrServiceNotMatch    = errors.New("DI: could not find service satisfying interface")
 	ErrCircularDependency = errors.New("DI: circular dependency detected")
 	ErrHealthCheckTimeout = errors.New("DI: health check timeout")
+	// ErrHealthCheckPanic is matched by the result of a health check that
+	// panicked. The panic value follows it in the message, and an error value
+	// is wrapped, so errors.Is and errors.As also match it.
+	ErrHealthCheckPanic = errors.New("DI: health check panic")
 
 	// ErrAlreadyStarted is returned by a Start call after the first one, whether
 	// the first one succeeded or failed.

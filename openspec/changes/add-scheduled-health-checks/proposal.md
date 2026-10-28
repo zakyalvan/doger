@@ -66,7 +66,7 @@ This change builds on `consolidate-pending-lifecycle-work` (#8, merged), and kee
 - **No scheduler without Ready.** A container that never reaches Ready never calls the scheduler. `New()` and `DefaultRootScope` start no goroutine.
 - **New module `github.com/kartaladev/doger/scheduler/gocron`** (package `dogergocron`) implements `HealthScheduler` with gocron v2:
   - **Defaults:** a 30s duration job, the first round at once, the container clock, and singleton mode, so a slow round skips the next tick instead of piling up.
-  - **Overrides:** the interval, any gocron job definition such as a cron expression, scheduler and job options, or a shared `gocron.Scheduler` the application already runs.
+  - **Overrides:** the interval, any gocron job definition such as a cron expression, when the first round runs, scheduler and job options, or a shared `gocron.Scheduler` the application already runs.
 
 **Executing checks.**
 - **One check in flight per service.** A service never has two checks in flight. A caller that finds a check in flight waits for it, within its own bound, instead of starting another. This caps check goroutines at one per service.
@@ -83,9 +83,9 @@ This change builds on `consolidate-pending-lifecycle-work` (#8, merged), and kee
 **Defect fixes D1-D9** (see Defect), each starting with its failing regression test.
 
 **Behavior changes for existing consumers (flagged):**
-1. A panicking health check returns an error matching the new `ErrHealthCheckPanic` instead of crashing the process.
+1. A panicking health check returns an error matching the new `ErrHealthCheckPanic` instead of crashing the process. A panic that `HookContainerPanic` raises for it is re-raised on the goroutine of every caller waiting for that check, which can recover it; with no caller waiting, it is raised on the goroutine running the check.
 2. A check may run on a goroutine other than the caller's, and a caller that joins a check another caller started does not pass its context values to it.
-3. A lazy service's check no longer holds the service's lock, so a check may run while the service shuts down, as eager services already can.
+3. A lazy service's check no longer holds the service's lock, so a check may run while the service shuts down, as eager services already can. Root `Shutdown` does not wait for checks in flight either: it cancels their contexts and goes on, so a service whose `Shutdown` releases what its check uses must guard against a check still running.
 4. Shadowed services, yielded defaults and aliases are no longer checked twice in one call. Map keys and values are unchanged; only the number of calls drops.
 5. `New()` with `HealthCheckParallelism > 0` no longer starts goroutines.
 
@@ -153,7 +153,7 @@ There is no background scheduling unless a consumer sets `HealthScheduler`, so a
 | Behavior | Zero-config default | Override |
 |---|---|---|
 | Scheduled rounds | Off: no goroutine, no background checks | `InjectorOpts.HealthScheduler`, e.g. `dogergocron.New()`, or any implementation of `HealthScheduler` |
-| gocron adapter cadence | 30s duration job, first round at once, container clock, singleton (reschedule) mode | `WithInterval`, `WithJobDefinition` (e.g. cron), `WithSchedulerOptions`, `WithJobOptions`, `WithScheduler` (shared scheduler) |
+| gocron adapter cadence | 30s duration job, first round at once, container clock, singleton (reschedule) mode | `WithInterval`, `WithJobDefinition` (e.g. cron), `WithStartAt`, `WithSchedulerOptions`, `WithJobOptions`, `WithScheduler` (shared scheduler) |
 | Report read without a scheduler | Runs stale checks on demand, results reused for 1s, readers share each check | `HealthReportCacheTTL`: positive sets the TTL, negative turns caching off |
 | Report read with a scheduler | Cached results; only never-checked services are checked on demand | Call `HealthCheck()` to force a run; it refreshes the report |
 | Bound of a check started by a read or a round | `HealthCheckTimeout` when positive; `DefaultHealthReportCheckTimeout` (10s) when 0 | `HealthCheckTimeout`: positive for its own bound, negative for no bound; the read's ctx |
@@ -162,7 +162,7 @@ There is no background scheduling unless a consumer sets `HealthScheduler`, so a
 | Forced `HealthCheck()` | Runs every check; joins checks already in flight | None needed: each caller keeps its own context and bounds; a joining caller's context values do not reach a check another caller started (flagged) |
 | At most one check in flight per service | Always | None. A second concurrent check of the same service only adds load and goroutines |
 | Concurrency limit | Unlimited | `HealthCheckParallelism` caps checks started by `HealthCheck()`, reads and rounds; single-service functions take no slot |
-| Panic in a check or a health hook | Recovered: a check's panic becomes an error matching `ErrHealthCheckPanic`; a hook's panic is logged | `HookContainerPanic` receives both; a panic it raises propagates |
+| Panic in a check, a health hook or the scheduler's stop | Recovered: a check's panic becomes an error matching `ErrHealthCheckPanic`; a hook's or stop's panic is logged | `HookContainerPanic` receives each; a panic it raises for a check is re-raised on every caller waiting for that check (on the check's goroutine when none waits); for a hook or the scheduler, it propagates from the call that runs them |
 | Health classification | Tag readiness, critical | `WithHealthTags(...)`, `AsOptionalHealth()` |
 | Report coverage | Every health checker | `MatchHealthTags(...)` |
 | Status-change hooks | None registered | `HookServiceHealthChanged`, `HookContainerHealthChanged`, `Add*Hook` |
@@ -187,3 +187,20 @@ First reproduced at `2012c60` with probe tests in a scratch copy. **Re-verified 
 **Checked and found correct on `main`** (no fix proposed; kept as regression rows): an exported checker is checked once from the root and from its source scope; a yielded `AsDefault` checker is never checked; collection members are checked once each; `Refresh` keeps the phase at Ready.
 
 **Not reproduced (no fix proposed):** a race between `HealthCheck` and root `Shutdown` on the pool (2 probes under `-race`). The pool is replaced anyway (D2, D6).
+
+### Review findings (2026-10-28)
+
+A verification pass and a code review of the implementation found the defects below in this change's own code. Each was reproduced with a throwaway probe test that asserted the expected behavior and failed; each fix starts with its regression test (tasks groups 23–29).
+
+| # | Observed | Expected | Minimal reproduction |
+|---|---|---|---|
+| R1 | records=1 and members=1 remain, and the container hook reports healthy → unhealthy, for a service that no longer exists | A check in flight when its service leaves the container is not recorded and changes no state | A child-scope checker blocks in `child.HealthCheck()`; `child.Shutdown()`; the check then returns an error |
+| R2 | Two later rounds time out and record nothing: the monitored report stays `HealthHealthy`, `Err` nil | A report-path wait that reaches its bound records the timeout, also when it waited for a call it could not join | A scheduler, `HealthCheckTimeout` 20ms, a recorded healthy result; the check starts hanging; `HealthCheck()` abandons it; rounds run |
+| R3 | `Shutdown` does not return | A re-panicking `HookContainerPanic` leaves scheduling consistent; a later `Shutdown` returns | The scheduler panics; `HookContainerPanic` re-panics; the caller recovers `Start()`, then calls `Shutdown()` |
+| R4 | The process exits from the check's goroutine; the caller's `recover` never runs | The hook's panic reaches the waiting callers, which can recover it | A re-panicking `HookContainerPanic`; a panicking checker; `HealthCheckNamed` under `recover` |
+| R5 | `DI: health scheduler stop failed: gocron: job not found` on a normal shutdown | Stopping a schedule whose job the shared scheduler no longer holds succeeds | `WithScheduler(S)`; the application shuts `S` down; then the container's `Shutdown` |
+| R6 | The shared-mode stop returns while its round still runs | Stop returns once no round of that job runs, within its context | `WithScheduler(S)`; a round blocks; stop is called |
+| R7 | One round costs 94ms, 351ms and 1.34s for 500, 1,000 and 2,000 services (×3.8 per doubling) | Linear cost: the container state is kept in constant time per result | 1,000 checkers, every result re-recorded by a round |
+| R8 | A panic in the scheduler's stop never reaches `HookContainerPanic` | It is passed to `HookContainerPanic(root, "healthscheduler", v)` when set, logged otherwise | A `HealthScheduler` whose stop panics; `HookContainerPanic` set; `Shutdown()` |
+
+Also closed without a defect: the redundant record pruning under the scope lock (`storeLocked`), log lines for checks that a cached read does not run (500 lines for 10 cached reads of 50 services), the dead `queueServiceHealthcheck`/`queueWrapperHealthcheck` helpers, the godoc of the flagged behavior changes, and the timing of the container hook for a service that appears (the next round or root report, as in alexliesenfeld/health, .NET and Spring Boot, which evaluate aggregate health only when checks run or are read).

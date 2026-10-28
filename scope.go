@@ -393,77 +393,16 @@ func (s *Scope) HealthCheck() map[string]error {
 //
 // Returns a map of service names to error values. A nil error indicates a successful health check.
 //
+// Concurrent callers share a service's check in flight: a caller that finds
+// one waits for it within its own context and bounds instead of starting
+// another, and the check runs with the context (values and deadline) of the
+// caller that started it. A panicking check yields an error matching
+// [ErrHealthCheckPanic]. The checks this call starts take a slot of
+// InjectorOpts.HealthCheckParallelism.
+//
 // Play: https://go.dev/play/p/pJcJGOF5zeK
 func (s *Scope) HealthCheckWithContext(ctx context.Context) map[string]error {
-	return s.healthCheckQueued(ctx, func(ctx context.Context) map[string]<-chan error {
-		return s.asyncHealthCheckWithContext(ctx, s)
-	})
-}
-
-// healthCheckQueued runs the health checks queue queues, under the global
-// health check timeout, and returns their results by name.
-func (s *Scope) healthCheckQueued(ctx context.Context, queue func(ctx context.Context) map[string]<-chan error) map[string]error {
-	s.logf("requested health check")
-
-	if s.rootScope.opts.HealthCheckGlobalTimeout > 0 {
-		clock := s.clock()
-		ctx = withHealthCheckDeadline(ctx, clock.Now().Add(s.rootScope.opts.HealthCheckGlobalTimeout))
-		var cancel context.CancelFunc
-		ctx, cancel = clockwork.WithTimeout(ctx, clock, s.rootScope.opts.HealthCheckGlobalTimeout)
-		defer cancel()
-	}
-
-	results := map[string]error{}
-
-	asyncResults := queue(ctx)
-	for name, err := range asyncResults {
-		results[name] = <-err
-	}
-
-	s.logf("got health check results: %v", results)
-
-	return results
-}
-
-// queueOwnHealthChecks queues into results the health checks of the own
-// services of s, not its ancestors', keyed by prefix followed by their
-// name, except the services skip accepts.
-func (s *Scope) queueOwnHealthChecks(ctx context.Context, results map[string]<-chan error, prefix string, skip func(service any) bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	for name, service := range s.services {
-		if skip(service) {
-			continue
-		}
-		results[prefix+name] = s.rootScope.queueServiceHealthcheck(ctx, s, name)
-	}
-}
-
-// asyncHealthCheckWithContext queues the health checks of the services of s
-// and its ancestors, for a health check requested from requester: an export
-// is skipped when requester is its source scope or a descendant of it, where
-// the exported service is checked under its own name.
-func (s *Scope) asyncHealthCheckWithContext(ctx context.Context, requester *Scope) map[string]<-chan error {
-	asyncResults := map[string]<-chan error{}
-
-	s.queueOwnHealthChecks(ctx, asyncResults, "", func(service any) bool {
-		// a default that yields is not checked here: the name keeps the
-		// result of the ancestor service it resolves to
-		return isYieldedDefaultIn(s, service) || s.exportCount() > 0 && readerSeesSource(requester, service)
-	})
-
-	// @TODO: We should not check the status of services that are not inherited (overridden in a child tree)
-	for _, ancestor := range s.Ancestors() {
-		health := ancestor.asyncHealthCheckWithContext(ctx, requester)
-		for name, err := range health {
-			if _, ok := asyncResults[name]; !ok {
-				asyncResults[name] = err
-			}
-		}
-	}
-
-	return asyncResults
+	return s.healthCheckTargets(ctx, visibleCheckers(s))
 }
 
 // Shutdown gracefully shuts down the scope and all its children.
@@ -521,6 +460,11 @@ func (s *Scope) Shutdown() *ShutdownReport {
 func (s *Scope) ShutdownWithContext(ctx context.Context) *ShutdownReport {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+
+	if s.parentScope == nil {
+		// the root's own scope: root Shutdown's model, without its hooks
+		s.rootScope.stopScheduling(ctx)
 	}
 
 	var first hookPanic
@@ -967,7 +911,8 @@ func (s *Scope) serviceSet(name string, service any) {
 }
 
 // storeLocked stores service as name, in place of replaced (nil when the name
-// was free), keeping the count of defaults. mu must be held as a writer.
+// was free), keeping the count of defaults. mu must be held as a writer; the
+// caller forgets replaced once it released mu (see RootScope.forget).
 func (s *Scope) storeLocked(name string, replaced, service any) {
 	s.countDefault(replaced, -1)
 	s.countDefault(service, 1)
@@ -1107,60 +1052,6 @@ func (s *Scope) serviceForEachRec(cb func(name string, scope *Scope, service any
 	if parent != nil {
 		parent.serviceForEachRec(cb)
 	}
-}
-
-// serviceHealthCheck performs a health check on a specific service in the current scope.
-// This method checks if the service implements the Healthchecker interface and calls
-// its health check method if available.
-//
-// Parameters:
-//   - ctx: Context for cancellation and timeout control
-//   - name: The name of the service to health check
-//
-// Returns an error if the health check fails, or nil if the service is healthy
-// or doesn't implement the Healthchecker interface.
-func (s *Scope) serviceHealthCheck(ctx context.Context, name string) error {
-	check, err := s.serviceHealthCheckFunc(name)
-	if err != nil || check == nil {
-		return err
-	}
-
-	// If the healthchecker does not support context.Timeout, the error will be triggered by raceWithTimeout().
-	return raceWithTimeout(ctx, s.clock(), check)
-}
-
-// serviceHealthCheckFunc returns the health check of a service in the current
-// scope, or nil when the service is not a health checker at this moment (a
-// value without a check, a lazy service not built yet, a transient service).
-// A timeout error is never triggered for such a service. It returns an error
-// when the service is not found.
-func (s *Scope) serviceHealthCheckFunc(name string) (func(context.Context) error, error) {
-	s.mu.RLock()
-
-	serviceAny, ok := s.services[name]
-	if !ok {
-		s.mu.RUnlock()
-		return nil, serviceNotFound(s, ErrServiceNotFound, []string{name})
-	}
-
-	s.mu.RUnlock()
-
-	service, ok := serviceAny.(interface {
-		serviceWrapperIsHealthchecker
-		serviceWrapperHealthcheck
-	})
-	if ok {
-		s.logf("requested health check for service %s", name)
-
-		if !service.isHealthchecker() {
-			return nil, nil
-		}
-
-		return service.healthcheck, nil
-	}
-
-	// Should never happen.
-	panic(fmt.Errorf("DI: service `%s` is not healthchecker", name))
 }
 
 // serviceShutdown gracefully shuts down a specific service in the current scope.

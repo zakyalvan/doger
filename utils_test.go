@@ -6,7 +6,6 @@ import (
 	"sort"
 	"strconv"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -177,15 +176,6 @@ func TestUtilsCoalesce(t *testing.T) {
 	is.Empty(coalesce(0))
 	is.Equal(1, coalesce(0, 1, 2))
 	is.Equal(1, coalesce(1, 2, 0))
-}
-
-func TestUtilsJobPool(t *testing.T) {
-	t.Parallel()
-	testWithTimeout(t, 100*time.Millisecond)
-	is := assert.New(t)
-
-	p := newJobPool[error](42)
-	is.Equal(uint(42), p.parallelism)
 }
 
 type test1 struct{}

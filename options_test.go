@@ -691,3 +691,66 @@ func TestProvideOptions_AsDefaultCombined(t *testing.T) {
 		})
 	}
 }
+
+func TestHealthOptions_InvalidPanics(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		service  string
+		register func(root *RootScope)
+		panicMsg string // empty: registration succeeds
+	}{
+		{
+			name:     "empty_tag",
+			service:  "db",
+			register: func(root *RootScope) { ProvideNamedValue(root, "db", &optServer{}, WithHealthTags("")) },
+			panicMsg: "DI: service `db` has an empty health tag",
+		},
+		{
+			name:     "empty_tag_among_others",
+			service:  "db",
+			register: func(root *RootScope) { ProvideNamedValue(root, "db", &optServer{}, WithHealthTags("ok", "")) },
+			panicMsg: "DI: service `db` has an empty health tag",
+		},
+		{
+			name:    "transient_tags",
+			service: "tmp",
+			register: func(root *RootScope) {
+				ProvideNamedTransient(root, "tmp", func(Injector) (*optServer, error) { return &optServer{}, nil }, WithHealthTags(HealthTagReadiness))
+			},
+			panicMsg: "DI: transient service `tmp` cannot be health-checked",
+		},
+		{
+			name:    "transient_optional",
+			service: "tmp",
+			register: func(root *RootScope) {
+				ProvideNamedTransient(root, "tmp", func(Injector) (*optServer, error) { return &optServer{}, nil }, AsOptionalHealth())
+			},
+			panicMsg: "DI: transient service `tmp` cannot be health-checked",
+		},
+		{
+			name:     "not_a_health_checker",
+			service:  "cfg",
+			register: func(root *RootScope) { ProvideNamedValue(root, "cfg", 42, AsOptionalHealth()) },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			is := assert.New(t)
+
+			root := New()
+			if tt.panicMsg == "" {
+				is.NotPanics(func() { tt.register(root) })
+				is.True(root.serviceExist(tt.service))
+				is.Empty(root.HealthReport().Services)
+				return
+			}
+
+			is.PanicsWithError(tt.panicMsg, func() { tt.register(root) })
+			is.False(root.serviceExist(tt.service))
+		})
+	}
+}

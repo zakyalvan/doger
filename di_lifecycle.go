@@ -23,6 +23,11 @@ import (
 //	func (db *Database) HealthCheck() error {
 //	    return db.conn.Ping()
 //	}
+//
+// A check may run while its service shuts down: root Shutdown cancels the
+// context of a check in flight but does not wait for it, so a service whose
+// Shutdown releases what its check uses must guard against a check still
+// running.
 type Healthchecker interface {
 	HealthCheck() error
 }
@@ -269,6 +274,14 @@ func HealthCheckNamed(i Injector, name string) error {
 // does not apply. HealthCheck, HealthCheckWithContext
 // and HealthCheckNamed go through this function and follow the same rule.
 //
+// A check of the service already in flight, started by any path, is shared:
+// the call waits for it within its own context and bound instead of
+// starting another, and the check runs with the context (values and
+// deadline) of the caller that started it. A panicking check yields an error
+// matching [ErrHealthCheckPanic]. The call takes no slot of
+// InjectorOpts.HealthCheckParallelism: it runs the check at once, even one
+// waiting for a slot.
+//
 // Example:
 //
 //	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -285,16 +298,7 @@ func HealthCheckNamedWithContext(ctx context.Context, i Injector, name string) e
 	ctx, cancel := healthCheckContextWithin(ctx, opts.Clock, opts.singleHealthCheckTimeout())
 	defer cancel()
 
-	// @TODO: should we queue the health check into the healthcheck pool ?
 	return injector.serviceHealthCheck(ctx, name)
-}
-
-// perServiceHealthCheckContext bounds ctx by HealthCheckTimeout, on the
-// injector's clock, when it is greater than zero, as each check of
-// HealthCheck() is. HealthCheckGlobalTimeout does not apply.
-func perServiceHealthCheckContext(ctx context.Context, injector Injector) (context.Context, context.CancelFunc) {
-	opts := injector.RootScope().opts
-	return healthCheckContextWithin(ctx, opts.Clock, opts.HealthCheckTimeout)
 }
 
 // singleHealthCheckTimeout returns the bound of a single-service health

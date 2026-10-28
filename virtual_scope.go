@@ -102,6 +102,15 @@ func (s *virtualScope) HealthCheck() map[string]error { return s.self.HealthChec
 func (s *virtualScope) HealthCheckWithContext(ctx context.Context) map[string]error {
 	return s.self.HealthCheckWithContext(ctx)
 }
+
+func (s *virtualScope) HealthReport(opts ...HealthReportOption) HealthReport {
+	return s.self.HealthReport(opts...)
+}
+
+func (s *virtualScope) HealthReportWithContext(ctx context.Context, opts ...HealthReportOption) HealthReport {
+	return s.self.HealthReportWithContext(ctx, opts...)
+}
+
 func (s *virtualScope) Shutdown() *ShutdownReport { return s.self.Shutdown() }
 func (s *virtualScope) ShutdownWithContext(ctx context.Context) *ShutdownReport {
 	return s.self.ShutdownWithContext(ctx)

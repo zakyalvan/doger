@@ -8,7 +8,7 @@ Every item follows the project rules in `CLAUDE.md`: sensible zero-config defaul
 
 | Change | PR | Summary |
 |---|---|---|
-| `add-scheduled-health-checks` | #9 | Cached health reports with on-demand checks, at most one check in flight per service, health classification (readiness, liveness, optional services and a Degraded state), a container-phase gate on readiness and liveness, opt-in scheduled rounds through a `HealthScheduler` interface with a gocron adapter module (`scheduler/gocron`), and nine health-check defect fixes |
+| `add-scheduled-health-checks` | #9 | Cached health reports with on-demand checks, at most one check in flight per service, health classification (readiness, liveness, optional services and a Degraded state), a container-phase gate on readiness and liveness, opt-in scheduled rounds through a `HealthScheduler` interface with a gocron adapter module (`scheduler/gocron`), and nine health-check defect fixes. Status: implemented (all tasks done); awaiting review, then archive |
 
 Done since this roadmap was first written: `consolidate-pending-lifecycle-work` (#8), `add-default-registrations` (#11), `add-scope-export` (#12), `fix-shutdown-after-context-end` (#14) and `add-extensions` (#15).
 

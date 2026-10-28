@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
-	"sync"
 	"time"
 
 	"github.com/jonboulle/clockwork"
@@ -156,82 +155,6 @@ func newUUID() (string, error) {
 	hex.Encode(buf[19:23], uuid[8:10])
 	hex.Encode(buf[24:36], uuid[10:16])
 	return string(buf[:]), nil
-}
-
-func newJobPool[R any](parallelism uint) *jobPool[R] {
-	return &jobPool[R]{
-		parallelism: parallelism,
-		jobs:        make(chan func(), 1000), // 🤮 @TODO: change that
-
-		startOnce: sync.Once{},
-		stopOnce:  sync.Once{},
-	}
-}
-
-type jobPool[R any] struct {
-	parallelism uint
-	jobs        chan func()
-
-	startOnce sync.Once
-	stopOnce  sync.Once
-}
-
-func (p *jobPool[R]) rpc(f func() R) <-chan R {
-	c := make(chan R, 1) // a single message will be sent before closing
-
-	p.jobs <- func() {
-		defer close(c)
-		c <- f()
-	}
-
-	return c
-}
-
-func (p *jobPool[R]) start() {
-	p.startOnce.Do(func() {
-		//nolint:gosec
-		for i := 0; i < int(p.parallelism); i++ {
-			go func() {
-				for job := range p.jobs {
-					job()
-				}
-			}()
-		}
-	})
-}
-
-func (p *jobPool[R]) stop() {
-	p.stopOnce.Do(func() {
-		close(p.jobs)
-	})
-}
-
-// raceWithTimeout runs a health check. When ctx has a deadline, it returns as
-// soon as ctx is done, without waiting for the check; otherwise it waits.
-func raceWithTimeout(ctx context.Context, clock clockwork.Clock, fn func(context.Context) error) error {
-	_, ok := ctx.Deadline()
-	if !ok {
-		return healthCheckResult(ctx, clock, fn(ctx))
-	}
-
-	return awaitHealthCheck(ctx, clock, fn)
-}
-
-// awaitHealthCheck runs a health check in its own goroutine and returns its
-// result, or a timeout error as soon as ctx is done. A check that ignores ctx
-// keeps running after a timeout.
-func awaitHealthCheck(ctx context.Context, clock clockwork.Clock, fn func(context.Context) error) error {
-	err := make(chan error, 1)
-	go func() {
-		err <- fn(ctx)
-	}()
-
-	select {
-	case e := <-err:
-		return healthCheckResult(ctx, clock, e)
-	case <-ctx.Done():
-		return timeoutError(ctx.Err())
-	}
 }
 
 // healthCheckResult decides an observed health-check result: once ctx is

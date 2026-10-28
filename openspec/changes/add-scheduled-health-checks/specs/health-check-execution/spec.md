@@ -248,14 +248,16 @@ Examples:
 #### Scenario: New starts no goroutine
 ```gherkin
 Given HealthCheckParallelism <n> and HealthScheduler <scheduler>
-When the consumer calls NewWithOpts with them and registers a Healthchecker value "db"
+When the consumer builds a container with <constructor> and registers a Healthchecker value "db"
 Then the number of goroutines is unchanged
 
 Examples:
-  | n | scheduler                                  |
-  | 0 | nil                                        |
-  | 4 | nil                                        |
-  | 0 | a HealthScheduler that would start a goroutine when called |
+  | n | scheduler                                                  | constructor                                        |
+  | 0 | nil                                                        | NewWithOpts with them                              |
+  | 4 | nil                                                        | NewWithOpts with them                              |
+  | 0 | a HealthScheduler that would start a goroutine when called | NewWithOpts with them                              |
+  | 4 | a HealthScheduler that would start a goroutine when called | Clone() of a container built with them             |
+  | 4 | a HealthScheduler that would start a goroutine when called | CloneWithOpts with them, of a zero-config container |
 ```
 
 <!-- cases: 1 default: 0 and nil -->
@@ -270,7 +272,7 @@ Examples:
 <!-- cases: 10 backward compatibility: New() no longer starts pool goroutines (an improvement) -->
 
 ### Requirement: A panicking health check returns an error
-A panic in a health check SHALL be recovered on every path. The result SHALL be an error matching `ErrHealthCheckPanic`, with the message `DI: health check panic: ` followed by the value. An error value SHALL also match, and a nil value SHALL match `*runtime.PanicNilError` with `errors.As`. When set, `HookContainerPanic(root, "healthcheck", value)` SHALL be called, and a panic it raises SHALL propagate.
+A panic in a health check SHALL be recovered on every path. The result SHALL be an error matching `ErrHealthCheckPanic`, with the message `DI: health check panic: ` followed by the value. An error value SHALL also match, and a nil value SHALL match `*runtime.PanicNilError` with `errors.As`. When set, `HookContainerPanic(root, "healthcheck", value)` SHALL be called, and a panic it raises SHALL propagate (next requirement).
 
 #### Scenario: Panic results
 ```gherkin
@@ -285,7 +287,7 @@ Examples:
   | panic hook                     | value   | entry                            | message                                                                | match                                 | observed                                            |
   | nil                            | "boom"  | HealthCheck() on the root scope  | DI: health check panic: boom                                           | nothing else                          | the process keeps running                           |
   | nil                            | io.EOF  | HealthCheckNamed(injector, "db") | DI: health check panic: EOF                                            | io.EOF with errors.Is                 | the process keeps running                           |
-  | nil                            | nil     | HealthReport() on an idle root   | DI: health check panic: panic called with nil argument (goexit=false)  | *runtime.PanicNilError with errors.As | the process keeps running                           |
+  | nil                            | nil     | HealthReport() on an idle root   | DI: health check panic: runtime error: panic called with nil argument | *runtime.PanicNilError with errors.As | the process keeps running                           |
   | set, recording (point, value)  | "boom"  | HealthCheck() on the root scope  | DI: health check panic: boom                                           | nothing else                          | HookContainerPanic recorded ("healthcheck", "boom") |
 ```
 
@@ -306,11 +308,41 @@ And the hook recorded (Unknown, Unhealthy, "DI: health check panic: boom") then 
 <!-- cases: N/A 6 not found/duplicate: not applicable -->
 <!-- cases: 7 lifecycle: forced, single-service, report and round paths -->
 <!-- cases: N/A 8 concurrency: recovery happens on the goroutine running the check -->
-<!-- cases: 9 panics: this requirement (regression D7); a panic raised by HookContainerPanic propagates so a consumer can still crash on purpose -->
+<!-- cases: 9 panics: this requirement (regression D7); a panic raised by HookContainerPanic propagates (next requirement) -->
 <!-- cases: 10 backward compatibility: a crash becomes an error (flagged); a single-service panic used to reach the caller as a panic -->
 
+### Requirement: A panic HookContainerPanic raises for a check reaches the waiting callers
+A panic that `HookContainerPanic` raises for a health check SHALL be raised again on the goroutine of every caller waiting for that check, which can recover it. When no caller waits for the check, it SHALL be raised on the goroutine running the check.
+
+#### Scenario: A panic HookContainerPanic raises reaches the waiting callers
+```gherkin
+Given an injector with a manual HealthScheduler, started, with HookContainerPanic that panics again with the value it receives
+And a service "db" whose HealthCheck() panics with "boom"
+When the consumer calls <entry> under a deferred recover()
+Then the recovered value is "boom"
+And the process keeps running
+
+Examples:
+  | entry                            |
+  | HealthCheckNamed(injector, "db") |
+  | HealthCheck() on the root scope  |
+  | HealthReport() on the root scope |
+  | the stored round                 |
+```
+
+<!-- cases: N/A 1 default: HookContainerPanic is unset by default -->
+<!-- cases: 2 overrides: a HookContainerPanic that panics again -->
+<!-- cases: N/A 3 zero values: a nil hook keeps the error outcome (previous requirement) -->
+<!-- cases: N/A 4 boundaries: not applicable -->
+<!-- cases: N/A 5 errors: the hook's panic replaces the error outcome for the waiting callers -->
+<!-- cases: N/A 6 not found/duplicate: not applicable -->
+<!-- cases: 7 lifecycle: forced, single-service, report and round paths -->
+<!-- cases: 8 concurrency: every waiter of a shared check gets the panic on its own goroutine; with none, the check's goroutine -->
+<!-- cases: 9 panics: this requirement (review R4) -->
+<!-- cases: 10 backward compatibility: on 76404ef a single-service check without a deadline panicked on the caller's goroutine, where it could be recovered; this keeps that possible -->
+
 ### Requirement: A health check never holds a service's lock
-A lazy service's health check SHALL run without holding that service's lock, so a check in flight SHALL NOT delay the service's shutdown or invocation.
+A lazy service's health check SHALL run without holding that service's lock, so a check in flight SHALL NOT delay the service's shutdown or invocation. Root Shutdown SHALL NOT wait for a check in flight either: a check may run while its service shuts down.
 
 #### Scenario: A check in flight does not delay the service
 ```gherkin
