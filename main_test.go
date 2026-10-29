@@ -22,9 +22,20 @@ func TestMain(m *testing.M) {
 	goleak.VerifyTestMain(m)
 }
 
+// minTestTimeout is the least time testWithTimeout waits before it reports
+// a test as hung.
+const minTestTimeout = 5 * time.Second
+
+// testWithTimeout panics, naming the test, once it has run for timeout
+// without finishing. It guards against hangs, not timing: a timeout below
+// minTestTimeout is raised to it, so a test starved of CPU under -race and
+// parallel load is not reported as hung. Tests assert timing themselves, on
+// a fake clock or in a synctest bubble.
+//
 // https://github.com/stretchr/testify/issues/1101
 func testWithTimeout(t *testing.T, timeout time.Duration) {
 	t.Helper()
+	timeout = max(timeout, minTestTimeout)
 
 	testFinished := make(chan struct{})
 

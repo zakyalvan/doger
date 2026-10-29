@@ -270,23 +270,49 @@ func TestDoubleInjection(t *testing.T) {
 		})
 	})
 
-	is.PanicsWithError("DI: service `*github.com/kartaladev/doger.test` has already been declared", func() {
-		Provide(i, func(i Injector) (*test, error) {
-			return &test{}, nil
+	const declared = "DI: service `*github.com/kartaladev/doger.test` has already been declared"
+
+	// the rows run in order on the same injector, each redeclaring *test
+	tests := []struct {
+		name    string
+		provide func()
+		message string
+	}{
+		{
+			name: "Provide",
+			provide: func() {
+				Provide(i, func(i Injector) (*test, error) {
+					return &test{}, nil
+				})
+			},
+			message: declared,
+		},
+		{
+			name:    "ProvideValue",
+			provide: func() { ProvideValue(i, &test{}) },
+			message: declared,
+		},
+		{
+			name: "ProvideNamed",
+			provide: func() {
+				ProvideNamed(i, "*github.com/kartaladev/doger.test", func(i Injector) (*test, error) {
+					return &test{}, nil
+				})
+			},
+			message: declared,
+		},
+		{
+			name:    "ProvideNamedValue",
+			provide: func() { ProvideNamedValue(i, "*github.com/kartaladev/doger.test", &test{}) },
+			message: declared,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
+
+			is.PanicsWithError(tt.message, tt.provide)
 		})
-	})
-
-	is.PanicsWithError("DI: service `*github.com/kartaladev/doger.test` has already been declared", func() {
-		ProvideValue(i, &test{})
-	})
-
-	is.PanicsWithError("DI: service `*github.com/kartaladev/doger.test` has already been declared", func() {
-		ProvideNamed(i, "*github.com/kartaladev/doger.test", func(i Injector) (*test, error) {
-			return &test{}, nil
-		})
-	})
-
-	is.PanicsWithError("DI: service `*github.com/kartaladev/doger.test` has already been declared", func() {
-		ProvideNamedValue(i, "*github.com/kartaladev/doger.test", &test{})
-	})
+	}
 }

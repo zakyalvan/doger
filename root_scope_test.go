@@ -201,27 +201,30 @@ func TestRootScope_Clone(t *testing.T) {
 
 	is.NotEqual(i.opts, clone.opts) // copy
 
-	is.Empty(i.opts.HookBeforeRegistration)
-	is.Empty(i.opts.HookAfterRegistration)
-	is.Empty(i.opts.HookBeforeInvocation)
-	is.Empty(i.opts.HookAfterInvocation)
-	is.Empty(i.opts.HookBeforeShutdown)
-	is.Empty(i.opts.HookAfterShutdown)
-	is.NotNil(i.opts.Logf)
-	is.NotNil(i.opts.HealthCheckParallelism)
-	is.NotNil(i.opts.HealthCheckGlobalTimeout)
-	is.NotNil(i.opts.HealthCheckTimeout)
+	tests := []struct {
+		name string
+		opts *InjectorOpts
+	}{
+		{name: "original", opts: i.opts},
+		{name: "clone", opts: clone.opts},
+	}
 
-	is.Empty(clone.opts.HookBeforeRegistration)
-	is.Empty(clone.opts.HookAfterRegistration)
-	is.Empty(clone.opts.HookBeforeInvocation)
-	is.Empty(clone.opts.HookAfterInvocation)
-	is.Empty(clone.opts.HookBeforeShutdown)
-	is.Empty(clone.opts.HookAfterShutdown)
-	is.NotNil(clone.opts.Logf)
-	is.NotNil(clone.opts.HealthCheckParallelism)
-	is.NotNil(clone.opts.HealthCheckGlobalTimeout)
-	is.NotNil(clone.opts.HealthCheckTimeout)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
+
+			is.Empty(tt.opts.HookBeforeRegistration)
+			is.Empty(tt.opts.HookAfterRegistration)
+			is.Empty(tt.opts.HookBeforeInvocation)
+			is.Empty(tt.opts.HookAfterInvocation)
+			is.Empty(tt.opts.HookBeforeShutdown)
+			is.Empty(tt.opts.HookAfterShutdown)
+			is.NotNil(tt.opts.Logf)
+			is.NotNil(tt.opts.HealthCheckParallelism)
+			is.NotNil(tt.opts.HealthCheckGlobalTimeout)
+			is.NotNil(tt.opts.HealthCheckTimeout)
+		})
+	}
 
 	is.EqualValues(42, clone.opts.HealthCheckParallelism)
 	is.Equal(42*time.Second, clone.opts.HealthCheckGlobalTimeout)

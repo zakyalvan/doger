@@ -184,7 +184,6 @@ func TestCascadingFailuresAcrossScopes(t *testing.T) {
 // TestPartialFailureScenarios tests scenarios where some services succeed and others fail
 func TestPartialFailureScenarios(t *testing.T) {
 	testWithTimeout(t, 300*time.Millisecond)
-	is := assert.New(t)
 
 	root := doger.New()
 
@@ -210,20 +209,34 @@ func TestPartialFailureScenarios(t *testing.T) {
 		return "mixed-" + successVal, nil
 	})
 
-	// Successful service should work
-	result, err := doger.InvokeNamed[string](root, "successful-service")
-	is.NoError(err)
-	is.Equal("successful-value", result)
+	tests := []struct {
+		name    string
+		service string
+		want    string
+		wantErr string
+	}{
+		// Successful service should work
+		{name: "successful_service", service: "successful-service", want: "successful-value"},
+		// Failing service should fail
+		{name: "failing_service", service: "failing-service", wantErr: "service failure"},
+		// Mixed service should fail due to dependency on failing service
+		{name: "mixed_service", service: "mixed-service", wantErr: "service failure"},
+	}
 
-	// Failing service should fail
-	_, err = doger.InvokeNamed[string](root, "failing-service")
-	is.Error(err)
-	is.Contains(err.Error(), "service failure")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
 
-	// Mixed service should fail due to dependency on failing service
-	_, err = doger.InvokeNamed[string](root, "mixed-service")
-	is.Error(err)
-	is.Contains(err.Error(), "service failure")
+			result, err := doger.InvokeNamed[string](root, tt.service)
+			if tt.wantErr != "" {
+				is.Error(err)
+				is.Contains(err.Error(), tt.wantErr)
+				return
+			}
+			is.NoError(err)
+			is.Equal(tt.want, result)
+		})
+	}
 }
 
 // TestErrorRecoveryScenarios tests error recovery scenarios

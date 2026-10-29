@@ -451,6 +451,13 @@ func (s *Scope) Shutdown() *ShutdownReport {
 // own Closing or Closed hooks, or from its services' Shutdown: it would wait
 // for itself.
 //
+// On the root's own *Scope (the Injector a provider receives in the root
+// scope), it stops health scheduling as root Shutdown does, without the
+// Closing and Closed hooks, and leaves the container phase unchanged. Health
+// recording and the health hooks end there for good: a check run afterwards,
+// by any path, records no result and calls no hook, so services registered
+// later stay HealthUnknown in reports.
+//
 // Parameters:
 //   - ctx: Context for cancellation and timeout control
 //
@@ -856,6 +863,13 @@ func (s *Scope) serviceGet(name string) (any, bool) {
 
 	svc, ok := s.services[name]
 	return svc, ok
+}
+
+// scopeHolds reports whether scope still holds wrapper under name. It takes
+// the scope's read lock.
+func scopeHolds(scope *Scope, name string, wrapper any) bool {
+	current, ok := scope.serviceGet(name)
+	return ok && current == wrapper
 }
 
 // serviceGetRec retrieves a service by name from the current scope or any of its ancestor scopes.

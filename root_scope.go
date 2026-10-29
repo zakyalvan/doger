@@ -263,13 +263,19 @@ func (s *RootScope) Shutdown() *ShutdownReport { return s.ShutdownWithContext(co
 // context of every health check in flight, but does not wait for those
 // checks: a check that ignores its context may still run while its service
 // shuts down. A service whose Shutdown releases what its check uses must
-// guard against a check still running.
+// guard against a check still running. A check's context is cancelled with
+// the cause [ErrStartAfterShutdown] (see [context.Cause]); a caller still
+// waiting for it gets an error matching [ErrHealthCheckTimeout] and
+// [context.Canceled]. When ScheduleHealthRounds is still running, Shutdown
+// waits for it to return, even after ctx has ended, then calls the stop
+// function it returned, so no goroutine of the schedule outlives Shutdown.
 //
 // Only the [RootScope] methods follow this model. A shutdown reached through
 // the root's *Scope (a provider's injector, or [Injector.Shutdown] on a
-// virtual scope) bypasses it and behaves as before. Scope.Shutdown on a
-// child scope waits for a start that is starting it; see
-// [Scope.ShutdownWithContext].
+// virtual scope) bypasses it and behaves as before, except that it stops
+// health scheduling and ends health recording for good; see
+// [Scope.ShutdownWithContext]. Scope.Shutdown on a child scope waits for a
+// start that is starting it; see [Scope.ShutdownWithContext].
 func (s *RootScope) ShutdownWithContext(ctx context.Context) *ShutdownReport {
 	if ctx == nil {
 		ctx = context.Background()

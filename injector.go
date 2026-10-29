@@ -273,9 +273,14 @@ type InjectorOpts struct {
 	// HealthCheckParallelism caps the health checks running at once among
 	// those started by HealthCheck(), HealthReport reads and scheduled
 	// rounds: each takes a slot while it runs. Waiting for a slot holds no
-	// lock and ends with each caller's context and bound, and a check's own
-	// bound starts once it has its slot. A check that ignores its context
-	// keeps its slot until it returns, delaying the others. The
+	// lock and counts against each caller's context and
+	// HealthCheckGlobalTimeout, while a caller's per-service bound starts
+	// once the check has its slot; only a caller that waited behind an
+	// abandoned check, still running, keeps the bound it started at its
+	// call. A check holds its slot until it returns, its context ends, or
+	// the report bound (see DefaultHealthReportCheckTimeout) has passed since
+	// it took the slot; a check that keeps running after that, ignoring its
+	// context, no longer counts against the limit. The
 	// single-service functions (HealthCheck[T], HealthCheckWithContext[T],
 	// HealthCheckNamed and HealthCheckNamedWithContext) take no slot: they
 	// run at once, as does a check waiting for a slot that one of them needs,
@@ -339,7 +344,10 @@ type InjectorOpts struct {
 	// HealthCheck and HealthReport, but should be fast: they delay the next
 	// deliveries. A nil hook is skipped. A panic is recovered and passed to
 	// HookContainerPanic with the point "healthchanged", or logged; the other
-	// hooks still run. Nothing is called once root Shutdown began.
+	// hooks still run. Nothing is called once root Shutdown began, nor once
+	// the root's own *Scope (the Injector a provider receives in the root
+	// scope) was shut down: that ends health recording and these hooks for
+	// good, although the container phase stays unchanged.
 	HookServiceHealthChanged   []func(scope *Scope, serviceName string, previous, current ServiceHealth)
 	HookContainerHealthChanged []func(root *RootScope, previous, current HealthState)
 

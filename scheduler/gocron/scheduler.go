@@ -147,12 +147,11 @@ func (s *Scheduler) ScheduleHealthRounds(clock clockwork.Clock, round func(ctx c
 	if definition == nil {
 		definition = gocron.DurationJob(s.cfg.interval)
 	}
-	task := gocron.NewTask(func(ctx context.Context) { round(ctx) })
 	jobOpts := jobOptions(s.cfg)
 
 	if s.cfg.shared != nil {
 		rounds := &roundGauge{}
-		task = gocron.NewTask(func(ctx context.Context) {
+		task := gocron.NewTask(func(ctx context.Context) {
 			if rounds.enter() {
 				defer rounds.leave()
 				round(ctx)
@@ -169,6 +168,7 @@ func (s *Scheduler) ScheduleHealthRounds(clock clockwork.Clock, round func(ctx c
 	if err != nil {
 		return nil, err
 	}
+	task := gocron.NewTask(func(ctx context.Context) { round(ctx) })
 	if _, err := scheduler.NewJob(definition, task, jobOpts...); err != nil {
 		_ = scheduler.Shutdown()
 		return nil, err

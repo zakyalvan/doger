@@ -16,47 +16,54 @@ import (
 func TestRemoveGoPath(t *testing.T) {
 	t.Parallel()
 
-	for _, testcase := range []struct {
+	tests := []struct {
+		name     string
 		gopath   []string
 		path     string
 		expected string
 	}{
 		{
-			// empty gopath
+			name:     "empty_gopath",
 			gopath:   []string{},
 			path:     "/some/dir/src/pkg/prog.go",
 			expected: "/some/dir/src/pkg/prog.go",
 		},
 		{
-			// single matching dir in gopath
+			name:     "single_matching_dir",
 			gopath:   []string{"/some/dir"},
 			path:     "/some/dir/src/pkg/prog.go",
 			expected: "pkg/prog.go",
 		},
 		{
-			// nonmatching dir in gopath
+			name:     "nonmatching_dir",
 			gopath:   []string{"/other/dir"},
 			path:     "/some/dir/src/pkg/prog.go",
 			expected: "/some/dir/src/pkg/prog.go",
 		},
 		{
-			// multiple matching dirs in gopath, shorter first
+			name:     "multiple_matching_dirs_shorter_first",
 			gopath:   []string{"/some", "/some/src/dir"},
 			path:     "/some/src/dir/src/pkg/prog.go",
 			expected: "pkg/prog.go",
 		},
 		{
-			// multiple matching dirs in gopath, longer first
+			name:     "multiple_matching_dirs_longer_first",
 			gopath:   []string{"/some/src/dir", "/some"},
 			path:     "/some/src/dir/src/pkg/prog.go",
 			expected: "pkg/prog.go",
 		},
-	} {
-		dirs := make([]string, len(testcase.gopath))
-		copy(dirs, testcase.gopath)
-		sort.Stable(longestFirst(dirs))
+	}
 
-		cleaned := removeGoPathDirs(testcase.path, dirs)
-		assert.Equal(t, testcase.expected, cleaned, "testcase: %+v", testcase)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			dirs := make([]string, len(tt.gopath))
+			copy(dirs, tt.gopath)
+			sort.Stable(longestFirst(dirs))
+
+			cleaned := removeGoPathDirs(tt.path, dirs)
+			assert.Equal(t, tt.expected, cleaned, "testcase: %+v", tt)
+		})
 	}
 }

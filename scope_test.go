@@ -79,23 +79,28 @@ func TestScope_Scope(t *testing.T) {
 	is.Equal(child1, scope.childScopes["child1"])
 	is.Equal(child2, scope.childScopes["child2"])
 
-	// child 1
-	is.Equal("child1", child1.name)
-	is.Equal(rootScope, child1.rootScope)
-	is.Equal(scope, child1.parentScope)
-	is.Equal(map[string]*Scope{}, child1.childScopes)
-	is.Equal(make(map[string]any), child1.services)
-	is.Equal(map[string]int{}, child1.orderedInvocation)
-	is.Equal(0, child1.orderedInvocationIndex)
+	tests := []struct {
+		name     string
+		child    *Scope
+		wantName string
+	}{
+		{name: "child1", child: child1, wantName: "child1"},
+		{name: "child2", child: child2, wantName: "child2"},
+	}
 
-	// child 2
-	is.Equal("child2", child2.name)
-	is.Equal(rootScope, child2.rootScope)
-	is.Equal(scope, child2.parentScope)
-	is.Equal(map[string]*Scope{}, child2.childScopes)
-	is.Equal(make(map[string]any), child2.services)
-	is.Equal(map[string]int{}, child2.orderedInvocation)
-	is.Equal(0, child2.orderedInvocationIndex)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
+
+			is.Equal(tt.wantName, tt.child.name)
+			is.Equal(rootScope, tt.child.rootScope)
+			is.Equal(scope, tt.child.parentScope)
+			is.Equal(map[string]*Scope{}, tt.child.childScopes)
+			is.Equal(make(map[string]any), tt.child.services)
+			is.Equal(map[string]int{}, tt.child.orderedInvocation)
+			is.Equal(0, tt.child.orderedInvocationIndex)
+		})
+	}
 }
 
 func TestScope_Scope_race(t *testing.T) {
@@ -174,7 +179,6 @@ func TestScope_Children(t *testing.T) {
 func TestScope_ChildByID(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, 100*time.Millisecond)
-	is := assert.New(t)
 
 	rootScope := New()
 
@@ -188,74 +192,60 @@ func TestScope_ChildByID(t *testing.T) {
 	child2.id = "child2"
 	child2a.id = "child2a"
 
-	// from root POV
-	is.NotPanics(func() {
-		s, ok := rootScope.ChildByID("[root]")
-		is.False(ok)
-		is.Nil(s)
-		s, ok = rootScope.ChildByID("child1")
-		is.True(ok)
-		is.Equal(child1.ID(), s.ID())
-		s, ok = rootScope.ChildByID("child2")
-		is.True(ok)
-		is.Equal(child2.ID(), s.ID())
-		s, ok = rootScope.ChildByID("child2a")
-		is.True(ok)
-		is.Equal(child2a.ID(), s.ID())
-	})
+	type lookup struct {
+		id   string
+		want *Scope // nil: not found
+	}
 
-	// from child1 POV
-	is.NotPanics(func() {
-		s, ok := child1.ChildByID("[root]")
-		is.False(ok)
-		is.Nil(s)
-		s, ok = child1.ChildByID("child1")
-		is.False(ok)
-		is.Nil(s)
-		s, ok = child1.ChildByID("child2")
-		is.False(ok)
-		is.Nil(s)
-		s, ok = child1.ChildByID("child2a")
-		is.False(ok)
-		is.Nil(s)
-	})
+	tests := []struct {
+		name    string
+		from    Injector
+		lookups []lookup
+	}{
+		{
+			name:    "from_root",
+			from:    rootScope,
+			lookups: []lookup{{id: "[root]"}, {id: "child1", want: child1}, {id: "child2", want: child2}, {id: "child2a", want: child2a}},
+		},
+		{
+			name:    "from_child1",
+			from:    child1,
+			lookups: []lookup{{id: "[root]"}, {id: "child1"}, {id: "child2"}, {id: "child2a"}},
+		},
+		{
+			name:    "from_child2",
+			from:    child2,
+			lookups: []lookup{{id: "[root]"}, {id: "child1"}, {id: "child2"}, {id: "child2a", want: child2a}},
+		},
+		{
+			name:    "from_child2a",
+			from:    child2a,
+			lookups: []lookup{{id: "[root]"}, {id: "child1"}, {id: "child2"}, {id: "child2a"}},
+		},
+	}
 
-	// from child2 POV
-	is.NotPanics(func() {
-		s, ok := child2.ChildByID("[root]")
-		is.False(ok)
-		is.Nil(s)
-		s, ok = child2.ChildByID("child1")
-		is.False(ok)
-		is.Nil(s)
-		s, ok = child2.ChildByID("child2")
-		is.False(ok)
-		is.Nil(s)
-		s, ok = child2.ChildByID("child2a")
-		is.True(ok)
-		is.Equal(child2a.ID(), s.ID())
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
 
-	// from child2a POV
-	is.NotPanics(func() {
-		s, ok := child2a.ChildByID("[root]")
-		is.False(ok)
-		is.Nil(s)
-		s, ok = child2a.ChildByID("child1")
-		is.False(ok)
-		is.Nil(s)
-		s, ok = child2a.ChildByID("child2")
-		is.False(ok)
-		is.Nil(s)
-		s, ok = child2a.ChildByID("child2a")
-		is.False(ok)
-		is.Nil(s)
-	})
+			is.NotPanics(func() {
+				for _, l := range tt.lookups {
+					s, ok := tt.from.ChildByID(l.id)
+					if l.want == nil {
+						is.False(ok)
+						is.Nil(s)
+					} else {
+						is.True(ok)
+						is.Equal(l.want.ID(), s.ID())
+					}
+				}
+			})
+		})
+	}
 }
 
 func TestScope_ChildByName(t *testing.T) {
 	t.Parallel()
-	is := assert.New(t)
 
 	rootScope := New()
 
@@ -264,69 +254,56 @@ func TestScope_ChildByName(t *testing.T) {
 	child2 := rootScope.Scope("child2")
 	child2a := child2.Scope("child2a")
 
-	// from root POV
-	is.NotPanics(func() {
-		s, ok := rootScope.ChildByName("[root]")
-		is.False(ok)
-		is.Nil(s)
-		s, ok = rootScope.ChildByName("child1")
-		is.True(ok)
-		is.Equal(child1.ID(), s.ID())
-		s, ok = rootScope.ChildByName("child2")
-		is.True(ok)
-		is.Equal(child2.ID(), s.ID())
-		s, ok = rootScope.ChildByName("child2a")
-		is.True(ok)
-		is.Equal(child2a.ID(), s.ID())
-	})
+	type lookup struct {
+		name string
+		want *Scope // nil: not found
+	}
 
-	// from child1 POV
-	is.NotPanics(func() {
-		s, ok := child1.ChildByName("[root]")
-		is.False(ok)
-		is.Nil(s)
-		s, ok = child1.ChildByName("child1")
-		is.False(ok)
-		is.Nil(s)
-		s, ok = child1.ChildByName("child2")
-		is.False(ok)
-		is.Nil(s)
-		s, ok = child1.ChildByName("child2a")
-		is.False(ok)
-		is.Nil(s)
-	})
+	tests := []struct {
+		name    string
+		from    Injector
+		lookups []lookup
+	}{
+		{
+			name:    "from_root",
+			from:    rootScope,
+			lookups: []lookup{{name: "[root]"}, {name: "child1", want: child1}, {name: "child2", want: child2}, {name: "child2a", want: child2a}},
+		},
+		{
+			name:    "from_child1",
+			from:    child1,
+			lookups: []lookup{{name: "[root]"}, {name: "child1"}, {name: "child2"}, {name: "child2a"}},
+		},
+		{
+			name:    "from_child2",
+			from:    child2,
+			lookups: []lookup{{name: "[root]"}, {name: "child1"}, {name: "child2"}, {name: "child2a", want: child2a}},
+		},
+		{
+			name:    "from_child2a",
+			from:    child2a,
+			lookups: []lookup{{name: "[root]"}, {name: "child1"}, {name: "child2"}, {name: "child2a"}},
+		},
+	}
 
-	// from child2 POV
-	is.NotPanics(func() {
-		s, ok := child2.ChildByName("[root]")
-		is.False(ok)
-		is.Nil(s)
-		s, ok = child2.ChildByName("child1")
-		is.False(ok)
-		is.Nil(s)
-		s, ok = child2.ChildByName("child2")
-		is.False(ok)
-		is.Nil(s)
-		s, ok = child2.ChildByName("child2a")
-		is.True(ok)
-		is.Equal(child2a.ID(), s.ID())
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
 
-	// from child2a POV
-	is.NotPanics(func() {
-		s, ok := child2a.ChildByName("[root]")
-		is.False(ok)
-		is.Nil(s)
-		s, ok = child2a.ChildByName("child1")
-		is.False(ok)
-		is.Nil(s)
-		s, ok = child2a.ChildByName("child2")
-		is.False(ok)
-		is.Nil(s)
-		s, ok = child2a.ChildByName("child2a")
-		is.False(ok)
-		is.Nil(s)
-	})
+			is.NotPanics(func() {
+				for _, l := range tt.lookups {
+					s, ok := tt.from.ChildByName(l.name)
+					if l.want == nil {
+						is.False(ok)
+						is.Nil(s)
+					} else {
+						is.True(ok)
+						is.Equal(l.want.ID(), s.ID())
+					}
+				}
+			})
+		})
+	}
 }
 
 func TestScope_ListProvidedServices(t *testing.T) {
@@ -504,35 +481,72 @@ func TestScope_HealthCheckWithContext(t *testing.T) {
 	// Test with different context scenarios
 	ctx := context.Background()
 
-	// Test with background context
-	results1 := child2a.HealthCheckWithContext(ctx)
-	is.Equal(map[string]error{"child1-a": nil, "child2a-a": nil, "child2a-b": assert.AnError, "root-a": assert.AnError}, results1)
+	tests := []struct {
+		name    string
+		ctx     func() (context.Context, context.CancelFunc)
+		want    map[string]error // nil: only the number of results is checked
+		wantLen int
+	}{
+		{
+			// Test with background context
+			name: "background",
+			ctx:  func() (context.Context, context.CancelFunc) { return ctx, func() {} },
+			want: map[string]error{"child1-a": nil, "child2a-a": nil, "child2a-b": assert.AnError, "root-a": assert.AnError},
+		},
+		{
+			// Test with canceled context - should return timeout errors
+			name: "canceled",
+			ctx: func() (context.Context, context.CancelFunc) {
+				canceledCtx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return canceledCtx, cancel
+			},
+			// When context is canceled, some services might return timeout errors, others might return original errors
+			wantLen: 4, // child1-a, child2a-a, child2a-b, root-a
+		},
+		{
+			// Test with timeout context - should return timeout errors
+			name: "timeout",
+			ctx: func() (context.Context, context.CancelFunc) {
+				return context.WithTimeout(context.Background(), 100*time.Millisecond)
+			},
+			// When context times out, some services might return timeout errors, others might return original errors
+			wantLen: 4, // child1-a, child2a-a, child2a-b, root-a
+		},
+		{
+			// Test with deadline context - should return timeout errors
+			name: "deadline",
+			ctx: func() (context.Context, context.CancelFunc) {
+				return context.WithDeadline(context.Background(), time.Now().Add(100*time.Millisecond))
+			},
+			// When context deadline is exceeded, some services might return timeout errors, others might return original errors
+			wantLen: 4, // child1-a, child2a-a, child2a-b, root-a
+		},
+		{
+			// Test with value context - should return original errors
+			name: "value",
+			ctx: func() (context.Context, context.CancelFunc) {
+				return context.WithValue(context.Background(), ctxTestKey, "test-value"), func() {}
+			},
+			want: map[string]error{"child1-a": nil, "child2a-a": nil, "child2a-b": assert.AnError, "root-a": assert.AnError},
+		},
+	}
 
-	// Test with canceled context - should return timeout errors
-	canceledCtx, cancel := context.WithCancel(context.Background())
-	cancel()
-	results2 := child2a.HealthCheckWithContext(canceledCtx)
-	// When context is canceled, some services might return timeout errors, others might return original errors
-	is.Len(results2, 4) // child1-a, child2a-a, child2a-b, root-a
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
 
-	// Test with timeout context - should return timeout errors
-	timeoutCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-	results3 := child2a.HealthCheckWithContext(timeoutCtx)
-	// When context times out, some services might return timeout errors, others might return original errors
-	is.Len(results3, 4) // child1-a, child2a-a, child2a-b, root-a
+			ctx, cancel := tt.ctx()
+			defer cancel()
 
-	// Test with deadline context - should return timeout errors
-	deadlineCtx, cancel := context.WithDeadline(context.Background(), time.Now().Add(100*time.Millisecond))
-	defer cancel()
-	results4 := child2a.HealthCheckWithContext(deadlineCtx)
-	// When context deadline is exceeded, some services might return timeout errors, others might return original errors
-	is.Len(results4, 4) // child1-a, child2a-a, child2a-b, root-a
-
-	// Test with value context - should return original errors
-	valueCtx := context.WithValue(context.Background(), ctxTestKey, "test-value")
-	results5 := child2a.HealthCheckWithContext(valueCtx)
-	is.Equal(map[string]error{"child1-a": nil, "child2a-a": nil, "child2a-b": assert.AnError, "root-a": assert.AnError}, results5)
+			results := child2a.HealthCheckWithContext(ctx)
+			if tt.want != nil {
+				is.Equal(tt.want, results)
+			} else {
+				is.Len(results, tt.wantLen)
+			}
+		})
+	}
 }
 
 func TestScope_Shutdown(t *testing.T) {
@@ -582,33 +596,38 @@ func TestScope_ShutdownWithContext(t *testing.T) {
 	_, _ = invokeByName[*lazyTestShutdownerKO](child2a, "child2a-b")
 	_, _ = invokeByName[*lazyTestShutdownerKO](child2b, "child2b-a")
 
-	// // from rootScope POV
-	is.Equal(assert.AnError, rootScope.serviceShutdown(ctx, "root-a"))
-	is.ErrorContains(rootScope.serviceShutdown(ctx, "child1-a"), "could not find service")
-	is.ErrorContains(rootScope.serviceShutdown(ctx, "child2a-a"), "could not find service")
-	is.ErrorContains(rootScope.serviceShutdown(ctx, "child2a-b"), "could not find service")
-	is.ErrorContains(rootScope.serviceShutdown(ctx, "child2b-a"), "could not find service")
+	services := []string{"root-a", "child1-a", "child2a-a", "child2a-b", "child2b-a"}
+	povs := []struct {
+		name  string
+		from  Injector
+		owned map[string]error // the services of the scope and their shutdown error; the others are not found
+	}{
+		{name: "from_root_scope", from: rootScope, owned: map[string]error{"root-a": assert.AnError}},
+		{name: "from_child1", from: child1, owned: map[string]error{"child1-a": nil}},
+		{name: "from_child2a", from: child2a, owned: map[string]error{"child2a-a": nil, "child2a-b": assert.AnError}},
+		{name: "from_child2b", from: child2b, owned: map[string]error{"child2b-a": assert.AnError}},
+	}
 
-	// from child1 POV
-	is.ErrorContains(child1.serviceShutdown(ctx, "root-a"), "could not find service")
-	is.NoError(child1.serviceShutdown(ctx, "child1-a"))
-	is.ErrorContains(child1.serviceShutdown(ctx, "child2a-a"), "could not find service")
-	is.ErrorContains(child1.serviceShutdown(ctx, "child2a-b"), "could not find service")
-	is.ErrorContains(child1.serviceShutdown(ctx, "child2b-a"), "could not find service")
+	for _, tt := range povs {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, service := range services {
+				t.Run(service, func(t *testing.T) {
+					is := assert.New(t)
 
-	// from child2a POV
-	is.ErrorContains(child2a.serviceShutdown(ctx, "root-a"), "could not find service")
-	is.ErrorContains(child2a.serviceShutdown(ctx, "child1-a"), "could not find service")
-	is.NoError(child2a.serviceShutdown(ctx, "child2a-a"))
-	is.Equal(assert.AnError, child2a.serviceShutdown(ctx, "child2a-b"))
-	is.ErrorContains(child2a.serviceShutdown(ctx, "child2b-a"), "could not find service")
-
-	// from child2b POV
-	is.ErrorContains(child2b.serviceShutdown(ctx, "root-a"), "could not find service")
-	is.ErrorContains(child2b.serviceShutdown(ctx, "child1-a"), "could not find service")
-	is.ErrorContains(child2b.serviceShutdown(ctx, "child2a-a"), "could not find service")
-	is.ErrorContains(child2b.serviceShutdown(ctx, "child2a-b"), "could not find service")
-	is.Equal(assert.AnError, child2b.serviceShutdown(ctx, "child2b-a"))
+					err := tt.from.serviceShutdown(ctx, service)
+					want, owned := tt.owned[service]
+					switch {
+					case !owned:
+						is.ErrorContains(err, "could not find service")
+					case want == nil:
+						is.NoError(err)
+					default:
+						is.Equal(want, err)
+					}
+				})
+			}
+		})
+	}
 
 	// Test with different context scenarios
 	// Test with background context
@@ -616,64 +635,67 @@ func TestScope_ShutdownWithContext(t *testing.T) {
 	is.NotNil(results1)
 	is.Empty(results1.Errors) // child2a-b already shut down
 
-	// Test with canceled context - create new scope
-	rootScope2 := New()
-	child1_2 := rootScope2.Scope("child1")
-	child2a_2 := child1_2.Scope("child2a")
-	child2a_2.serviceSet("child2a-a", newServiceLazy("child2a-a", provider1))
-	child2a_2.serviceSet("child2a-b", newServiceLazy("child2a-b", provider2))
-	_, _ = invokeByName[*lazyTestShutdownerOK](child2a_2, "child2a-a")
-	_, _ = invokeByName[*lazyTestShutdownerKO](child2a_2, "child2a-b")
+	contexts := []struct {
+		name     string
+		ctx      func() (context.Context, context.CancelFunc)
+		wantErrs int
+	}{
+		{
+			// Test with canceled context
+			name: "canceled",
+			ctx: func() (context.Context, context.CancelFunc) {
+				canceledCtx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return canceledCtx, cancel
+			},
+			wantErrs: 2, // both services should fail due to context cancellation
+		},
+		{
+			// Test with timeout context
+			name: "timeout",
+			ctx: func() (context.Context, context.CancelFunc) {
+				return context.WithTimeout(context.Background(), 100*time.Millisecond)
+			},
+			wantErrs: 1, // only child2a-b should fail
+		},
+		{
+			// Test with deadline context
+			name: "deadline",
+			ctx: func() (context.Context, context.CancelFunc) {
+				return context.WithDeadline(context.Background(), time.Now().Add(100*time.Millisecond))
+			},
+			wantErrs: 1, // only child2a-b should fail
+		},
+		{
+			// Test with value context
+			name: "value",
+			ctx: func() (context.Context, context.CancelFunc) {
+				return context.WithValue(context.Background(), ctxTestKey, "test-value"), func() {}
+			},
+			wantErrs: 1, // child2a-b should fail
+		},
+	}
 
-	canceledCtx, cancel := context.WithCancel(context.Background())
-	cancel()
-	results2 := child2a_2.ShutdownWithContext(canceledCtx)
-	is.NotNil(results2)
-	is.Len(results2.Errors, 2) // both services should fail due to context cancellation
+	for _, tt := range contexts {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
 
-	// Test with timeout context - create new scope
-	rootScope3 := New()
-	child1_3 := rootScope3.Scope("child1")
-	child2a_3 := child1_3.Scope("child2a")
-	child2a_3.serviceSet("child2a-a", newServiceLazy("child2a-a", provider1))
-	child2a_3.serviceSet("child2a-b", newServiceLazy("child2a-b", provider2))
-	_, _ = invokeByName[*lazyTestShutdownerOK](child2a_3, "child2a-a")
-	_, _ = invokeByName[*lazyTestShutdownerKO](child2a_3, "child2a-b")
+			// create new scope
+			newRootScope := New()
+			newChild1 := newRootScope.Scope("child1")
+			newChild2a := newChild1.Scope("child2a")
+			newChild2a.serviceSet("child2a-a", newServiceLazy("child2a-a", provider1))
+			newChild2a.serviceSet("child2a-b", newServiceLazy("child2a-b", provider2))
+			_, _ = invokeByName[*lazyTestShutdownerOK](newChild2a, "child2a-a")
+			_, _ = invokeByName[*lazyTestShutdownerKO](newChild2a, "child2a-b")
 
-	timeoutCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-	results3 := child2a_3.ShutdownWithContext(timeoutCtx)
-	is.NotNil(results3)
-	is.Len(results3.Errors, 1) // only child2a-b should fail
-
-	// Test with deadline context - create new scope
-	rootScope4 := New()
-	child1_4 := rootScope4.Scope("child1")
-	child2a_4 := child1_4.Scope("child2a")
-	child2a_4.serviceSet("child2a-a", newServiceLazy("child2a-a", provider1))
-	child2a_4.serviceSet("child2a-b", newServiceLazy("child2a-b", provider2))
-	_, _ = invokeByName[*lazyTestShutdownerOK](child2a_4, "child2a-a")
-	_, _ = invokeByName[*lazyTestShutdownerKO](child2a_4, "child2a-b")
-
-	deadlineCtx, cancel := context.WithDeadline(context.Background(), time.Now().Add(100*time.Millisecond))
-	defer cancel()
-	results4 := child2a_4.ShutdownWithContext(deadlineCtx)
-	is.NotNil(results4)
-	is.Len(results4.Errors, 1) // only child2a-b should fail
-
-	// Test with value context - create new scope
-	rootScope5 := New()
-	child1_5 := rootScope5.Scope("child1")
-	child2a_5 := child1_5.Scope("child2a")
-	child2a_5.serviceSet("child2a-a", newServiceLazy("child2a-a", provider1))
-	child2a_5.serviceSet("child2a-b", newServiceLazy("child2a-b", provider2))
-	_, _ = invokeByName[*lazyTestShutdownerOK](child2a_5, "child2a-a")
-	_, _ = invokeByName[*lazyTestShutdownerKO](child2a_5, "child2a-b")
-
-	valueCtx := context.WithValue(context.Background(), ctxTestKey, "test-value")
-	results5 := child2a_5.ShutdownWithContext(valueCtx)
-	is.NotNil(results5)
-	is.Len(results5.Errors, 1) // child2a-b should fail
+			ctx, cancel := tt.ctx()
+			defer cancel()
+			results := newChild2a.ShutdownWithContext(ctx)
+			is.NotNil(results)
+			is.Len(results.Errors, tt.wantErrs)
+		})
+	}
 
 	// Test shutdown from root scope - create new scope
 	rootScope6 := New()
@@ -798,7 +820,6 @@ func TestScope_serviceHealthCheck(t *testing.T) {
 
 func TestScope_serviceGet(t *testing.T) {
 	t.Parallel()
-	is := assert.New(t)
 
 	rootScope := New()
 
@@ -815,38 +836,37 @@ func TestScope_serviceGet(t *testing.T) {
 
 	cb := func(a any, b bool) bool { return b }
 
-	// from rootScope POV
-	is.True(cb(rootScope.serviceGet("root-a")))
-	is.False(cb(rootScope.serviceGet("child1-a")))
-	is.False(cb(rootScope.serviceGet("child2a-a")))
-	is.False(cb(rootScope.serviceGet("child2a-b")))
-	is.False(cb(rootScope.serviceGet("child2b-a")))
+	services := []string{"root-a", "child1-a", "child2a-a", "child2a-b", "child2b-a"}
+	tests := []struct {
+		name  string
+		from  Injector
+		found []string // the services found from the scope; the others are not
+	}{
+		{name: "from_root_scope", from: rootScope, found: []string{"root-a"}},
+		{name: "from_child1", from: child1, found: []string{"child1-a"}},
+		{name: "from_child2a", from: child2a, found: []string{"child2a-a", "child2a-b"}},
+		{name: "from_child2b", from: child2b, found: []string{"child2b-a"}},
+	}
 
-	// from child1 POV
-	is.False(cb(child1.serviceGet("root-a")))
-	is.True(cb(child1.serviceGet("child1-a")))
-	is.False(cb(child1.serviceGet("child2a-a")))
-	is.False(cb(child1.serviceGet("child2a-b")))
-	is.False(cb(child1.serviceGet("child2b-a")))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, service := range services {
+				t.Run(service, func(t *testing.T) {
+					is := assert.New(t)
 
-	// from child2a POV
-	is.False(cb(child2a.serviceGet("root-a")))
-	is.False(cb(child2a.serviceGet("child1-a")))
-	is.True(cb(child2a.serviceGet("child2a-a")))
-	is.True(cb(child2a.serviceGet("child2a-b")))
-	is.False(cb(child2a.serviceGet("child2b-a")))
-
-	// from child2b POV
-	is.False(cb(child2b.serviceGet("root-a")))
-	is.False(cb(child2b.serviceGet("child1-a")))
-	is.False(cb(child2b.serviceGet("child2a-a")))
-	is.False(cb(child2b.serviceGet("child2a-b")))
-	is.True(cb(child2b.serviceGet("child2b-a")))
+					if slices.Contains(tt.found, service) {
+						is.True(cb(tt.from.serviceGet(service)))
+					} else {
+						is.False(cb(tt.from.serviceGet(service)))
+					}
+				})
+			}
+		})
+	}
 }
 
 func TestScope_serviceGetRec(t *testing.T) {
 	t.Parallel()
-	is := assert.New(t)
 
 	rootScope := New()
 
@@ -863,70 +883,67 @@ func TestScope_serviceGetRec(t *testing.T) {
 
 	cb := func(a any, b *Scope, c bool) bool { return c }
 
-	// from rootScope POV
-	is.True(cb(rootScope.serviceGetRec("root-a")))
-	is.False(cb(rootScope.serviceGetRec("child1-a")))
-	is.False(cb(rootScope.serviceGetRec("child2a-a")))
-	is.False(cb(rootScope.serviceGetRec("child2a-b")))
-	is.False(cb(rootScope.serviceGetRec("child2b-a")))
+	services := []string{"root-a", "child1-a", "child2a-a", "child2a-b", "child2b-a"}
+	povs := []struct {
+		name  string
+		from  Injector
+		found []string // the services found from the scope or its ancestors; the others are not
+	}{
+		{name: "from_root_scope", from: rootScope, found: []string{"root-a"}},
+		{name: "from_child1", from: child1, found: []string{"root-a", "child1-a"}},
+		{name: "from_child2a", from: child2a, found: []string{"root-a", "child1-a", "child2a-a", "child2a-b"}},
+		{name: "from_child2b", from: child2b, found: []string{"root-a", "child1-a", "child2b-a"}},
+	}
 
-	// from child1 POV
-	is.True(cb(child1.serviceGetRec("root-a")))
-	is.True(cb(child1.serviceGetRec("child1-a")))
-	is.False(cb(child1.serviceGetRec("child2a-a")))
-	is.False(cb(child1.serviceGetRec("child2a-b")))
-	is.False(cb(child1.serviceGetRec("child2b-a")))
+	for _, tt := range povs {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, service := range services {
+				t.Run(service, func(t *testing.T) {
+					is := assert.New(t)
 
-	// from child2a POV
-	is.True(cb(child2a.serviceGetRec("root-a")))
-	is.True(cb(child2a.serviceGetRec("child1-a")))
-	is.True(cb(child2a.serviceGetRec("child2a-a")))
-	is.True(cb(child2a.serviceGetRec("child2a-b")))
-	is.False(cb(child2a.serviceGetRec("child2b-a")))
-
-	// from child2b POV
-	is.True(cb(child2b.serviceGetRec("root-a")))
-	is.True(cb(child2b.serviceGetRec("child1-a")))
-	is.False(cb(child2b.serviceGetRec("child2a-a")))
-	is.False(cb(child2b.serviceGetRec("child2a-b")))
-	is.True(cb(child2b.serviceGetRec("child2b-a")))
+					if slices.Contains(tt.found, service) {
+						is.True(cb(tt.from.serviceGetRec(service)))
+					} else {
+						is.False(cb(tt.from.serviceGetRec(service)))
+					}
+				})
+			}
+		})
+	}
 
 	// Test that serviceGetRec returns the correct scope
-	service, scope, found := child2a.serviceGetRec("root-a")
-	is.True(found)
-	is.Equal(rootScope.self, scope)
-	is.NotNil(service)
+	scopes := []struct {
+		name      string
+		from      Injector
+		service   string
+		wantScope *Scope // nil: not found
+	}{
+		{name: "child2a_root-a", from: child2a, service: "root-a", wantScope: rootScope.self},
+		{name: "child2a_child1-a", from: child2a, service: "child1-a", wantScope: child1},
+		{name: "child2a_child2a-a", from: child2a, service: "child2a-a", wantScope: child2a},
+		{name: "child2a_child2a-b", from: child2a, service: "child2a-b", wantScope: child2a},
+		{name: "child2a_child2b-a", from: child2a, service: "child2b-a"},
+		// Test from root scope perspective
+		{name: "root_scope_root-a", from: rootScope, service: "root-a", wantScope: rootScope.self},
+		{name: "root_scope_child1-a", from: rootScope, service: "child1-a"},
+	}
 
-	service, scope, found = child2a.serviceGetRec("child1-a")
-	is.True(found)
-	is.Equal(child1, scope)
-	is.NotNil(service)
+	for _, tt := range scopes {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
 
-	service, scope, found = child2a.serviceGetRec("child2a-a")
-	is.True(found)
-	is.Equal(child2a, scope)
-	is.NotNil(service)
-
-	service, scope, found = child2a.serviceGetRec("child2a-b")
-	is.True(found)
-	is.Equal(child2a, scope)
-	is.NotNil(service)
-
-	service, scope, found = child2a.serviceGetRec("child2b-a")
-	is.False(found)
-	is.Nil(scope)
-	is.Nil(service)
-
-	// Test from root scope perspective
-	service, scope, found = rootScope.serviceGetRec("root-a")
-	is.True(found)
-	is.Equal(rootScope.self, scope)
-	is.NotNil(service)
-
-	service, scope, found = rootScope.serviceGetRec("child1-a")
-	is.False(found)
-	is.Nil(scope)
-	is.Nil(service)
+			service, scope, found := tt.from.serviceGetRec(tt.service)
+			if tt.wantScope == nil {
+				is.False(found)
+				is.Nil(scope)
+				is.Nil(service)
+			} else {
+				is.True(found)
+				is.Equal(tt.wantScope, scope)
+				is.NotNil(service)
+			}
+		})
+	}
 }
 
 func TestScope_serviceSet(t *testing.T) {
@@ -953,7 +970,6 @@ func TestScope_serviceSet(t *testing.T) {
 
 func TestScope_serviceForEach(t *testing.T) {
 	t.Parallel()
-	is := assert.New(t)
 
 	rootScope := New()
 	child := rootScope.Scope("child1")
@@ -966,37 +982,47 @@ func TestScope_serviceForEach(t *testing.T) {
 	child.serviceSet("child-a", svc2)
 	child.serviceSet("child-b", svc3)
 
-	// from rootScope POV
-	counter := 0
-	rootScope.serviceForEach(func(name string, scope *Scope, service any) bool {
-		counter++
-		switch name {
-		case "root-a":
-			is.Equal(svc1, service)
-		default:
-			is.Fail("should not be called")
-		}
-		is.Equal(rootScope.ID(), scope.ID())
-		return true
-	})
-	is.Equal(1, counter)
+	tests := []struct {
+		name        string
+		from        Injector
+		want        map[string]any // the services visited, by name; any other name should not be visited
+		wantScopeID string
+		wantCount   int
+	}{
+		{
+			name:        "from_root_scope",
+			from:        rootScope,
+			want:        map[string]any{"root-a": svc1},
+			wantScopeID: rootScope.ID(),
+			wantCount:   1,
+		},
+		{
+			name:        "from_child",
+			from:        child,
+			want:        map[string]any{"child-a": svc2, "child-b": svc3},
+			wantScopeID: child.ID(),
+			wantCount:   2,
+		},
+	}
 
-	// from child POV
-	counter = 0
-	child.serviceForEach(func(name string, scope *Scope, service any) bool {
-		counter++
-		switch name {
-		case "child-a":
-			is.Equal(svc2, service)
-		case "child-b":
-			is.Equal(svc3, service)
-		default:
-			is.Fail("should not be called")
-		}
-		is.Equal(child.ID(), scope.ID())
-		return true
-	})
-	is.Equal(2, counter)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
+
+			counter := 0
+			tt.from.serviceForEach(func(name string, scope *Scope, service any) bool {
+				counter++
+				if want, ok := tt.want[name]; ok {
+					is.Equal(want, service)
+				} else {
+					is.Fail("should not be called")
+				}
+				is.Equal(tt.wantScopeID, scope.ID())
+				return true
+			})
+			is.Equal(tt.wantCount, counter)
+		})
+	}
 }
 
 func TestScope_serviceForEachRec(t *testing.T) {
@@ -1085,48 +1111,82 @@ func TestScope_serviceShutdown(t *testing.T) {
 	_, _ = invokeByName[*lazyTestShutdownerKO](child2b, "child2b-a")
 
 	// Test serviceShutdown from different scopes
-	// from rootScope POV
-	is.Equal(assert.AnError, rootScope.serviceShutdown(ctx, "root-a"))
-	is.ErrorContains(rootScope.serviceShutdown(ctx, "child1-a"), "could not find service")
-	is.ErrorContains(rootScope.serviceShutdown(ctx, "child2a-a"), "could not find service")
-	is.ErrorContains(rootScope.serviceShutdown(ctx, "child2a-b"), "could not find service")
-	is.ErrorContains(rootScope.serviceShutdown(ctx, "child2b-a"), "could not find service")
+	services := []string{"root-a", "child1-a", "child2a-a", "child2a-b", "child2b-a"}
+	povs := []struct {
+		name  string
+		from  Injector
+		owned map[string]error // the services of the scope and their shutdown error; the others are not found
+	}{
+		{name: "from_root_scope", from: rootScope, owned: map[string]error{"root-a": assert.AnError}},
+		{name: "from_child1", from: child1, owned: map[string]error{"child1-a": nil}},
+		{name: "from_child2a", from: child2a, owned: map[string]error{"child2a-a": nil, "child2a-b": assert.AnError}},
+		{name: "from_child2b", from: child2b, owned: map[string]error{"child2b-a": assert.AnError}},
+	}
 
-	// from child1 POV
-	is.ErrorContains(child1.serviceShutdown(ctx, "root-a"), "could not find service")
-	is.NoError(child1.serviceShutdown(ctx, "child1-a"))
-	is.ErrorContains(child1.serviceShutdown(ctx, "child2a-a"), "could not find service")
-	is.ErrorContains(child1.serviceShutdown(ctx, "child2a-b"), "could not find service")
-	is.ErrorContains(child1.serviceShutdown(ctx, "child2b-a"), "could not find service")
+	for _, tt := range povs {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, service := range services {
+				t.Run(service, func(t *testing.T) {
+					is := assert.New(t)
 
-	// from child2a POV
-	is.ErrorContains(child2a.serviceShutdown(ctx, "root-a"), "could not find service")
-	is.ErrorContains(child2a.serviceShutdown(ctx, "child1-a"), "could not find service")
-	is.NoError(child2a.serviceShutdown(ctx, "child2a-a"))
-	is.Equal(assert.AnError, child2a.serviceShutdown(ctx, "child2a-b"))
-	is.ErrorContains(child2a.serviceShutdown(ctx, "child2b-a"), "could not find service")
-
-	// from child2b POV
-	is.ErrorContains(child2b.serviceShutdown(ctx, "root-a"), "could not find service")
-	is.ErrorContains(child2b.serviceShutdown(ctx, "child1-a"), "could not find service")
-	is.ErrorContains(child2b.serviceShutdown(ctx, "child2a-a"), "could not find service")
-	is.ErrorContains(child2b.serviceShutdown(ctx, "child2a-b"), "could not find service")
-	is.Equal(assert.AnError, child2b.serviceShutdown(ctx, "child2b-a"))
+					err := tt.from.serviceShutdown(ctx, service)
+					want, owned := tt.owned[service]
+					switch {
+					case !owned:
+						is.ErrorContains(err, "could not find service")
+					case want == nil:
+						is.NoError(err)
+					default:
+						is.Equal(want, err)
+					}
+				})
+			}
+		})
+	}
 
 	// Test with different context scenarios
-	// Test with canceled context
-	canceledCtx, cancel := context.WithCancel(context.Background())
-	cancel()
-	is.ErrorContains(child2a.serviceShutdown(canceledCtx, "child2a-a"), "could not find service")
+	contexts := []struct {
+		name    string
+		ctx     func() (context.Context, context.CancelFunc)
+		service string
+	}{
+		{
+			// Test with canceled context
+			name: "canceled",
+			ctx: func() (context.Context, context.CancelFunc) {
+				canceledCtx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return canceledCtx, cancel
+			},
+			service: "child2a-a",
+		},
+		{
+			// Test with timeout context
+			name: "timeout",
+			ctx: func() (context.Context, context.CancelFunc) {
+				timeoutCtx, cancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
+				time.Sleep(2 * time.Millisecond)
+				return timeoutCtx, cancel
+			},
+			service: "child2a-a",
+		},
+		{
+			// Test with non-existent service
+			name:    "non_existent_service",
+			ctx:     func() (context.Context, context.CancelFunc) { return ctx, func() {} },
+			service: "non-existent",
+		},
+	}
 
-	// Test with timeout context
-	timeoutCtx, cancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
-	defer cancel()
-	time.Sleep(2 * time.Millisecond)
-	is.ErrorContains(child2a.serviceShutdown(timeoutCtx, "child2a-a"), "could not find service")
+	for _, tt := range contexts {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
 
-	// Test with non-existent service
-	is.ErrorContains(child2a.serviceShutdown(ctx, "non-existent"), "could not find service")
+			ctx, cancel := tt.ctx()
+			defer cancel()
+			is.ErrorContains(child2a.serviceShutdown(ctx, tt.service), "could not find service")
+		})
+	}
 
 	// Test with service that doesn't implement Shutdowner
 	nonShutdownableScope := rootScope.Scope("non-shutdownable")
@@ -1579,130 +1639,142 @@ func (s *scopeTestBlockingHealthchecker) getHealthcheckCount() int {
 func TestScope_ShutdownWithContextExpiration_Timeout(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, 450*time.Millisecond)
-	is := assert.New(t)
-	injector := New()
 
-	// Create a service that takes longer than the context timeout
-	slowService := newScopeTestSlowShutdowner(200 * time.Millisecond)
-	ProvideNamedValue(injector, "slow-service", slowService)
+	synctest.Test(t, func(t *testing.T) {
+		is := assert.New(t)
+		injector := New()
 
-	// Create context with short timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
+		// Create a service that takes longer than the context timeout
+		slowService := newScopeTestSlowShutdowner(200 * time.Millisecond)
+		ProvideNamedValue(injector, "slow-service", slowService)
 
-	// Shutdown should timeout
-	start := time.Now()
-	errors := injector.ShutdownWithContext(ctx)
-	duration := time.Since(start)
+		// Create context with short timeout
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
 
-	// Should complete quickly due to timeout
-	is.Less(duration, 70*time.Millisecond)
+		// Shutdown should timeout
+		start := time.Now()
+		errors := injector.ShutdownWithContext(ctx)
+		duration := time.Since(start)
 
-	// Should have shutdown errors due to timeout
-	is.Len(errors.Errors, 1)
+		// Should complete quickly due to timeout
+		is.Less(duration, 70*time.Millisecond)
 
-	// Check that the service was attempted to be shut down
-	is.Equal(1, slowService.getShutdownCount())
+		// Should have shutdown errors due to timeout
+		is.Len(errors.Errors, 1)
+
+		// Check that the service was attempted to be shut down
+		is.Equal(1, slowService.getShutdownCount())
+	})
 }
 
 func TestScope_ShutdownWithContextExpiration_Cancellation(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, 450*time.Millisecond)
-	is := assert.New(t)
-	injector := New()
 
-	// Create a blocking service
-	blockingService := newScopeTestBlockingShutdowner()
-	ProvideNamedValue(injector, "blocking-service", blockingService)
+	synctest.Test(t, func(t *testing.T) {
+		is := assert.New(t)
+		injector := New()
 
-	// Create cancellable context
-	ctx, cancel := context.WithCancel(context.Background())
+		// Create a blocking service
+		blockingService := newScopeTestBlockingShutdowner()
+		ProvideNamedValue(injector, "blocking-service", blockingService)
 
-	// Start shutdown in goroutine
-	var report *ShutdownReport
-	var wg sync.WaitGroup
-	wg.Go(func() {
-		report = injector.ShutdownWithContext(ctx)
+		// Create cancellable context
+		ctx, cancel := context.WithCancel(context.Background())
+
+		// Start shutdown in goroutine
+		var report *ShutdownReport
+		var wg sync.WaitGroup
+		wg.Go(func() {
+			report = injector.ShutdownWithContext(ctx)
+		})
+
+		// Cancel context after short delay
+		time.Sleep(10 * time.Millisecond)
+		cancel()
+
+		// Wait for shutdown to complete
+		wg.Wait()
+
+		// Should have shutdown errors due to cancellation
+		is.NotNil(report)
+		is.False(report.Succeed)
+		is.Len(report.Errors, 1)
+
+		// Check that the service was attempted to be shut down
+		is.Equal(1, blockingService.getShutdownCount())
 	})
-
-	// Cancel context after short delay
-	time.Sleep(10 * time.Millisecond)
-	cancel()
-
-	// Wait for shutdown to complete
-	wg.Wait()
-
-	// Should have shutdown errors due to cancellation
-	is.NotNil(report)
-	is.False(report.Succeed)
-	is.Len(report.Errors, 1)
-
-	// Check that the service was attempted to be shut down
-	is.Equal(1, blockingService.getShutdownCount())
 }
 
 func TestScope_ShutdownWithContextExpiration_MultipleServices(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, 450*time.Millisecond)
-	is := assert.New(t)
-	injector := New()
 
-	// Create multiple services with different delays
-	fastService := newScopeTestSlowShutdowner(10 * time.Millisecond)
-	slowService := newScopeTestSlowShutdowner(200 * time.Millisecond)
+	synctest.Test(t, func(t *testing.T) {
+		is := assert.New(t)
+		injector := New()
 
-	ProvideNamedValue(injector, "fast-service", fastService)
-	ProvideNamedValue(injector, "slow-service", slowService)
+		// Create multiple services with different delays
+		fastService := newScopeTestSlowShutdowner(10 * time.Millisecond)
+		slowService := newScopeTestSlowShutdowner(200 * time.Millisecond)
 
-	// Create context with timeout between fast and slow service delays
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
+		ProvideNamedValue(injector, "fast-service", fastService)
+		ProvideNamedValue(injector, "slow-service", slowService)
 
-	// Shutdown should timeout
-	errors := injector.ShutdownWithContext(ctx)
+		// Create context with timeout between fast and slow service delays
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
 
-	// Should have shutdown errors due to timeout
-	is.NotNil(errors)
-	is.Len(errors.Errors, 1)
+		// Shutdown should timeout
+		errors := injector.ShutdownWithContext(ctx)
 
-	// Both services should have been attempted
-	is.Equal(1, fastService.getShutdownCount())
-	is.Equal(1, slowService.getShutdownCount())
+		// Should have shutdown errors due to timeout
+		is.NotNil(errors)
+		is.Len(errors.Errors, 1)
+
+		// Both services should have been attempted
+		is.Equal(1, fastService.getShutdownCount())
+		is.Equal(1, slowService.getShutdownCount())
+	})
 }
 
 func TestScope_ShutdownWithContextExpiration_ChildScopes(t *testing.T) {
 	t.Parallel()
-	is := assert.New(t)
-	injector := New()
-	childScope := injector.Scope("child")
 
-	// Create services in both scopes with delays longer than timeout
-	parentService := newScopeTestSlowShutdowner(200 * time.Millisecond)
-	childService := newScopeTestSlowShutdowner(200 * time.Millisecond)
+	synctest.Test(t, func(t *testing.T) {
+		is := assert.New(t)
+		injector := New()
+		childScope := injector.Scope("child")
 
-	ProvideNamedValue(injector, "parent-service", parentService)
-	ProvideNamedValue(childScope, "child-service", childService)
+		// Create services in both scopes with delays longer than timeout
+		parentService := newScopeTestSlowShutdowner(200 * time.Millisecond)
+		childService := newScopeTestSlowShutdowner(200 * time.Millisecond)
 
-	// Invoke the services to ensure they are instantiated
-	_, err1 := InvokeNamed[*scopeTestSlowShutdowner](injector, "parent-service")
-	_, err2 := InvokeNamed[*scopeTestSlowShutdowner](childScope, "child-service")
-	is.NoError(err1)
-	is.NoError(err2)
+		ProvideNamedValue(injector, "parent-service", parentService)
+		ProvideNamedValue(childScope, "child-service", childService)
 
-	// Create context with short timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
+		// Invoke the services to ensure they are instantiated
+		_, err1 := InvokeNamed[*scopeTestSlowShutdowner](injector, "parent-service")
+		_, err2 := InvokeNamed[*scopeTestSlowShutdowner](childScope, "child-service")
+		is.NoError(err1)
+		is.NoError(err2)
 
-	// Shutdown should timeout - call shutdown on root scope should shut down all child scopes
-	errors := injector.ShutdownWithContext(ctx)
-	is.Len(errors.Errors, 2)
+		// Create context with short timeout
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
 
-	// Child service should have been attempted (child scopes are shut down first)
-	is.Equal(1, childService.getShutdownCount())
+		// Shutdown should timeout - call shutdown on root scope should shut down all child scopes
+		errors := injector.ShutdownWithContext(ctx)
+		is.Len(errors.Errors, 2)
 
-	// Parent service might not be attempted if context times out during child shutdown
-	// This is expected behavior for this test - we only verify child scope shutdown works
-	is.Equal(0, parentService.getShutdownCount())
+		// Child service should have been attempted (child scopes are shut down first)
+		is.Equal(1, childService.getShutdownCount())
+
+		// Parent service might not be attempted if context times out during child shutdown
+		// This is expected behavior for this test - we only verify child scope shutdown works
+		is.Equal(0, parentService.getShutdownCount())
+	})
 }
 
 func TestScopeShutdown_AfterContextEnded(t *testing.T) {
@@ -2122,42 +2194,45 @@ func TestScope_ContextExpiration_ShutdownAndHealthcheckSameTimeout(t *testing.T)
 
 func TestScope_ContextExpiration_ParallelOperations(t *testing.T) {
 	t.Parallel()
-	is := assert.New(t)
-	injector := New()
 
-	// Create multiple blocking services with unique names
-	services := make([]*scopeTestBlockingShutdowner, 5)
-	for i := range services {
-		services[i] = newScopeTestBlockingShutdowner()
-		ProvideNamedValue(injector, fmt.Sprintf("blocking-service-%d", i), services[i])
-	}
+	synctest.Test(t, func(t *testing.T) {
+		is := assert.New(t)
+		injector := New()
 
-	// Create cancellable context
-	ctx, cancel := context.WithCancel(context.Background())
+		// Create multiple blocking services with unique names
+		services := make([]*scopeTestBlockingShutdowner, 5)
+		for i := range services {
+			services[i] = newScopeTestBlockingShutdowner()
+			ProvideNamedValue(injector, fmt.Sprintf("blocking-service-%d", i), services[i])
+		}
 
-	// Start shutdown in goroutine
-	var report *ShutdownReport
-	var wg sync.WaitGroup
-	wg.Go(func() {
-		report = injector.ShutdownWithContext(ctx)
+		// Create cancellable context
+		ctx, cancel := context.WithCancel(context.Background())
+
+		// Start shutdown in goroutine
+		var report *ShutdownReport
+		var wg sync.WaitGroup
+		wg.Go(func() {
+			report = injector.ShutdownWithContext(ctx)
+		})
+
+		// Cancel context after short delay
+		time.Sleep(10 * time.Millisecond)
+		cancel()
+
+		// Wait for shutdown to complete
+		wg.Wait()
+
+		// Should have shutdown errors due to cancellation
+		is.NotNil(report)
+		is.False(report.Succeed)
+		is.Len(report.Errors, 5)
+
+		// All services should have been attempted
+		for _, service := range services {
+			is.Equal(1, service.getShutdownCount())
+		}
 	})
-
-	// Cancel context after short delay
-	time.Sleep(10 * time.Millisecond)
-	cancel()
-
-	// Wait for shutdown to complete
-	wg.Wait()
-
-	// Should have shutdown errors due to cancellation
-	is.NotNil(report)
-	is.False(report.Succeed)
-	is.Len(report.Errors, 5)
-
-	// All services should have been attempted
-	for _, service := range services {
-		is.Equal(1, service.getShutdownCount())
-	}
 }
 
 // exNode is a service that records its shutdown, and whether the pool it

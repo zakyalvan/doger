@@ -103,7 +103,6 @@ func TestMultiLevelNestedScopes_NonConcurrentShutdown(t *testing.T) {
 
 func TestMultiLevelNestedScopes_ServiceVisibility(t *testing.T) {
 	testWithTimeout(t, 300*time.Millisecond)
-	is := assert.New(t)
 
 	// Create a multi-level nested scope structure
 	root := doger.New()
@@ -119,49 +118,43 @@ func TestMultiLevelNestedScopes_ServiceVisibility(t *testing.T) {
 	doger.ProvideNamedValue(level2b, "level2b-service", "level2b-value")
 	doger.ProvideNamedValue(level3, "level3-service", "level3-value")
 
-	// Test children to root visibility (should work)
-	value, err := doger.InvokeNamed[string](level3, "root-service")
-	is.NoError(err)
-	is.Equal("root-value", value)
+	tests := []struct {
+		name    string
+		scope   doger.Injector
+		service string
+		want    string
+		wantErr string
+	}{
+		// Test children to root visibility (should work)
+		{name: "level3_sees_root", scope: level3, service: "root-service", want: "root-value"},
+		{name: "level2a_sees_root", scope: level2a, service: "root-service", want: "root-value"},
+		{name: "level1_sees_root", scope: level1, service: "root-service", want: "root-value"},
+		// Test root to children visibility (should not work)
+		{name: "root_cannot_see_level1", scope: root, service: "level1-service", wantErr: "could not find service"},
+		{name: "root_cannot_see_level2a", scope: root, service: "level2a-service", wantErr: "could not find service"},
+		{name: "root_cannot_see_level3", scope: root, service: "level3-service", wantErr: "could not find service"},
+		// Test children1 to children2 visibility (should not work)
+		{name: "level2a_cannot_see_level2b", scope: level2a, service: "level2b-service", wantErr: "could not find service"},
+		{name: "level2b_cannot_see_level2a", scope: level2b, service: "level2a-service", wantErr: "could not find service"},
+		// Test same level visibility (should work)
+		{name: "level2a_sees_own", scope: level2a, service: "level2a-service", want: "level2a-value"},
+		{name: "level2b_sees_own", scope: level2b, service: "level2b-service", want: "level2b-value"},
+	}
 
-	value, err = doger.InvokeNamed[string](level2a, "root-service")
-	is.NoError(err)
-	is.Equal("root-value", value)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
 
-	value, err = doger.InvokeNamed[string](level1, "root-service")
-	is.NoError(err)
-	is.Equal("root-value", value)
-
-	// Test root to children visibility (should not work)
-	_, err = doger.InvokeNamed[string](root, "level1-service")
-	is.Error(err)
-	is.Contains(err.Error(), "could not find service")
-
-	_, err = doger.InvokeNamed[string](root, "level2a-service")
-	is.Error(err)
-	is.Contains(err.Error(), "could not find service")
-
-	_, err = doger.InvokeNamed[string](root, "level3-service")
-	is.Error(err)
-	is.Contains(err.Error(), "could not find service")
-
-	// Test children1 to children2 visibility (should not work)
-	_, err = doger.InvokeNamed[string](level2a, "level2b-service")
-	is.Error(err)
-	is.Contains(err.Error(), "could not find service")
-
-	_, err = doger.InvokeNamed[string](level2b, "level2a-service")
-	is.Error(err)
-	is.Contains(err.Error(), "could not find service")
-
-	// Test same level visibility (should work)
-	value, err = doger.InvokeNamed[string](level2a, "level2a-service")
-	is.NoError(err)
-	is.Equal("level2a-value", value)
-
-	value, err = doger.InvokeNamed[string](level2b, "level2b-service")
-	is.NoError(err)
-	is.Equal("level2b-value", value)
+			value, err := doger.InvokeNamed[string](tt.scope, tt.service)
+			if tt.wantErr != "" {
+				is.Error(err)
+				is.Contains(err.Error(), tt.wantErr)
+				return
+			}
+			is.NoError(err)
+			is.Equal(tt.want, value)
+		})
+	}
 }
 
 func TestMultiLevelNestedScopes_Clone(t *testing.T) {
@@ -208,21 +201,27 @@ func TestMultiLevelNestedScopes_Clone(t *testing.T) {
 	is.NotEqual(level3, clonedLevel3)
 
 	// Verify services are cloned and accessible
-	value, err := doger.InvokeNamed[string](clonedRoot, "root-service")
-	is.NoError(err)
-	is.Equal("root-value", value)
+	cloned := []struct {
+		name    string
+		scope   doger.Injector
+		service string
+		want    string
+	}{
+		{name: "cloned_root", scope: clonedRoot, service: "root-service", want: "root-value"},
+		{name: "cloned_level1", scope: clonedLevel1, service: "level1-service", want: "level1-value"},
+		{name: "cloned_level2", scope: clonedLevel2, service: "level2-service", want: "level2-value"},
+		{name: "cloned_level3", scope: clonedLevel3, service: "level3-service", want: "level3-value"},
+	}
 
-	value, err = doger.InvokeNamed[string](clonedLevel1, "level1-service")
-	is.NoError(err)
-	is.Equal("level1-value", value)
+	for _, tt := range cloned {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
 
-	value, err = doger.InvokeNamed[string](clonedLevel2, "level2-service")
-	is.NoError(err)
-	is.Equal("level2-value", value)
-
-	value, err = doger.InvokeNamed[string](clonedLevel3, "level3-service")
-	is.NoError(err)
-	is.Equal("level3-value", value)
+			value, err := doger.InvokeNamed[string](tt.scope, tt.service)
+			is.NoError(err)
+			is.Equal(tt.want, value)
+		})
+	}
 
 	// Verify that services were invoked in the cloned scopes
 	// We can't access orderedInvocation directly, but we can verify services work
@@ -238,7 +237,7 @@ func TestMultiLevelNestedScopes_Clone(t *testing.T) {
 	is.Contains(err.Error(), "could not find service")
 
 	// Verify original scope still works
-	value, err = doger.InvokeNamed[string](root, "root-service")
+	value, err := doger.InvokeNamed[string](root, "root-service")
 	is.NoError(err)
 	is.Equal("root-value", value)
 }
@@ -260,21 +259,26 @@ func TestMultiLevelNestedScopes_NameCollision(t *testing.T) {
 	doger.ProvideNamedValue(level2b, "shared-service", "level2b-value")
 
 	// Verify each scope sees its own service (shadowing)
-	value, err := doger.InvokeNamed[string](root, "shared-service")
-	is.NoError(err)
-	is.Equal("root-value", value)
+	shadowing := []struct {
+		name  string
+		scope doger.Injector
+		want  string
+	}{
+		{name: "root", scope: root, want: "root-value"},
+		{name: "level1", scope: level1, want: "level1-value"},
+		{name: "level2a", scope: level2a, want: "level2a-value"},
+		{name: "level2b", scope: level2b, want: "level2b-value"},
+	}
 
-	value, err = doger.InvokeNamed[string](level1, "shared-service")
-	is.NoError(err)
-	is.Equal("level1-value", value)
+	for _, tt := range shadowing {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
 
-	value, err = doger.InvokeNamed[string](level2a, "shared-service")
-	is.NoError(err)
-	is.Equal("level2a-value", value)
-
-	value, err = doger.InvokeNamed[string](level2b, "shared-service")
-	is.NoError(err)
-	is.Equal("level2b-value", value)
+			value, err := doger.InvokeNamed[string](tt.scope, "shared-service")
+			is.NoError(err)
+			is.Equal(tt.want, value)
+		})
+	}
 
 	// Test that ProvideNamedValue doesn't allow overriding in same scope
 	// This should panic when trying to register the same service name again
@@ -283,7 +287,7 @@ func TestMultiLevelNestedScopes_NameCollision(t *testing.T) {
 	})
 
 	// Should still get the original value
-	value, err = doger.InvokeNamed[string](level2a, "shared-service")
+	value, err := doger.InvokeNamed[string](level2a, "shared-service")
 	is.NoError(err)
 	is.Equal("level2a-value", value)
 }

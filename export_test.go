@@ -400,26 +400,26 @@ func TestExport_Lifecycle(t *testing.T) {
 
 	tests := []struct {
 		name      string
-		before    func(root *RootScope)
-		operation func(root *RootScope)
+		before    func(t *testing.T, root *RootScope)
+		operation func(t *testing.T, root *RootScope)
 		count     func(pool *exPool) int32
 	}{
 		{
 			name:      "start",
-			before:    func(*RootScope) {},
-			operation: func(root *RootScope) { require.NoError(t, root.Start()) },
+			before:    func(*testing.T, *RootScope) {},
+			operation: func(t *testing.T, root *RootScope) { require.NoError(t, root.Start()) },
 			count:     func(pool *exPool) int32 { return pool.starts.Load() },
 		},
 		{
 			name:      "shutdown",
-			before:    func(root *RootScope) { require.NoError(t, root.Start()) },
-			operation: func(root *RootScope) { assert.True(t, root.Shutdown().Succeed) },
+			before:    func(t *testing.T, root *RootScope) { require.NoError(t, root.Start()) },
+			operation: func(t *testing.T, root *RootScope) { assert.True(t, root.Shutdown().Succeed) },
 			count:     func(pool *exPool) int32 { return pool.shutdowns.Load() },
 		},
 		{
 			name:      "healthcheck",
-			before:    func(*RootScope) {},
-			operation: func(root *RootScope) { root.HealthCheck() },
+			before:    func(*testing.T, *RootScope) {},
+			operation: func(_ *testing.T, root *RootScope) { root.HealthCheck() },
 			count:     func(pool *exPool) int32 { return pool.checks.Load() },
 		},
 	}
@@ -440,8 +440,8 @@ func TestExport_Lifecycle(t *testing.T) {
 			_, err := Invoke[*exApp](root)
 			require.NoError(t, err)
 
-			tt.before(root)
-			tt.operation(root)
+			tt.before(t, root)
+			tt.operation(t, root)
 
 			assert.Equal(t, int32(1), tt.count(pool))
 		})

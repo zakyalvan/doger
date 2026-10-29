@@ -21,16 +21,19 @@ import (
 // records its calls and the clock, stores round and returns a stop function
 // recording its calls. The test runs the stored round itself.
 type manualScheduler struct {
-	mu        sync.Mutex
-	calls     int
-	clocks    []clockwork.Clock
-	rounds    []func(context.Context)
-	stops     []int
-	stopCtxs  []context.Context
-	err       error // returned by ScheduleHealthRounds
-	panicWith any   // raised by ScheduleHealthRounds when set
-	stopErr   error // returned by the stop functions
-	stopPanic any   // raised by the stop functions when set
+	mu       sync.Mutex
+	calls    int
+	clocks   []clockwork.Clock
+	rounds   []func(context.Context)
+	stops    []int
+	stopCtxs []context.Context
+	err      error // returned by ScheduleHealthRounds
+	// stopWithErr makes ScheduleHealthRounds return its stop function
+	// together with err
+	stopWithErr bool
+	panicWith   any   // raised by ScheduleHealthRounds when set
+	stopErr     error // returned by the stop functions
+	stopPanic   any   // raised by the stop functions when set
 }
 
 func (m *manualScheduler) ScheduleHealthRounds(clock clockwork.Clock, round func(ctx context.Context)) (func(ctx context.Context) error, error) {
@@ -42,7 +45,7 @@ func (m *manualScheduler) ScheduleHealthRounds(clock clockwork.Clock, round func
 	if m.panicWith != nil {
 		panic(m.panicWith)
 	}
-	if m.err != nil {
+	if m.err != nil && !m.stopWithErr {
 		return nil, m.err
 	}
 
@@ -59,7 +62,7 @@ func (m *manualScheduler) ScheduleHealthRounds(clock clockwork.Clock, round func
 			panic(m.stopPanic)
 		}
 		return m.stopErr
-	}, nil
+	}, m.err
 }
 
 // callCount returns the number of ScheduleHealthRounds calls.
@@ -119,17 +122,20 @@ func (l *healthMonitorTestLog) containing(parts ...string) []string {
 func TestHealthScheduler_NilNoRounds(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, 5*time.Second)
-	is := assert.New(t)
 
-	i := New()
-	db := &healthReportTestSwitch{}
-	ProvideNamedValue(i, "db", db)
-	require.NoError(t, i.Start())
-	defer i.Shutdown()
+	synctest.Test(t, func(t *testing.T) {
+		is := assert.New(t)
 
-	time.Sleep(50 * time.Millisecond)
-	is.Equal(int32(0), db.calls.Load(), "calls of the check")
-	is.False(i.HealthReport(IgnoreContainerPhase()).Monitored)
+		i := New()
+		db := &healthReportTestSwitch{}
+		ProvideNamedValue(i, "db", db)
+		require.NoError(t, i.Start())
+		defer i.Shutdown()
+
+		time.Sleep(50 * time.Millisecond)
+		is.Equal(int32(0), db.calls.Load(), "calls of the check")
+		is.False(i.HealthReport(IgnoreContainerPhase()).Monitored)
+	})
 }
 
 // Not parallel: goleak checks the goroutines this test leaves.
@@ -201,23 +207,26 @@ func TestHealthScheduler_CalledAtReady(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			testWithTimeout(t, 5*time.Second)
-			is := assert.New(t)
 
-			fc := clockwork.NewFakeClock()
-			scheduler := &manualScheduler{}
-			i := NewWithOpts(&InjectorOpts{Clock: fc, HealthScheduler: scheduler})
-			readyCalls := -1
-			i.AddContainerReadyHook(func(context.Context, *RootScope) { readyCalls = scheduler.callCount() })
+			synctest.Test(t, func(t *testing.T) {
+				is := assert.New(t)
 
-			tt.action(t, i)
-			defer i.Shutdown()
+				fc := clockwork.NewFakeClock()
+				scheduler := &manualScheduler{}
+				i := NewWithOpts(&InjectorOpts{Clock: fc, HealthScheduler: scheduler})
+				readyCalls := -1
+				i.AddContainerReadyHook(func(context.Context, *RootScope) { readyCalls = scheduler.callCount() })
 
-			is.Equal(tt.calls, scheduler.callCount())
-			for _, clock := range scheduler.clocks {
-				is.Same(fc, clock)
-			}
-			is.Equal(tt.readyCalls, readyCalls, "calls seen by the Ready hook")
-			is.Equal(tt.monitored, i.HealthReport(IgnoreContainerPhase()).Monitored)
+				tt.action(t, i)
+				defer i.Shutdown()
+
+				is.Equal(tt.calls, scheduler.callCount())
+				for _, clock := range scheduler.clocks {
+					is.Same(fc, clock)
+				}
+				is.Equal(tt.readyCalls, readyCalls, "calls seen by the Ready hook")
+				is.Equal(tt.monitored, i.HealthReport(IgnoreContainerPhase()).Monitored)
+			})
 		})
 	}
 }
@@ -270,30 +279,52 @@ func TestHealthScheduler_Failure(t *testing.T) {
 	}
 }
 
-func TestHealthScheduler_FailurePanicHook(t *testing.T) {
+func TestHealthScheduler_StopReturnedWithError(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, 5*time.Second)
 	is := assert.New(t)
 
-	i := NewWithOpts(&InjectorOpts{
-		HealthScheduler:    &manualScheduler{panicWith: "boom"},
-		HookContainerPanic: func(_ *RootScope, _ string, value any) { panic(value) },
+	log := &healthMonitorTestLog{}
+	scheduler := &manualScheduler{err: errors.New("partial"), stopWithErr: true}
+	i := NewWithOpts(&InjectorOpts{HealthScheduler: scheduler, Logf: log.logf})
+
+	is.NoError(i.Start())
+	is.Equal(1, scheduler.stopCount(0), "calls of stop before Start returned")
+	is.False(i.HealthReport(IgnoreContainerPhase()).Monitored)
+	is.NotEmpty(log.containing("health scheduler", "partial"), "Logf lines")
+
+	i.Shutdown()
+	is.Equal(1, scheduler.stopCount(0), "calls of stop after Shutdown")
+}
+
+func TestHealthScheduler_FailurePanicHook(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, 5*time.Second)
+
+	synctest.Test(t, func(t *testing.T) {
+		is := assert.New(t)
+
+		i := NewWithOpts(&InjectorOpts{
+			HealthScheduler:    &manualScheduler{panicWith: "boom"},
+			HookContainerPanic: func(_ *RootScope, _ string, value any) { panic(value) },
+		})
+
+		recovered := func() (recovered any) {
+			defer func() { recovered = recover() }()
+			_ = i.Start()
+			return nil
+		}()
+		is.Equal("boom", recovered)
+		is.False(i.HealthReport(IgnoreContainerPhase()).Monitored, "Monitored after the scheduler panicked")
+
+		shutdown := make(chan *ShutdownReport, 1)
+		go func() { shutdown <- i.Shutdown() }()
+		select {
+		case <-shutdown:
+		case <-time.After(time.Second):
+			is.Fail("Shutdown did not return within 1s")
+		}
 	})
-
-	recovered := func() (recovered any) {
-		defer func() { recovered = recover() }()
-		_ = i.Start()
-		return nil
-	}()
-	is.Equal("boom", recovered)
-
-	shutdown := make(chan *ShutdownReport, 1)
-	go func() { shutdown <- i.Shutdown() }()
-	select {
-	case <-shutdown:
-	case <-time.After(time.Second):
-		is.Fail("Shutdown did not return within 1s")
-	}
 }
 
 func TestHealthRound_Results(t *testing.T) {
@@ -381,6 +412,8 @@ func TestHealthRound_EachCheckOnce(t *testing.T) {
 		forced := make(chan map[string]error, 1)
 		go func() { forced <- i.HealthCheck() }()
 		synctest.Wait()
+		require.Equal(t, int32(1), svc.calls.Load(), "the forced run checks the export of svc")
+		dbBefore, svcBefore := db.calls.Load(), svc.calls.Load()
 
 		round := make(chan struct{})
 		go func() { defer close(round); scheduler.runRound() }()
@@ -389,8 +422,9 @@ func TestHealthRound_EachCheckOnce(t *testing.T) {
 		<-round
 		<-forced
 
-		is.Equal(int32(1), db.calls.Load(), "calls of db")
-		is.Equal(int32(2), svc.calls.Load(), "calls of svc: one by the forced run, one by the round")
+		is.Equal(int32(0), db.calls.Load()-dbBefore, "calls of db by the round, which joined the running check")
+		is.Equal(int32(1), svc.calls.Load()-svcBefore, "calls of svc by the round")
+		is.Equal(int32(1), db.calls.Load(), "calls of db in total")
 		i.Shutdown()
 	})
 }
@@ -422,31 +456,34 @@ func TestHealthRound_AllocsLinear(t *testing.T) { //nolint:paralleltest
 func TestHealthRound_PanicKeepsRecording(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, 5*time.Second)
-	is := assert.New(t)
 
-	scheduler := &manualScheduler{}
-	recorder := &healthHookRecorder{}
-	i := NewWithOpts(&InjectorOpts{HealthScheduler: scheduler})
-	i.AddServiceHealthChangedHook(recorder.serviceHook)
-	var calls atomic.Int32
-	ProvideNamedValue(i, "db", healthReportTestFunc{check: func(context.Context) error {
-		if calls.Add(1) == 1 {
-			panic("boom")
-		}
-		return nil
-	}})
-	require.NoError(t, i.Start())
-	defer i.Shutdown()
+	synctest.Test(t, func(t *testing.T) {
+		is := assert.New(t)
 
-	scheduler.runRound()
-	entry := healthReportTestEntry(t, i.HealthReport(), "db")
-	is.Equal(HealthUnhealthy, entry.State)
-	is.EqualError(entry.Err, "DI: health check panic: boom")
+		scheduler := &manualScheduler{}
+		recorder := &healthHookRecorder{}
+		i := NewWithOpts(&InjectorOpts{HealthScheduler: scheduler})
+		i.AddServiceHealthChangedHook(recorder.serviceHook)
+		var calls atomic.Int32
+		ProvideNamedValue(i, "db", healthReportTestFunc{check: func(context.Context) error {
+			if calls.Add(1) == 1 {
+				panic("boom")
+			}
+			return nil
+		}})
+		require.NoError(t, i.Start())
+		defer i.Shutdown()
 
-	scheduler.runRound()
-	is.Equal(HealthHealthy, healthReportTestEntry(t, i.HealthReport(), "db").State)
-	is.Eventually(func() bool { return len(recorder.serviceCalls()) == 2 }, time.Second, time.Millisecond)
-	is.Equal([]healthHookCall{{HealthUnknown, HealthUnhealthy, "DI: health check panic: boom"}, {HealthUnhealthy, HealthHealthy, ""}}, recorder.serviceCalls())
+		scheduler.runRound()
+		entry := healthReportTestEntry(t, i.HealthReport(), "db")
+		is.Equal(HealthUnhealthy, entry.State)
+		is.EqualError(entry.Err, "DI: health check panic: boom")
+
+		scheduler.runRound()
+		is.Equal(HealthHealthy, healthReportTestEntry(t, i.HealthReport(), "db").State)
+		is.Eventually(func() bool { return len(recorder.serviceCalls()) == 2 }, time.Second, time.Millisecond)
+		is.Equal([]healthHookCall{{HealthUnknown, HealthUnhealthy, "DI: health check panic: boom"}, {HealthUnhealthy, HealthHealthy, ""}}, recorder.serviceCalls())
+	})
 }
 
 func TestHealthScheduler_StopBeforeClosing(t *testing.T) {
@@ -497,6 +534,50 @@ func TestHealthScheduler_StopBeforeClosing(t *testing.T) {
 			if is.Len(scheduler.stopCtxs, 1) {
 				is.NoError(contextDone(scheduler.stopCtxs[0]), "the context stop received was done")
 			}
+		})
+	}
+}
+
+func TestHealthScheduler_RootScopeShutdownEndsRecording(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		calls func(i *RootScope) HealthReport
+	}{
+		{name: "HealthReport", calls: func(i *RootScope) HealthReport { return i.HealthReport() }},
+		{name: "HealthCheck_then_HealthReport", calls: func(i *RootScope) HealthReport {
+			_ = i.HealthCheck()
+			return i.HealthReport()
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, 5*time.Second)
+
+			synctest.Test(t, func(t *testing.T) {
+				is := assert.New(t)
+
+				recorder := &healthHookRecorder{}
+				i := NewWithOpts(&InjectorOpts{HookServiceHealthChanged: []func(*Scope, string, ServiceHealth, ServiceHealth){recorder.serviceHook}})
+				var received Injector
+				ProvideNamed(i, "provider", func(injector Injector) (int, error) {
+					received = injector
+					return 1, nil
+				})
+				must1(InvokeNamed[int](i, "provider"))
+				received.Shutdown()
+
+				ProvideNamedValue(i, "db", &healthReportTestSwitch{})
+				report := tt.calls(i)
+
+				is.Equal(HealthUnknown, healthReportTestEntry(t, report, "db").State)
+				is.Equal(PhaseIdle, report.Phase)
+				time.Sleep(10 * time.Millisecond) // let a stray hook call land
+				is.Empty(recorder.serviceCalls())
+			})
 		})
 	}
 }
@@ -596,29 +677,111 @@ func TestHealthScheduler_ShutdownCancelsRound(t *testing.T) {
 func TestHealthScheduler_ShutdownSkipsHungCheck(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, 5*time.Second)
-	is := assert.New(t)
 
-	scheduler := &manualScheduler{}
-	i := NewWithOpts(&InjectorOpts{HealthScheduler: scheduler, HealthCheckTimeout: -time.Nanosecond})
-	db := newHealthRunTestBlocking(nil)
-	ProvideNamedValue(i, "db", db)
-	require.NoError(t, i.Start())
+	synctest.Test(t, func(t *testing.T) {
+		is := assert.New(t)
 
-	round := make(chan struct{})
-	go func() { defer close(round); scheduler.runRound() }()
-	require.Eventually(t, func() bool { return db.calls.Load() == 1 }, time.Second, time.Millisecond)
+		scheduler := &manualScheduler{}
+		i := NewWithOpts(&InjectorOpts{HealthScheduler: scheduler, HealthCheckTimeout: -time.Nanosecond})
+		db := newHealthRunTestBlocking(nil)
+		ProvideNamedValue(i, "db", db)
+		require.NoError(t, i.Start())
 
-	shut := make(chan struct{})
-	go func() { defer close(shut); i.Shutdown() }()
-	select {
-	case <-shut:
-	case <-time.After(time.Second):
-		is.Fail("Shutdown did not return within 1s while a round's check ignored its context")
-	}
+		round := make(chan struct{})
+		go func() { defer close(round); scheduler.runRound() }()
+		require.Eventually(t, func() bool { return db.calls.Load() == 1 }, time.Second, time.Millisecond)
 
-	close(db.release)
-	<-shut
-	<-round
+		shut := make(chan struct{})
+		go func() { defer close(shut); i.Shutdown() }()
+		select {
+		case <-shut:
+		case <-time.After(time.Second):
+			is.Fail("Shutdown did not return within 1s while a round's check ignored its context")
+		}
+
+		close(db.release)
+		<-shut
+		<-round
+	})
+}
+
+// healthMonitorTestCauseCheck waits for its context to end, records its
+// cause, and returns the context's error.
+type healthMonitorTestCauseCheck struct {
+	started chan struct{}
+	cause   chan error
+}
+
+func (c *healthMonitorTestCauseCheck) HealthCheck(ctx context.Context) error {
+	close(c.started)
+	<-ctx.Done()
+	c.cause <- context.Cause(ctx)
+	return ctx.Err()
+}
+
+func TestHealthScheduler_ShutdownCancelCause(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, 5*time.Second)
+
+	synctest.Test(t, func(t *testing.T) {
+		is := assert.New(t)
+
+		i := New()
+		check := &healthMonitorTestCauseCheck{started: make(chan struct{}), cause: make(chan error, 1)}
+		ProvideNamedValue(i, "db", check)
+
+		result := make(chan map[string]error, 1)
+		go func() { result <- i.HealthCheck() }()
+		<-check.started
+		i.Shutdown()
+
+		is.EqualError((<-result)["db"], "DI: health check timeout: context canceled")
+		is.ErrorIs(<-check.cause, ErrStartAfterShutdown)
+	})
+}
+
+// healthMonitorTestBlockingScheduler blocks in ScheduleHealthRounds until
+// released, then returns a stop function counting its calls.
+type healthMonitorTestBlockingScheduler struct {
+	release chan struct{}
+	stops   atomic.Int32
+}
+
+func (s *healthMonitorTestBlockingScheduler) ScheduleHealthRounds(clockwork.Clock, func(context.Context)) (func(context.Context) error, error) {
+	<-s.release
+	return func(context.Context) error {
+		s.stops.Add(1)
+		return nil
+	}, nil
+}
+
+func TestHealthScheduler_ShutdownWaitsForSchedulerCall(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, 5*time.Second)
+
+	synctest.Test(t, func(t *testing.T) {
+		is := assert.New(t)
+
+		scheduler := &healthMonitorTestBlockingScheduler{release: make(chan struct{})}
+		i := NewWithOpts(&InjectorOpts{HealthScheduler: scheduler})
+		started := make(chan error, 1)
+		go func() { started <- i.Start() }()
+		synctest.Wait()
+		require.Equal(t, PhaseReady, i.Phase(), "Start is blocked in ScheduleHealthRounds")
+
+		ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+		defer cancel()
+		shut := make(chan *ShutdownReport, 1)
+		go func() { shut <- i.ShutdownWithContext(ctx) }()
+		time.Sleep(time.Minute)
+		synctest.Wait()
+		is.Empty(shut, "ShutdownWithContext returned while ScheduleHealthRounds was in progress")
+
+		close(scheduler.release)
+		<-shut
+		<-started
+		is.Equal(int32(1), scheduler.stops.Load(), "calls of stop")
+	})
 }
 
 func TestHealthScheduler_Clone(t *testing.T) {
@@ -679,6 +842,47 @@ func TestHealthScheduler_CloneShutdownKeepsSource(t *testing.T) {
 	is.Equal(1, scheduler.stopCount(1), "stops of the clone's schedule")
 	is.Equal(0, scheduler.stopCount(0), "stops of the source's schedule")
 	is.True(source.HealthReport().Monitored)
+}
+
+func TestHealthHooks_CloneKeepsHooks(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, 5*time.Second)
+
+	synctest.Test(t, func(t *testing.T) {
+		is := assert.New(t)
+
+		var mu sync.Mutex
+		var scopes []*Scope
+		var roots []*RootScope
+		i := NewWithOpts(&InjectorOpts{
+			HookServiceHealthChanged: []func(*Scope, string, ServiceHealth, ServiceHealth){func(scope *Scope, _ string, _, _ ServiceHealth) {
+				mu.Lock()
+				defer mu.Unlock()
+				scopes = append(scopes, scope)
+			}},
+			HookContainerHealthChanged: []func(*RootScope, HealthState, HealthState){func(root *RootScope, _, _ HealthState) {
+				mu.Lock()
+				defer mu.Unlock()
+				roots = append(roots, root)
+			}},
+		})
+		ProvideNamedValue(i, "db", &healthReportTestSwitch{})
+		clone := i.Clone()
+
+		_ = clone.HealthCheck()
+		synctest.Wait() // the hooks run on the recording goroutine
+
+		mu.Lock()
+		if is.Len(scopes, 1, "service hook calls") {
+			is.Same(clone.self, scopes[0], "the scope the service hook received")
+		}
+		if is.Len(roots, 1, "container hook calls") {
+			is.Same(clone, roots[0], "the root the container hook received")
+		}
+		mu.Unlock()
+		clone.Shutdown()
+		i.Shutdown()
+	})
 }
 
 func TestHealthRound_AfterStop(t *testing.T) {
@@ -778,19 +982,21 @@ func TestHookServiceHealthChanged(t *testing.T) {
 			t.Parallel()
 			testWithTimeout(t, 5*time.Second)
 
-			scheduler := &manualScheduler{}
-			recorder := &healthHookRecorder{}
-			i := NewWithOpts(&InjectorOpts{HealthScheduler: scheduler, HookServiceHealthChanged: []func(*Scope, string, ServiceHealth, ServiceHealth){recorder.serviceHook}})
-			ProvideNamedValue(i, "db", &healthMonitorTestSequence{results: tt.results})
-			require.NoError(t, i.Start())
-			defer i.Shutdown()
+			synctest.Test(t, func(t *testing.T) {
+				scheduler := &manualScheduler{}
+				recorder := &healthHookRecorder{}
+				i := NewWithOpts(&InjectorOpts{HealthScheduler: scheduler, HookServiceHealthChanged: []func(*Scope, string, ServiceHealth, ServiceHealth){recorder.serviceHook}})
+				ProvideNamedValue(i, "db", &healthMonitorTestSequence{results: tt.results})
+				require.NoError(t, i.Start())
+				defer i.Shutdown()
 
-			for range tt.rounds {
-				scheduler.runRound()
-			}
+				for range tt.rounds {
+					scheduler.runRound()
+				}
 
-			assert.Eventually(t, func() bool { return len(recorder.serviceCalls()) == len(tt.calls) }, time.Second, time.Millisecond)
-			assert.Equal(t, tt.calls, recorder.serviceCalls())
+				assert.Eventually(t, func() bool { return len(recorder.serviceCalls()) == len(tt.calls) }, time.Second, time.Millisecond)
+				assert.Equal(t, tt.calls, recorder.serviceCalls())
+			})
 		})
 	}
 }
@@ -799,67 +1005,72 @@ func TestHookServiceHealthChanged_ForcedRun(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, 5*time.Second)
 
-	i := New()
-	recorder := &healthHookRecorder{}
-	i.AddServiceHealthChangedHook(recorder.serviceHook)
-	db := &healthReportTestSwitch{}
-	ProvideNamedValue(i, "db", db)
-	i.HealthReport() // records nil
+	synctest.Test(t, func(t *testing.T) {
+		i := New()
+		recorder := &healthHookRecorder{}
+		i.AddServiceHealthChangedHook(recorder.serviceHook)
+		db := &healthReportTestSwitch{}
+		ProvideNamedValue(i, "db", db)
+		i.HealthReport() // records nil
 
-	db.set(errors.New("down"))
-	i.HealthCheck()
+		db.set(errors.New("down"))
+		i.HealthCheck()
 
-	assert.Eventually(t, func() bool { return len(recorder.serviceCalls()) == 2 }, time.Second, time.Millisecond)
-	assert.Equal(t, []healthHookCall{{HealthUnknown, HealthHealthy, ""}, {HealthHealthy, HealthUnhealthy, "down"}}, recorder.serviceCalls())
+		assert.Eventually(t, func() bool { return len(recorder.serviceCalls()) == 2 }, time.Second, time.Millisecond)
+		assert.Equal(t, []healthHookCall{{HealthUnknown, HealthHealthy, ""}, {HealthHealthy, HealthUnhealthy, "down"}}, recorder.serviceCalls())
+	})
 }
 
 func TestHookServiceHealthChanged_Serialized(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, 5*time.Second)
-	is := assert.New(t)
 
-	scheduler := &manualScheduler{}
-	i := NewWithOpts(&InjectorOpts{HealthScheduler: scheduler})
-	var running, overlaps atomic.Int32
-	var mu sync.Mutex
-	order := map[string][]string{}
-	hook := func(label string) func(*Scope, string, ServiceHealth, ServiceHealth) {
-		return func(_ *Scope, name string, _, _ ServiceHealth) {
-			if running.Add(1) > 1 {
-				overlaps.Add(1)
+	synctest.Test(t, func(t *testing.T) {
+		is := assert.New(t)
+
+		scheduler := &manualScheduler{}
+		i := NewWithOpts(&InjectorOpts{HealthScheduler: scheduler})
+		var running, overlaps atomic.Int32
+		var mu sync.Mutex
+		order := map[string][]string{}
+		hook := func(label string) func(*Scope, string, ServiceHealth, ServiceHealth) {
+			return func(_ *Scope, name string, _, _ ServiceHealth) {
+				if running.Add(1) > 1 {
+					overlaps.Add(1)
+				}
+				time.Sleep(time.Millisecond)
+				mu.Lock()
+				order[name] = append(order[name], label)
+				mu.Unlock()
+				running.Add(-1)
 			}
-			time.Sleep(time.Millisecond)
-			mu.Lock()
-			order[name] = append(order[name], label)
-			mu.Unlock()
-			running.Add(-1)
 		}
-	}
-	i.AddServiceHealthChangedHook(hook("A"))
-	i.AddServiceHealthChangedHook(hook("B"))
-	for n := range 10 {
-		ProvideNamedValue(i, fmt.Sprintf("svc-%d", n), &healthReportTestSwitch{})
-	}
-	require.NoError(t, i.Start())
-	defer i.Shutdown()
+		i.AddServiceHealthChangedHook(hook("A"))
+		i.AddServiceHealthChangedHook(hook("B"))
+		for n := range 10 {
+			ProvideNamedValue(i, fmt.Sprintf("svc-%d", n), &healthReportTestSwitch{})
+		}
+		require.NoError(t, i.Start())
+		defer i.Shutdown()
 
-	scheduler.runRound()
+		scheduler.runRound()
 
-	is.Eventually(func() bool {
+		is.Eventually(func() bool {
+			mu.Lock()
+			defer mu.Unlock()
+			total := 0
+			for _, labels := range order {
+				total += len(labels)
+			}
+			return total == 20
+		}, 2*time.Second, time.Millisecond)
+		is.Zero(overlaps.Load(), "hook calls that overlapped")
 		mu.Lock()
 		defer mu.Unlock()
-		total := 0
-		for _, labels := range order {
-			total += len(labels)
+		for name, labels := range order {
+			is.Equal([]string{"A", "B"}, labels, name)
 		}
-		return total == 20
-	}, 2*time.Second, time.Millisecond)
-	is.Zero(overlaps.Load(), "hook calls that overlapped")
-	mu.Lock()
-	defer mu.Unlock()
-	for name, labels := range order {
-		is.Equal([]string{"A", "B"}, labels, name)
-	}
+	})
 }
 
 func TestHookServiceHealthChanged_Reentrant(t *testing.T) {
@@ -878,34 +1089,37 @@ func TestHookServiceHealthChanged_Reentrant(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			testWithTimeout(t, 5*time.Second)
-			is := assert.New(t)
 
-			i := New()
-			ProvideNamedValue(i, "db", &healthMonitorTestSequence{results: []error{nil, errors.New("down")}})
-			var hookCalls atomic.Int32
-			hookReturned := make(chan struct{}, 10)
-			i.AddServiceHealthChangedHook(func(*Scope, string, ServiceHealth, ServiceHealth) {
-				hookCalls.Add(1)
-				tt.call(i)
-				hookReturned <- struct{}{}
-			})
+			synctest.Test(t, func(t *testing.T) {
+				is := assert.New(t)
 
-			for range 2 {
-				done := make(chan struct{})
-				go func() { defer close(done); i.HealthCheck() }()
-				select {
-				case <-done:
-				case <-time.After(time.Second):
-					is.Fail("HealthCheck did not return within 1s")
+				i := New()
+				ProvideNamedValue(i, "db", &healthMonitorTestSequence{results: []error{nil, errors.New("down")}})
+				var hookCalls atomic.Int32
+				hookReturned := make(chan struct{}, 10)
+				i.AddServiceHealthChangedHook(func(*Scope, string, ServiceHealth, ServiceHealth) {
+					hookCalls.Add(1)
+					tt.call(i)
+					hookReturned <- struct{}{}
+				})
+
+				for range 2 {
+					done := make(chan struct{})
+					go func() { defer close(done); i.HealthCheck() }()
+					select {
+					case <-done:
+					case <-time.After(time.Second):
+						is.Fail("HealthCheck did not return within 1s")
+					}
 				}
-			}
-			select {
-			case <-hookReturned:
-			case <-time.After(time.Second):
-				is.Fail("the hook's own call did not return within 1s")
-			}
-			is.Positive(hookCalls.Load())
-			is.Eventually(func() bool { return len(hookReturned) == int(hookCalls.Load())-1 }, time.Second, time.Millisecond)
+				select {
+				case <-hookReturned:
+				case <-time.After(time.Second):
+					is.Fail("the hook's own call did not return within 1s")
+				}
+				is.Positive(hookCalls.Load())
+				is.Eventually(func() bool { return len(hookReturned) == int(hookCalls.Load())-1 }, time.Second, time.Millisecond)
+			})
 		})
 	}
 }
@@ -932,23 +1146,25 @@ func TestHookContainerHealthChanged(t *testing.T) {
 			t.Parallel()
 			testWithTimeout(t, 5*time.Second)
 
-			scheduler := &manualScheduler{}
-			recorder := &healthHookRecorder{}
-			i := NewWithOpts(&InjectorOpts{HealthScheduler: scheduler, HookContainerHealthChanged: []func(*RootScope, HealthState, HealthState){recorder.containerHook}})
-			ProvideNamedValue(i, "a", &healthMonitorTestSequence{results: tt.a})
-			var opts []ProvideOption
-			if tt.bOptional {
-				opts = append(opts, AsOptionalHealth())
-			}
-			ProvideNamedValue(i, "b", &healthMonitorTestSequence{results: tt.b}, opts...)
-			require.NoError(t, i.Start())
-			defer i.Shutdown()
+			synctest.Test(t, func(t *testing.T) {
+				scheduler := &manualScheduler{}
+				recorder := &healthHookRecorder{}
+				i := NewWithOpts(&InjectorOpts{HealthScheduler: scheduler, HookContainerHealthChanged: []func(*RootScope, HealthState, HealthState){recorder.containerHook}})
+				ProvideNamedValue(i, "a", &healthMonitorTestSequence{results: tt.a})
+				var opts []ProvideOption
+				if tt.bOptional {
+					opts = append(opts, AsOptionalHealth())
+				}
+				ProvideNamedValue(i, "b", &healthMonitorTestSequence{results: tt.b}, opts...)
+				require.NoError(t, i.Start())
+				defer i.Shutdown()
 
-			scheduler.runRound()
-			scheduler.runRound()
+				scheduler.runRound()
+				scheduler.runRound()
 
-			assert.Eventually(t, func() bool { return len(recorder.containerCalls()) == len(tt.calls) }, time.Second, time.Millisecond)
-			assert.Equal(t, tt.calls, recorder.containerCalls())
+				assert.Eventually(t, func() bool { return len(recorder.containerCalls()) == len(tt.calls) }, time.Second, time.Millisecond)
+				assert.Equal(t, tt.calls, recorder.containerCalls())
+			})
 		})
 	}
 }
@@ -957,26 +1173,93 @@ func TestHookContainerHealthChanged_Membership(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, 5*time.Second)
 
-	scheduler := &manualScheduler{}
-	i := NewWithOpts(&InjectorOpts{HealthScheduler: scheduler})
-	ProvideNamedValue(i, "db", &healthReportTestSwitch{})
-	child := i.Scope("child")
-	bad := &healthReportTestSwitch{}
-	bad.set(errors.New("down"))
-	ProvideNamedValue(child, "bad", bad)
-	recorder := &healthHookRecorder{}
-	i.AddContainerHealthChangedHook(recorder.containerHook)
-	require.NoError(t, i.Start())
-	defer i.Shutdown()
-	scheduler.runRound()
-	require.Eventually(t, func() bool { return len(recorder.containerCalls()) == 1 }, time.Second, time.Millisecond)
+	synctest.Test(t, func(t *testing.T) {
+		scheduler := &manualScheduler{}
+		i := NewWithOpts(&InjectorOpts{HealthScheduler: scheduler})
+		ProvideNamedValue(i, "db", &healthReportTestSwitch{})
+		child := i.Scope("child")
+		bad := &healthReportTestSwitch{}
+		bad.set(errors.New("down"))
+		ProvideNamedValue(child, "bad", bad)
+		recorder := &healthHookRecorder{}
+		i.AddContainerHealthChangedHook(recorder.containerHook)
+		require.NoError(t, i.Start())
+		defer i.Shutdown()
+		scheduler.runRound()
+		require.Eventually(t, func() bool { return len(recorder.containerCalls()) == 1 }, time.Second, time.Millisecond)
 
-	child.Shutdown()
+		child.Shutdown()
 
-	assert.Eventually(t, func() bool {
-		calls := recorder.containerCalls()
-		return len(calls) > 0 && calls[len(calls)-1] == [2]HealthState{HealthUnhealthy, HealthHealthy}
-	}, time.Second, time.Millisecond, "container calls: %v", recorder.containerCalls())
+		assert.Eventually(t, func() bool {
+			calls := recorder.containerCalls()
+			return len(calls) > 0 && calls[len(calls)-1] == [2]HealthState{HealthUnhealthy, HealthHealthy}
+		}, time.Second, time.Millisecond, "container calls: %v", recorder.containerCalls())
+	})
+}
+
+func TestHealthHooks_ContainerAfterService(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, 5*time.Second)
+
+	synctest.Test(t, func(t *testing.T) {
+		var mu sync.Mutex
+		var order []string
+		i := NewWithOpts(&InjectorOpts{
+			HookServiceHealthChanged: []func(*Scope, string, ServiceHealth, ServiceHealth){func(_ *Scope, name string, _, _ ServiceHealth) {
+				mu.Lock()
+				defer mu.Unlock()
+				order = append(order, "service:"+name)
+			}},
+			HookContainerHealthChanged: []func(*RootScope, HealthState, HealthState){func(_ *RootScope, _, current HealthState) {
+				mu.Lock()
+				defer mu.Unlock()
+				order = append(order, "container:"+current.String())
+			}},
+		})
+		ProvideNamedValue(i, "db", &healthReportTestSwitch{})
+
+		_ = i.HealthCheck()
+		synctest.Wait() // the hooks run on the recording goroutine
+
+		mu.Lock()
+		got := append([]string(nil), order...)
+		mu.Unlock()
+		assert.Equal(t, []string{"service:db", "container:healthy"}, got)
+		i.Shutdown()
+	})
+}
+
+func TestHealthHooks_NilSkipped(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, 5*time.Second)
+
+	synctest.Test(t, func(t *testing.T) {
+		is := assert.New(t)
+
+		log := &healthMonitorTestLog{}
+		recorder := &healthRunTestPanicRecorder{}
+		var calls atomic.Int32
+		i := NewWithOpts(&InjectorOpts{
+			Logf:               log.logf,
+			HookContainerPanic: recorder.hook,
+			HookServiceHealthChanged: []func(*Scope, string, ServiceHealth, ServiceHealth){
+				nil,
+				func(*Scope, string, ServiceHealth, ServiceHealth) { calls.Add(1) },
+			},
+			HookContainerHealthChanged: []func(*RootScope, HealthState, HealthState){nil},
+		})
+		i.AddServiceHealthChangedHook(nil)
+		i.AddContainerHealthChangedHook(nil)
+		ProvideNamedValue(i, "db", &healthReportTestSwitch{})
+
+		_ = i.HealthCheck()
+		synctest.Wait() // the hooks run on the recording goroutine
+
+		is.Equal(int32(1), calls.Load(), "calls of the hook that is not nil")
+		is.Empty(recorder.recorded(), "HookContainerPanic calls")
+		is.Empty(log.containing("health hook panicked"), "Logf lines")
+		i.Shutdown()
+	})
 }
 
 func TestHookContainerHealthChanged_Appearing(t *testing.T) {
@@ -995,28 +1278,31 @@ func TestHookContainerHealthChanged_Appearing(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			testWithTimeout(t, 5*time.Second)
-			is := assert.New(t)
 
-			scheduler := &manualScheduler{}
-			i := NewWithOpts(&InjectorOpts{HealthScheduler: scheduler})
-			ProvideNamedValue(i, "a", &healthReportTestSwitch{})
-			recorder := &healthHookRecorder{}
-			i.AddContainerHealthChangedHook(recorder.containerHook)
-			require.NoError(t, i.Start())
-			defer i.Shutdown()
-			scheduler.runRound()
-			require.Eventually(t, func() bool { return len(recorder.containerCalls()) == 1 }, time.Second, time.Millisecond)
-			require.Equal(t, [][2]HealthState{{HealthUnknown, HealthHealthy}}, recorder.containerCalls())
+			synctest.Test(t, func(t *testing.T) {
+				is := assert.New(t)
 
-			b := &healthReportTestSwitch{}
-			b.set(tt.result)
-			ProvideNamedValue(i, "b", b)
+				scheduler := &manualScheduler{}
+				i := NewWithOpts(&InjectorOpts{HealthScheduler: scheduler})
+				ProvideNamedValue(i, "a", &healthReportTestSwitch{})
+				recorder := &healthHookRecorder{}
+				i.AddContainerHealthChangedHook(recorder.containerHook)
+				require.NoError(t, i.Start())
+				defer i.Shutdown()
+				scheduler.runRound()
+				require.Eventually(t, func() bool { return len(recorder.containerCalls()) == 1 }, time.Second, time.Millisecond)
+				require.Equal(t, [][2]HealthState{{HealthUnknown, HealthHealthy}}, recorder.containerCalls())
 
-			is.Never(func() bool { return len(recorder.containerCalls()) != 1 }, 50*time.Millisecond, time.Millisecond,
-				"container calls before the next round: %v", recorder.containerCalls())
-			scheduler.runRound()
-			is.Eventually(func() bool { return len(recorder.containerCalls()) == 1+len(tt.calls) }, time.Second, time.Millisecond)
-			is.Equal(tt.calls, recorder.containerCalls()[1:])
+				b := &healthReportTestSwitch{}
+				b.set(tt.result)
+				ProvideNamedValue(i, "b", b)
+
+				is.Never(func() bool { return len(recorder.containerCalls()) != 1 }, 50*time.Millisecond, time.Millisecond,
+					"container calls before the next round: %v", recorder.containerCalls())
+				scheduler.runRound()
+				is.Eventually(func() bool { return len(recorder.containerCalls()) == 1+len(tt.calls) }, time.Second, time.Millisecond)
+				is.Equal(tt.calls, recorder.containerCalls()[1:])
+			})
 		})
 	}
 }
@@ -1036,32 +1322,35 @@ func TestHealthHooks_Panic(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			testWithTimeout(t, 5*time.Second)
-			is := assert.New(t)
 
-			scheduler := &manualScheduler{}
-			log := &healthMonitorTestLog{}
-			panics := &healthRunTestPanicRecorder{}
-			opts := &InjectorOpts{HealthScheduler: scheduler, Logf: log.logf}
-			if tt.withHook {
-				opts.HookContainerPanic = panics.hook
-			}
-			i := NewWithOpts(opts)
-			var bCalls atomic.Int32
-			i.AddServiceHealthChangedHook(func(*Scope, string, ServiceHealth, ServiceHealth) { panic("boom") })
-			i.AddServiceHealthChangedHook(func(*Scope, string, ServiceHealth, ServiceHealth) { bCalls.Add(1) })
-			ProvideNamedValue(i, "db", &healthMonitorTestSequence{results: []error{nil, errors.New("down")}})
-			require.NoError(t, i.Start())
-			defer i.Shutdown()
+			synctest.Test(t, func(t *testing.T) {
+				is := assert.New(t)
 
-			scheduler.runRound()
-			scheduler.runRound()
+				scheduler := &manualScheduler{}
+				log := &healthMonitorTestLog{}
+				panics := &healthRunTestPanicRecorder{}
+				opts := &InjectorOpts{HealthScheduler: scheduler, Logf: log.logf}
+				if tt.withHook {
+					opts.HookContainerPanic = panics.hook
+				}
+				i := NewWithOpts(opts)
+				var bCalls atomic.Int32
+				i.AddServiceHealthChangedHook(func(*Scope, string, ServiceHealth, ServiceHealth) { panic("boom") })
+				i.AddServiceHealthChangedHook(func(*Scope, string, ServiceHealth, ServiceHealth) { bCalls.Add(1) })
+				ProvideNamedValue(i, "db", &healthMonitorTestSequence{results: []error{nil, errors.New("down")}})
+				require.NoError(t, i.Start())
+				defer i.Shutdown()
 
-			is.Eventually(func() bool { return bCalls.Load() == 2 }, time.Second, time.Millisecond)
-			if tt.withHook {
-				is.Equal([][2]any{{"healthchanged", "boom"}, {"healthchanged", "boom"}}, panics.recorded())
-			} else {
-				is.Len(log.containing("boom"), 2)
-			}
+				scheduler.runRound()
+				scheduler.runRound()
+
+				is.Eventually(func() bool { return bCalls.Load() == 2 }, time.Second, time.Millisecond)
+				if tt.withHook {
+					is.Equal([][2]any{{"healthchanged", "boom"}, {"healthchanged", "boom"}}, panics.recorded())
+				} else {
+					is.Len(log.containing("boom"), 2)
+				}
+			})
 		})
 	}
 }
@@ -1070,21 +1359,23 @@ func TestHealthHooks_Degraded(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, 5*time.Second)
 
-	scheduler := &manualScheduler{}
-	recorder := &healthHookRecorder{}
-	i := NewWithOpts(&InjectorOpts{HealthScheduler: scheduler})
-	i.AddServiceHealthChangedHook(recorder.serviceHook)
-	i.AddContainerHealthChangedHook(recorder.containerHook)
-	ProvideNamedValue(i, "cache", &healthMonitorTestSequence{results: []error{nil, errors.New("slow")}}, AsOptionalHealth())
-	require.NoError(t, i.Start())
-	defer i.Shutdown()
+	synctest.Test(t, func(t *testing.T) {
+		scheduler := &manualScheduler{}
+		recorder := &healthHookRecorder{}
+		i := NewWithOpts(&InjectorOpts{HealthScheduler: scheduler})
+		i.AddServiceHealthChangedHook(recorder.serviceHook)
+		i.AddContainerHealthChangedHook(recorder.containerHook)
+		ProvideNamedValue(i, "cache", &healthMonitorTestSequence{results: []error{nil, errors.New("slow")}}, AsOptionalHealth())
+		require.NoError(t, i.Start())
+		defer i.Shutdown()
 
-	scheduler.runRound()
-	scheduler.runRound()
+		scheduler.runRound()
+		scheduler.runRound()
 
-	assert.Eventually(t, func() bool { return len(recorder.containerCalls()) == 2 }, time.Second, time.Millisecond)
-	assert.Equal(t, []healthHookCall{{HealthUnknown, HealthHealthy, ""}, {HealthHealthy, HealthDegraded, "slow"}}, recorder.serviceCalls())
-	assert.Equal(t, [][2]HealthState{{HealthUnknown, HealthHealthy}, {HealthHealthy, HealthDegraded}}, recorder.containerCalls())
+		assert.Eventually(t, func() bool { return len(recorder.containerCalls()) == 2 }, time.Second, time.Millisecond)
+		assert.Equal(t, []healthHookCall{{HealthUnknown, HealthHealthy, ""}, {HealthHealthy, HealthDegraded, "slow"}}, recorder.serviceCalls())
+		assert.Equal(t, [][2]HealthState{{HealthUnknown, HealthHealthy}, {HealthHealthy, HealthDegraded}}, recorder.containerCalls())
+	})
 }
 
 func BenchmarkHealthRound(b *testing.B) {

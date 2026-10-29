@@ -419,7 +419,7 @@ type sharedCall struct {
 	releaseBound context.CancelFunc // releases the bound of ctx
 	claimed      chan struct{}      // closed once the check may run
 	started      bool               // claimed: by the limiter, or taken over
-	queuedAt     time.Time          // when the call was created, on the injector's clock
+	queuedAt     time.Time          // when the call was requested, on the injector's clock: see startFreshLocked
 	startedAt    time.Time          // when the check began, once claimed
 
 	waiters map[*callWaiter]struct{} // waiting for its result
@@ -457,22 +457,45 @@ func (c *sharedCall) claimLocked(clock clockwork.Clock) bool {
 	if c.pooled {
 		c.ctx, c.releaseBound = healthCheckContextWithin(c.base, clock, c.bound)
 	}
+	for waiter := range c.waiters {
+		waiter.startBoundLocked(clock, c.startedAt)
+	}
 	close(c.claimed)
 
 	return true
+}
+
+// startBoundLocked starts, at now, the per-service bound of w when it waits
+// for a call claimed only now. The monitor's mutex must be held.
+func (w *callWaiter) startBoundLocked(clock clockwork.Clock, now time.Time) {
+	if w.expire == nil || !w.deadline.IsZero() {
+		return
+	}
+
+	w.deadline = now.Add(w.spec.bound)
+	w.boundTimer = clock.AfterFunc(w.spec.bound, func() { w.expire(context.DeadlineExceeded) })
 }
 
 // callWaiter is a caller waiting for a health check. Its result is decided
 // when the check returns, against ctx at that moment, so a caller that reads
 // it later still gets the result it would have seen then.
 type callWaiter struct {
-	ctx        context.Context    // bounds the wait
-	parent     context.Context    // the caller's context, before the bound
-	reportPath bool               // records a timeout at the bound
-	release    context.CancelFunc // releases ctx once the wait is over
-	call       *sharedCall        // the call waited for; guarded by the monitor's mutex
-	done       chan struct{}      // closed once result is decided
-	result     checkOutcome
+	ctx     context.Context    // bounds the wait
+	release context.CancelFunc // releases ctx once the wait is over
+	call    *sharedCall        // the call waited for; guarded by the monitor's mutex
+	done    chan struct{}      // closed once result is decided
+	result  checkOutcome
+	spec    waitSpec     // how the caller waits, kept for a fresh call it may share
+	target  healthTarget // the service waited for
+	noCall  bool         // waits for no call: its caller's context had ended
+	askedAt time.Time    // when its caller asked, for a waiter in next
+
+	// A waiter whose call waits for a slot starts its per-service bound when
+	// the call is claimed: expire then ends ctx once spec.bound elapsed, at
+	// deadline. Its fields after expire are guarded by the monitor's mutex.
+	expire     context.CancelCauseFunc
+	deadline   time.Time
+	boundTimer clockwork.Timer
 }
 
 // completed reports whether the waiter got the result of its check.
@@ -499,6 +522,13 @@ func (m *healthMonitor) wait(waiter *callWaiter) error {
 		return waiter.result.unwrap()
 	case <-waiter.ctx.Done():
 	}
+	if waiter.noCall {
+		return timeoutError(waiter.ctx.Err())
+	}
+
+	// a timeout is not recorded for a service that left before its check
+	// started; checked before m.mu, which is never held under a scope lock
+	registered := waiter.spec.reportPath && waiter.target.stillRegistered()
 
 	defer m.root.deliverTransitions() // runs after m.mu is released
 	m.mu.Lock()
@@ -510,17 +540,18 @@ func (m *healthMonitor) wait(waiter *callWaiter) error {
 	default:
 	}
 
-	return m.leaveLocked(waiter)
+	return m.leaveLocked(waiter, registered)
 }
 
 // leaveLocked removes waiter, whose context is done, from the call it waits
 // for, joined or not, and returns its timeout error. A report-path waiter
-// whose bound elapsed, not its caller's context, records the timeout. The
-// last waiter to leave a joined call cancels it. m.mu must be held.
-func (m *healthMonitor) leaveLocked(waiter *callWaiter) error {
+// whose bound elapsed, not its caller's context, records the timeout while
+// its service is registered. The last waiter to leave a joined call cancels
+// it. m.mu must be held.
+func (m *healthMonitor) leaveLocked(waiter *callWaiter, registered bool) error {
 	call := waiter.call
 	err := timeoutError(waiter.ctx.Err())
-	if waiter.reportPath && contextDone(waiter.parent) == nil {
+	if waiter.spec.reportPath && registered && contextDone(waiter.spec.ctx) == nil {
 		m.recordTimeoutLocked(call, err)
 	}
 
@@ -546,28 +577,41 @@ func (m *healthMonitor) recordTimeoutLocked(call *sharedCall, err error) {
 	call.timedOut = true
 
 	now := call.clock.Now()
-	m.recordLocked(call.target, healthRecord{err: err, checkedAt: now, duration: now.Sub(call.queuedAt)})
+	var duration time.Duration
+	if !call.startedAt.IsZero() { // the check never ran otherwise
+		duration = now.Sub(call.startedAt)
+	}
+	m.recordLocked(call.target, healthRecord{err: err, checkedAt: now, duration: duration})
 }
 
 // joinOrStart returns a waiter, bounded as spec says, for the health check
-// of service: it joins the call in flight, or starts one running check. A
+// of service: it joins the call in flight, or starts one running check,
+// unless spec's context has already ended and there is none it can join. A
 // waiter that does not take a slot runs a joined call still queued for one
 // at once, so composite checks complete under any limit.
 func (s *RootScope) joinOrStart(spec waitSpec, target healthTarget, check func(context.Context) checkOutcome) *callWaiter {
 	service := target.wrapper
 	m := &s.health
-	ctx, release := healthCheckContextWithin(spec.ctx, s.opts.Clock, spec.bound)
-	waiter := &callWaiter{ctx: ctx, parent: spec.ctx, reportPath: spec.reportPath, release: release, done: make(chan struct{})}
 
 	m.mu.Lock()
 	call, ok := m.inflight[service]
 	switch {
+	case (!ok || !call.joinable()) && contextDone(spec.ctx) != nil:
+		// its caller gave up already: it starts no check, nor waits for a
+		// fresh one
+		m.mu.Unlock()
+		waiter := newCallWaiter(spec, target, s.opts.Clock, false)
+		waiter.noCall = true
+		return waiter
 	case !ok:
-		call = m.newCallLocked(target, check, spec, waiter, s.healthSlots != nil, s.opts.Clock)
+		limited := s.healthSlots != nil
+		waiter := newCallWaiter(spec, target, s.opts.Clock, spec.pooled && limited)
+		call = m.newCallLocked(target, check, spec, waiter, limited, s.opts.Clock)
 		m.mu.Unlock()
 		s.startCall(call)
 		return waiter
 	case call.joinable():
+		waiter := newCallWaiter(spec, target, s.opts.Clock, !call.started)
 		call.waiters[waiter] = struct{}{}
 		waiter.call = call
 		takeOver := !spec.pooled && call.claimLocked(s.opts.Clock)
@@ -577,11 +621,36 @@ func (s *RootScope) joinOrStart(spec waitSpec, target healthTarget, check func(c
 		}
 		return waiter
 	default:
+		waiter := newCallWaiter(spec, target, s.opts.Clock, false)
+		waiter.askedAt = s.opts.Clock.Now()
 		call.next[waiter] = struct{}{}
 		waiter.call = call
 		m.mu.Unlock()
 		return waiter
 	}
+}
+
+// newCallWaiter returns a waiter bounded as spec says. With queued, its call
+// waits for a slot: the waiter waits within spec's context, and its
+// per-service bound starts once the call is claimed (see startBoundLocked).
+func newCallWaiter(spec waitSpec, target healthTarget, clock clockwork.Clock, queued bool) *callWaiter {
+	w := &callWaiter{spec: spec, target: target, done: make(chan struct{})}
+	if !queued || spec.bound <= 0 {
+		w.ctx, w.release = healthCheckContextWithin(spec.ctx, clock, spec.bound)
+		return w
+	}
+
+	ctx, expire := context.WithCancelCause(spec.ctx) // keeps the caller's deadline
+	w.ctx = boundContext{Context: ctx}
+	w.expire = expire
+	w.release = func() {
+		if w.boundTimer != nil {
+			w.boundTimer.Stop()
+		}
+		expire(context.Canceled)
+	}
+
+	return w
 }
 
 // newCallLocked registers a call for service started by starter, waiting as
@@ -624,7 +693,10 @@ func (m *healthMonitor) newCallLocked(target healthTarget, check func(context.Co
 
 // startCall runs call, just created, on its own goroutine. A pooled call
 // first waits there for a slot of the limiter, holds no lock meanwhile, and
-// gives up once it is taken over or abandoned.
+// gives up once it is taken over or abandoned. It gives its slot back when
+// its check returns, when its context ends, or once the report bound has
+// passed since it took the slot, so a check ignoring its context never
+// stalls the calls queued behind it.
 func (s *RootScope) startCall(call *sharedCall) {
 	call.target.scope.logf("requested health check for service %s", call.target.name)
 
@@ -635,10 +707,11 @@ func (s *RootScope) startCall(call *sharedCall) {
 
 	go func() {
 		acquired := false
+		release := sync.OnceFunc(func() { <-s.healthSlots })
 		select {
 		case s.healthSlots <- struct{}{}:
 			acquired = true
-			defer func() { <-s.healthSlots }()
+			defer release()
 		case <-call.claimed:
 		case <-call.base.Done():
 		}
@@ -659,8 +732,25 @@ func (s *RootScope) startCall(call *sharedCall) {
 		call.claimLocked(s.opts.Clock)
 		s.health.mu.Unlock()
 
+		defer s.holdSlot(call, release)()
 		s.runCall(call)
 	}()
+}
+
+// holdSlot makes release, which gives the slot of call back, run once the
+// check's context ends or the report bound has passed, and returns the
+// function that stops it from running then. call must be claimed.
+func (s *RootScope) holdSlot(call *sharedCall, release func()) (stop func()) {
+	stopOnDone := context.AfterFunc(call.ctx, release)
+	if bound := reportBound(s.opts); bound > 0 {
+		timer := s.opts.Clock.AfterFunc(bound, release)
+		return func() {
+			timer.Stop()
+			stopOnDone()
+		}
+	}
+
+	return func() { stopOnDone() }
 }
 
 // runCall runs the check of call and finishes it.
@@ -677,13 +767,16 @@ func (s *RootScope) finishCall(call *sharedCall, outcome checkOutcome, ran bool)
 	now := s.opts.Clock.Now()
 	err := outcome.err
 	waited := false
+	// a service that left before its check started is not recorded either;
+	// checked before m.mu, which is never held under a scope lock
+	registered := ran && call.target.stillRegistered()
 
 	m := &s.health
 	m.mu.Lock()
 	delete(m.inflight, call.service)
-	if ran && !call.abandoned && !call.timedOut && !call.left {
+	if ran && registered && !call.abandoned && !call.timedOut && !call.left {
 		m.recordLocked(call.target, healthRecord{
-			err:       healthCheckResult(call.ctx, s.opts.Clock, err),
+			err:       checkResult(call, s.opts.Clock, err),
 			checkedAt: now,
 			duration:  now.Sub(call.startedAt),
 		})
@@ -695,19 +788,15 @@ func (s *RootScope) finishCall(call *sharedCall, outcome checkOutcome, ran bool)
 	}
 
 	var fresh *sharedCall
-	for waiter := range call.next {
-		if call.left {
+	takeOver := false
+	if call.left {
+		for waiter := range call.next {
 			waiter.result = checkOutcome{err: callResult(waiter, call, s.opts.Clock, err), hookPanic: outcome.hookPanic}
 			close(waiter.done)
 			waited = true
-			continue
 		}
-		if fresh == nil {
-			fresh = m.newCallLocked(call.target, call.check, waitSpec{ctx: waiter.ctx, pooled: call.pooled, bound: call.bound}, waiter, call.pooled, s.opts.Clock)
-			continue
-		}
-		fresh.waiters[waiter] = struct{}{}
-		waiter.call = fresh
+	} else {
+		fresh, takeOver = s.startFreshLocked(call)
 	}
 	releaseBound := call.releaseBound
 	m.mu.Unlock()
@@ -716,6 +805,9 @@ func (s *RootScope) finishCall(call *sharedCall, outcome checkOutcome, ran bool)
 	call.cancel(nil)
 	if fresh != nil {
 		s.startCall(fresh)
+		if takeOver {
+			go s.runCall(fresh)
+		}
 	}
 	s.deliverTransitions()
 
@@ -724,34 +816,90 @@ func (s *RootScope) finishCall(call *sharedCall, outcome checkOutcome, ran bool)
 	}
 }
 
+// stillRegistered reports whether t's scope still holds its wrapper under
+// its name. It takes the scope's read lock.
+func (t healthTarget) stillRegistered() bool {
+	return scopeHolds(t.scope, t.name, t.wrapper)
+}
+
+// startFreshLocked registers the fresh call the callers in next of call,
+// which could not join it, share. Each keeps its own wait spec: the first
+// starts the fresh call, and the others join it as they would join any
+// call. A waiter whose context has ended gets no fresh call: it leaves in
+// wait. The fresh call is requested when the first of its waiters asked. It
+// returns the fresh call, nil when no waiter of next remains, and whether a
+// single-service caller took it over, so that it runs at once. The
+// monitor's mutex must be held.
+func (s *RootScope) startFreshLocked(call *sharedCall) (fresh *sharedCall, takeOver bool) {
+	for waiter := range call.next {
+		if contextDone(waiter.ctx) != nil {
+			continue
+		}
+		if fresh == nil {
+			fresh = s.health.newCallLocked(call.target, call.check, waiter.spec, waiter, s.healthSlots != nil, s.opts.Clock)
+			fresh.queuedAt = waiter.askedAt
+			continue
+		}
+		if waiter.askedAt.Before(fresh.queuedAt) {
+			fresh.queuedAt = waiter.askedAt
+		}
+		fresh.waiters[waiter] = struct{}{}
+		waiter.call = fresh
+		if !waiter.spec.pooled && fresh.claimLocked(s.opts.Clock) {
+			takeOver = true
+		}
+	}
+
+	return fresh, takeOver
+}
+
 // callResult is the result of a check that returned err for waiter: a
-// timeout error once the waiter's context or the check's context is done,
-// the check's own result otherwise.
+// timeout error once the waiter's context is done or shutdown cancelled the
+// check, or when the check returned its context's error after that context
+// ended; what the check returned otherwise, also when its starter's bound
+// ended the check's context.
 func callResult(waiter *callWaiter, call *sharedCall, clock clockwork.Clock, err error) error {
 	if cause := contextDone(waiter.ctx); cause != nil {
 		return timeoutError(cause)
 	}
-	if cause := contextDone(call.ctx); cause != nil {
+	// shutdown ends every wait; the starter's bound ending the check's
+	// context does not: the waiter gets what the check returned
+	if cause := contextDone(call.ctx); cause != nil && errors.Is(context.Cause(call.ctx), ErrStartAfterShutdown) {
 		return timeoutError(cause)
+	}
+	err = checkResult(call, clock, err)
+	// its bound's expiry may not have ended ctx yet when the check returned
+	// at the deadline
+	if !waiter.deadline.IsZero() && !clock.Now().Before(waiter.deadline) {
+		return timeoutError(context.DeadlineExceeded)
 	}
 
 	return healthCheckResult(waiter.ctx, clock, err)
 }
 
-// healthCheckContext is the context of a shared check: it carries the
-// values and the deadline of the caller that started the check, and is done
-// when that deadline passes or the check is cancelled, but not when that
-// caller merely stops waiting.
-type healthCheckContext struct {
-	context.Context // the starter's values, cancelled by the call
-	deadline        time.Time
-	hasDeadline     bool
+// checkResult is what the check of call returned, err: a timeout error when
+// it returned a context error once its context ended, err otherwise.
+func checkResult(call *sharedCall, clock clockwork.Clock, err error) error {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return healthCheckResult(call.ctx, clock, err)
+	}
+
+	return err
 }
 
-func (c healthCheckContext) Deadline() (time.Time, bool) { return c.deadline, c.hasDeadline }
+// boundContext is a context cancelled with a cause, whose Err reports
+// context.DeadlineExceeded when that cause is a deadline or a bound that
+// passed. As the context of a waiter whose per-service bound is deferred,
+// built by newCallWaiter, it reports its caller's deadline, and is done when
+// the caller's context is, when the bound, started once the call is claimed,
+// elapses, or when the waiter is released.
+type boundContext struct {
+	context.Context // cancelled with a cause
+}
 
-// Err reports context.DeadlineExceeded once the starter's deadline passed.
-func (c healthCheckContext) Err() error {
+// Err reports context.DeadlineExceeded once the context was cancelled for a
+// deadline or a bound that passed.
+func (c boundContext) Err() error {
 	err := c.Context.Err()
 	if err != nil && errors.Is(context.Cause(c.Context), context.DeadlineExceeded) {
 		return context.DeadlineExceeded
@@ -759,6 +907,19 @@ func (c healthCheckContext) Err() error {
 
 	return err
 }
+
+// healthCheckContext is the context of a shared check, built by
+// newHealthCheckContext: it carries the values and the deadline of the
+// caller that started the check, a deadline it does not enforce itself, and
+// is done when that deadline passes or the check is cancelled, but not when
+// that caller merely stops waiting.
+type healthCheckContext struct {
+	boundContext // the starter's values, cancelled with a cause
+	deadline     time.Time
+	hasDeadline  bool
+}
+
+func (c healthCheckContext) Deadline() (time.Time, bool) { return c.deadline, c.hasDeadline }
 
 // newHealthCheckContext returns the context of a check started by a caller
 // waiting with starter, its cancel function, and the function that stops

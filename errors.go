@@ -25,7 +25,8 @@ var (
 	// ErrStartAfterShutdown is returned by Start, Refresh and Scope.Start once
 	// root Shutdown has begun. It is also the cause Shutdown gives the context
 	// of a running Start, Refresh or Scope.Start, so the error a run that
-	// Shutdown interrupted returns matches it.
+	// Shutdown interrupted returns matches it, and the cause of the context of
+	// a health check in flight (see [context.Cause]).
 	ErrStartAfterShutdown = errors.New("DI: container is shut down")
 	// ErrNotStarted is returned by Refresh and Scope.Start while the
 	// container's first Start has not succeeded.

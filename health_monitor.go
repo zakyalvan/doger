@@ -31,13 +31,17 @@ const (
 // The returned stop function is called once, when root Shutdown begins and
 // before the Closing hooks run, with a context Shutdown's context cannot
 // cancel: it must stop scheduling and return once no round of this schedule
-// runs. Each call is an independent schedule, so one value may serve several
-// containers, such as a container and its clones.
+// runs. A Shutdown that begins while ScheduleHealthRounds runs waits for it
+// to return, even past the end of Shutdown's context, so
+// ScheduleHealthRounds must return promptly. Each call is an independent
+// schedule, so one value may serve several containers, such as a container
+// and its clones.
 //
 // An error or a panic leaves the container unmonitored: Start still
 // succeeds, the error or panic is logged, or a panic is passed to
 // HookContainerPanic with the point "healthscheduler" when it is set, and
-// reads check stale services on demand.
+// reads check stale services on demand. A stop function returned together
+// with an error is called at once, before Start returns, and not again.
 type HealthScheduler interface {
 	ScheduleHealthRounds(clock clockwork.Clock, round func(ctx context.Context)) (stop func(ctx context.Context) error, err error)
 }
@@ -173,6 +177,10 @@ func (s *RootScope) callScheduler(scheduler HealthScheduler) (stop func(context.
 	}
 	if err != nil {
 		s.opts.Logf("DI: health scheduler failed: %v", err)
+		if stop != nil {
+			// a schedule partly started is stopped at once
+			s.callStop(context.Background(), stop)
+		}
 		return nil, err
 	}
 
@@ -206,7 +214,7 @@ func (s *RootScope) healthRound(ctx context.Context) {
 	s.deliverTransitions()
 	for _, c := range covered {
 		if eligibleForReport(s, c.target.wrapper) {
-			c.waiter = s.joinOrStart(waitSpec{ctx: ctx, bound: bound, pooled: true, reportPath: true}, c.target, c.check)
+			s.startReportCheck(ctx, bound, c)
 		}
 	}
 	for _, c := range covered {

@@ -69,9 +69,13 @@ type ServiceHealth struct {
 	// CheckedAt is when the last recorded check returned, on the injector's
 	// clock; zero when none was recorded.
 	CheckedAt time.Time
-	// Duration is how long the last recorded check took.
+	// Duration is how long the last recorded check ran, from when it started
+	// running to its result, or to its timeout when one was recorded; a wait
+	// for a slot of InjectorOpts.HealthCheckParallelism is not included.
 	Duration time.Duration
-	// PendingSince is when the check in flight started; zero when none is.
+	// PendingSince is when the check in flight was requested, including any
+	// wait for a slot of InjectorOpts.HealthCheckParallelism; zero when no
+	// check is in flight.
 	PendingSince time.Time
 }
 
@@ -303,7 +307,7 @@ func (s *RootScope) healthReport(ctx context.Context, query reportQuery) HealthR
 		s.deliverTransitions()
 	}
 	covered = slices.DeleteFunc(covered, func(c *reportCheck) bool { return !query.matches(wrapperOptions(c.target.wrapper)) })
-	slices.SortStableFunc(covered, func(a, b *reportCheck) int { return compareHealthTargets(a.target, b.target) })
+	sortReportChecks(covered)
 
 	if report.Phase != PhaseIdle {
 		for _, c := range covered {
@@ -355,9 +359,20 @@ func (s *RootScope) checkOnDemand(ctx context.Context, covered []*reportCheck, d
 
 	for _, c := range covered {
 		if !c.unstarted && due(c.target.wrapper) {
-			c.waiter = s.joinOrStart(waitSpec{ctx: ctx, bound: bound, pooled: true, reportPath: true}, c.target, c.check)
+			s.startReportCheck(ctx, bound, c)
 		}
 	}
+}
+
+// startReportCheck joins the check in flight of c for a report read or a
+// round, or starts one, within ctx and bound, unless its scope no longer
+// holds it: a service that left once listed is not checked.
+func (s *RootScope) startReportCheck(ctx context.Context, bound time.Duration, c *reportCheck) {
+	if !c.target.stillRegistered() {
+		return
+	}
+
+	c.waiter = s.joinOrStart(waitSpec{ctx: ctx, bound: bound, pooled: true, reportPath: true}, c.target, c.check)
 }
 
 // reportEntries waits for the checks covered started, then returns their
@@ -518,16 +533,25 @@ func healthClassification(opts *serviceOptions) (tags []string, optional bool) {
 	return tags, opts.optionalHealth
 }
 
-// compareHealthTargets orders targets by the path of scope names from the
-// root, shallower first, then by service name.
-func compareHealthTargets(a, b healthTarget) int {
-	pathA, pathB := scopeNamePath(a.scope), scopeNamePath(b.scope)
+// sortReportChecks orders covered by the path of scope names from the root,
+// shallower first, then by service name. Each covered scope's path is
+// computed once, not per comparison.
+func sortReportChecks(covered []*reportCheck) {
+	paths := map[*Scope][]string{}
+	for _, c := range covered {
+		if _, ok := paths[c.target.scope]; !ok {
+			paths[c.target.scope] = scopeNamePath(c.target.scope)
+		}
+	}
 
-	return cmp.Or(
-		cmp.Compare(len(pathA), len(pathB)),
-		slices.Compare(pathA, pathB),
-		strings.Compare(a.name, b.name),
-	)
+	slices.SortStableFunc(covered, func(a, b *reportCheck) int {
+		pathA, pathB := paths[a.target.scope], paths[b.target.scope]
+		return cmp.Or(
+			cmp.Compare(len(pathA), len(pathB)),
+			slices.Compare(pathA, pathB),
+			strings.Compare(a.target.name, b.target.name),
+		)
+	})
 }
 
 // scopeNamePath returns the names of the scopes from the root to scope.

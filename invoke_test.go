@@ -805,44 +805,59 @@ func TestInvoke_NotFoundNamesLibraryTypes(t *testing.T) {
 func TestHandleProviderPanic(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, 100*time.Millisecond)
-	is := assert.New(t)
 
-	is.NotPanics(func() {
-		// ok
-		svc, err := handleProviderPanic(func(i Injector) (int, error) {
-			return 42, nil
-		}, nil)
-		is.NoError(err)
-		is.Equal(42, svc)
+	tests := []struct {
+		name     string
+		provider func(i Injector) (int, error)
+		want     int
+		wantErr  error  // compared with Equal; nil with an empty wantMsg means no error
+		wantMsg  string // compared with EqualError
+	}{
+		{
+			name:     "ok",
+			provider: func(i Injector) (int, error) { return 42, nil },
+			want:     42,
+		},
+		{
+			name:     "should return an error",
+			provider: func(i Injector) (int, error) { return 0, assert.AnError },
+			wantErr:  assert.AnError,
+		},
+		{
+			name:     "should not return 42",
+			provider: func(i Injector) (int, error) { return 42, assert.AnError },
+			wantErr:  assert.AnError,
+		},
+		{
+			name:     "panics with string",
+			provider: func(i Injector) (int, error) { panic("aïe") },
+			wantMsg:  "DI: aïe",
+		},
+		{
+			name:     "panics with error",
+			provider: func(i Injector) (int, error) { panic(assert.AnError) },
+			wantErr:  assert.AnError,
+		},
+	}
 
-		// should return an error
-		svc, err = handleProviderPanic(func(i Injector) (int, error) {
-			return 0, assert.AnError
-		}, nil)
-		is.Equal(assert.AnError, err)
-		is.Equal(0, svc)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
 
-		// shoud not return 42
-		svc, err = handleProviderPanic(func(i Injector) (int, error) {
-			return 42, assert.AnError
-		}, nil)
-		is.Equal(assert.AnError, err)
-		is.Equal(0, svc)
-
-		// panics with string
-		svc, err = handleProviderPanic(func(i Injector) (int, error) {
-			panic("aïe")
-		}, nil)
-		is.EqualError(err, "DI: aïe")
-		is.Equal(0, svc)
-
-		// panics with error
-		svc, err = handleProviderPanic(func(i Injector) (int, error) {
-			panic(assert.AnError)
-		}, nil)
-		is.Equal(assert.AnError, err)
-		is.Equal(0, svc)
-	})
+			is.NotPanics(func() {
+				svc, err := handleProviderPanic(tt.provider, nil)
+				switch {
+				case tt.wantMsg != "":
+					is.EqualError(err, tt.wantMsg)
+				case tt.wantErr != nil:
+					is.Equal(tt.wantErr, err)
+				default:
+					is.NoError(err)
+				}
+				is.Equal(tt.want, svc)
+			})
+		})
+	}
 }
 
 func TestInvoke_ProviderPanic(t *testing.T) {

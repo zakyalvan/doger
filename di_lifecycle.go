@@ -25,9 +25,11 @@ import (
 //	}
 //
 // A check may run while its service shuts down: root Shutdown cancels the
-// context of a check in flight but does not wait for it, so a service whose
-// Shutdown releases what its check uses must guard against a check still
-// running.
+// context of a check in flight, with the cause [ErrStartAfterShutdown], but
+// does not wait for it, so a service whose Shutdown releases what its check
+// uses must guard against a check still running. A caller still waiting
+// for that check gets an error matching [ErrHealthCheckTimeout] and
+// [context.Canceled].
 type Healthchecker interface {
 	HealthCheck() error
 }

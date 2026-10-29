@@ -205,12 +205,12 @@ func TestScheduler_Overrides(t *testing.T) {
 			if want > 0 {
 				require.Eventually(t, func() bool { return db.calls.Load() == want }, 2*time.Second, time.Millisecond, "the first round did not run at once")
 			}
-			for range tt.steps {
+			for _, step := range tt.steps {
 				if want > 0 {
 					runs.wait(t, want)
 				}
 				waitForTimer(t, clock)
-				clock.Advance(tt.steps[0])
+				clock.Advance(step)
 				if want++; want > 0 {
 					require.Eventually(t, func() bool { return db.calls.Load() >= want }, 2*time.Second, time.Millisecond)
 				}
@@ -239,16 +239,134 @@ func TestScheduler_SchedulerOptions(t *testing.T) {
 	assert.Positive(t, logger.calls.Load())
 }
 
+// optionPrecedenceRun is the state of a TestScheduler_OptionPrecedence row.
+type optionPrecedenceRun struct {
+	names chan string          // the names of the finished runs, as gocron reports them
+	other *clockwork.FakeClock // a clock other than the container's
+	runs  *finishedRuns
+	db    *counter
+}
+
+// nameListener returns the option reporting the names of finished runs.
+func (r optionPrecedenceRun) nameListener() Option {
+	return WithJobOptions(gocron.WithEventListeners(gocron.AfterJobRuns(func(_ uuid.UUID, name string) {
+		select {
+		case r.names <- name:
+		default:
+		}
+	})))
+}
+
+// firstName returns the name of the first finished run.
+func (r optionPrecedenceRun) firstName(t *testing.T) string {
+	t.Helper()
+	select {
+	case name := <-r.names:
+		return name
+	case <-time.After(2 * time.Second):
+		require.FailNow(t, "no round ran")
+		return ""
+	}
+}
+
+func TestScheduler_OptionPrecedence(t *testing.T) {
+	t.Parallel()
+
+	nameIs := func(want string) func(t *testing.T, r optionPrecedenceRun) {
+		return func(t *testing.T, r optionPrecedenceRun) {
+			t.Helper()
+			assert.Equal(t, want, r.firstName(t))
+		}
+	}
+
+	tests := []struct {
+		name  string
+		opts  func(r optionPrecedenceRun) []Option
+		check func(t *testing.T, r optionPrecedenceRun)
+	}{
+		{
+			name: "job_option_wins_over_default",
+			opts: func(r optionPrecedenceRun) []Option {
+				return []Option{WithJobOptions(gocron.WithName("custom")), r.nameListener()}
+			},
+			check: nameIs("custom"),
+		},
+		{
+			name: "job_options_last_wins",
+			opts: func(r optionPrecedenceRun) []Option {
+				return []Option{WithJobOptions(gocron.WithName("first")), WithJobOptions(gocron.WithName("second")), r.nameListener()}
+			},
+			check: nameIs("second"),
+		},
+		{
+			name: "job_options_accumulate",
+			opts: func(r optionPrecedenceRun) []Option {
+				return []Option{r.nameListener(), WithJobOptions(gocron.WithName("second"))}
+			},
+			check: nameIs("second"),
+		},
+		{
+			name: "scheduler_option_wins_over_default",
+			opts: func(r optionPrecedenceRun) []Option {
+				return []Option{WithSchedulerOptions(gocron.WithClock(r.other)), r.runs.option()}
+			},
+			check: func(t *testing.T, r optionPrecedenceRun) {
+				t.Helper()
+				r.runs.wait(t, 1) // the immediate first round
+				waitForTimer(t, r.other)
+				r.other.Advance(DefaultInterval)
+				r.runs.wait(t, 2)
+				assert.Equal(t, int32(2), r.db.calls.Load())
+			},
+		},
+		{
+			name: "scheduler_options_accumulate",
+			opts: func(r optionPrecedenceRun) []Option {
+				return []Option{WithSchedulerOptions(gocron.WithClock(r.other)), WithSchedulerOptions(gocron.WithLocation(time.UTC)), r.runs.option()}
+			},
+			check: func(t *testing.T, r optionPrecedenceRun) {
+				t.Helper()
+				r.runs.wait(t, 1)
+				waitForTimer(t, r.other)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			r := optionPrecedenceRun{names: make(chan string, 4), other: clockwork.NewFakeClock(), runs: &finishedRuns{}, db: &counter{}}
+			i := startWith(t, clockwork.NewFakeClock(), must(New(tt.opts(r)...)), r.db, nil)
+			defer i.Shutdown()
+
+			tt.check(t, r)
+		})
+	}
+}
+
 // Not parallel: goleak checks the goroutines gocron leaves.
 func TestScheduler_RejectedJob(t *testing.T) { //nolint:paralleltest
-	ignore := goleak.IgnoreCurrent()
+	tests := []struct {
+		name   string
+		option Option
+	}{
+		{name: "job", option: WithJobDefinition(gocron.CronJob("not a cron", false))},
+		{name: "scheduler", option: WithSchedulerOptions(gocron.WithLocation(nil))},
+	}
 
-	scheduler := must(New(WithJobDefinition(gocron.CronJob("not a cron", false))))
-	stop, err := scheduler.ScheduleHealthRounds(clockwork.NewFakeClock(), func(context.Context) {})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) { //nolint:paralleltest // goleak checks the goroutines gocron leaves
+			ignore := goleak.IgnoreCurrent()
 
-	assert.Error(t, err)
-	assert.Nil(t, stop)
-	assert.NoError(t, goleak.Find(ignore))
+			scheduler := must(New(tt.option))
+			stop, err := scheduler.ScheduleHealthRounds(clockwork.NewFakeClock(), func(context.Context) {})
+
+			assert.Error(t, err)
+			assert.Nil(t, stop)
+			assert.NoError(t, goleak.Find(ignore))
+		})
+	}
 }
 
 func TestScheduler_Shared(t *testing.T) {

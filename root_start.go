@@ -759,10 +759,7 @@ func (s *RootScope) startCandidate(startCtx context.Context, candidate *startCan
 // stillRegistered reports whether the candidate's scope still holds its
 // wrapper.
 func stillRegistered(candidate *startCandidate) bool {
-	candidate.scope.mu.RLock()
-	defer candidate.scope.mu.RUnlock()
-
-	return candidate.scope.services[candidate.name] == candidate.service
+	return scopeHolds(candidate.scope, candidate.name, candidate.service)
 }
 
 // startInstance calls the Start method of the instance's Starter variant.

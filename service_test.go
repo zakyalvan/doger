@@ -12,13 +12,25 @@ import (
 func TestInferServiceName(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, 100*time.Millisecond)
-	is := assert.New(t)
 
 	// more tests in the package
-	is.Equal("int", inferServiceName[int]())
-	is.Equal("github.com/kartaladev/doger.eagerTest", inferServiceName[eagerTest]())
-	is.Equal("*github.com/kartaladev/doger.eagerTest", inferServiceName[*eagerTest]())
-	is.Equal("github.com/kartaladev/doger.Healthchecker", inferServiceName[Healthchecker]())
+	tests := []struct {
+		name  string
+		infer func() string
+		want  string
+	}{
+		{name: "int", infer: inferServiceName[int], want: "int"},
+		{name: "struct", infer: inferServiceName[eagerTest], want: "github.com/kartaladev/doger.eagerTest"},
+		{name: "pointer", infer: inferServiceName[*eagerTest], want: "*github.com/kartaladev/doger.eagerTest"},
+		{name: "interface", infer: inferServiceName[Healthchecker], want: "github.com/kartaladev/doger.Healthchecker"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
+			is.Equal(tt.want, tt.infer())
+		})
+	}
 }
 
 func TestInferServiceProviderStacktrace(t *testing.T) {
@@ -26,25 +38,52 @@ func TestInferServiceProviderStacktrace(t *testing.T) {
 	testWithTimeout(t, 100*time.Millisecond)
 	is := assert.New(t)
 
-	// Test with lazy service
-	lazyService := newServiceLazy("lazy-service", func(i Injector) (int, error) {
+	i := New()
+	Provide(i, func(i Injector) (int, error) {
 		return 42, nil
 	})
-	frame, ok := inferServiceProviderStacktrace(lazyService)
-	is.True(ok)
-	is.NotNil(frame)
-	is.Contains(frame.File, "service_test.go")
-	is.Contains(frame.Function, "TestInferServiceProviderStacktrace")
 
-	// Test with eager service
-	eagerService := newServiceEager("eager-service", func(i Injector) (int, error) {
-		return 42, nil
-	})
-	frame2, ok2 := inferServiceProviderStacktrace(eagerService)
-	is.True(ok2)
-	is.NotNil(frame2)
-	is.Contains(frame2.File, "service_eager.go")
-	is.Contains(frame2.Function, "newServiceEager")
+	tests := []struct {
+		name         string
+		service      serviceWrapperAny
+		wantFile     string
+		wantFunction string
+	}{
+		{
+			name: "lazy",
+			service: newServiceLazy("lazy-service", func(i Injector) (int, error) {
+				return 42, nil
+			}),
+			wantFile:     "service_test.go",
+			wantFunction: "TestInferServiceProviderStacktrace",
+		},
+		{
+			name: "eager",
+			service: newServiceEager("eager-service", func(i Injector) (int, error) {
+				return 42, nil
+			}),
+			wantFile:     "service_eager.go",
+			wantFunction: "newServiceEager",
+		},
+		{
+			name:         "alias",
+			service:      newServiceAlias[int, int]("alias-service", i, "int"),
+			wantFile:     "service_alias.go", // Provider frame points to the service_alias.go file
+			wantFunction: "newServiceAlias",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
+
+			frame, ok := inferServiceProviderStacktrace(tt.service)
+			is.True(ok)
+			is.NotNil(frame)
+			is.Contains(frame.File, tt.wantFile)
+			is.Contains(frame.Function, tt.wantFunction)
+		})
+	}
 
 	// Test with transient service (should return false)
 	transientService := newServiceTransient("transient-service", func(i Injector) (int, error) {
@@ -53,18 +92,6 @@ func TestInferServiceProviderStacktrace(t *testing.T) {
 	frame3, ok3 := inferServiceProviderStacktrace(transientService)
 	is.False(ok3)
 	is.Equal(stacktrace.Frame{}, frame3)
-
-	// Test with alias service
-	i := New()
-	Provide(i, func(i Injector) (int, error) {
-		return 42, nil
-	})
-	aliasService := newServiceAlias[int, int]("alias-service", i, "int")
-	frame4, ok4 := inferServiceProviderStacktrace(aliasService)
-	is.True(ok4)
-	is.NotNil(frame4)
-	is.Contains(frame4.File, "service_alias.go") // Provider frame points to the service_alias.go file
-	is.Contains(frame4.Function, "newServiceAlias")
 }
 
 func TestInferServiceInfo(t *testing.T) {
@@ -132,37 +159,61 @@ func TestInferServiceInfo(t *testing.T) {
 func TestDoServiceCanCastToGeneric(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, 100*time.Millisecond)
-	is := assert.New(t)
 
 	svc1 := newServiceLazy("foobar", func(i Injector) (*lazyTestHeathcheckerOK, error) {
 		return &lazyTestHeathcheckerOK{foobar: "foobar"}, nil
 	})
-	is.True(serviceCanCastToGeneric[*lazyTestHeathcheckerOK](svc1))
-	is.True(serviceCanCastToGeneric[Healthchecker](svc1))
-	is.False(serviceCanCastToGeneric[Shutdowner](svc1))
-	is.False(serviceCanCastToGeneric[*lazyTestHeathcheckerKO](svc1))
-
 	svc2 := newServiceLazy("foobar", func(i Injector) (iTestHeathchecker, error) {
 		return &lazyTestHeathcheckerOK{}, nil
 	})
-	is.True(serviceCanCastToGeneric[Healthchecker](svc2))
+
+	tests := []struct {
+		name    string
+		service any
+		canCast func(service any) bool
+		want    assert.BoolAssertionFunc
+	}{
+		{name: "own_type", service: svc1, canCast: serviceCanCastToGeneric[*lazyTestHeathcheckerOK], want: assert.True},
+		{name: "implemented_interface", service: svc1, canCast: serviceCanCastToGeneric[Healthchecker], want: assert.True},
+		{name: "other_interface", service: svc1, canCast: serviceCanCastToGeneric[Shutdowner], want: assert.False},
+		{name: "other_type", service: svc1, canCast: serviceCanCastToGeneric[*lazyTestHeathcheckerKO], want: assert.False},
+		{name: "interface_implementing_interface", service: svc2, canCast: serviceCanCastToGeneric[Healthchecker], want: assert.True},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.want(t, tt.canCast(tt.service))
+		})
+	}
 }
 
 func TestDoServiceCanCastToType(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, 100*time.Millisecond)
-	is := assert.New(t)
 
 	svc1 := newServiceLazy("foobar", func(i Injector) (*lazyTestHeathcheckerOK, error) {
 		return &lazyTestHeathcheckerOK{foobar: "foobar"}, nil
 	})
-	is.True(serviceCanCastToType(svc1, reflect.TypeFor[*lazyTestHeathcheckerOK]()))
-	is.True(serviceCanCastToType(svc1, reflect.TypeFor[Healthchecker]()))
-	is.False(serviceCanCastToType(svc1, reflect.TypeFor[Shutdowner]()))
-	is.False(serviceCanCastToType(svc1, reflect.TypeFor[*lazyTestHeathcheckerKO]()))
-
 	svc2 := newServiceLazy("foobar", func(i Injector) (iTestHeathchecker, error) {
 		return &lazyTestHeathcheckerOK{}, nil
 	})
-	is.True(serviceCanCastToType(svc2, reflect.TypeFor[Healthchecker]()))
+
+	tests := []struct {
+		name    string
+		service any
+		toType  reflect.Type
+		want    assert.BoolAssertionFunc
+	}{
+		{name: "own_type", service: svc1, toType: reflect.TypeFor[*lazyTestHeathcheckerOK](), want: assert.True},
+		{name: "implemented_interface", service: svc1, toType: reflect.TypeFor[Healthchecker](), want: assert.True},
+		{name: "other_interface", service: svc1, toType: reflect.TypeFor[Shutdowner](), want: assert.False},
+		{name: "other_type", service: svc1, toType: reflect.TypeFor[*lazyTestHeathcheckerKO](), want: assert.False},
+		{name: "interface_implementing_interface", service: svc2, toType: reflect.TypeFor[Healthchecker](), want: assert.True},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.want(t, serviceCanCastToType(tt.service, tt.toType))
+		})
+	}
 }
