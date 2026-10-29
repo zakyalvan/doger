@@ -23,6 +23,7 @@ Examples:
   | 50ms    | 20ms   | 0      | HealthCheckNamed(injector, "db")       | 20ms    | "DI: health check timeout: context deadline exceeded"    |
   | 50ms    | -1ns   | 0      | HealthCheckNamed(injector, "db")       | 10m     | nothing yet (still waiting)                              |
   | 0       | 0      | 30ms   | HealthCheck() on the root scope        | 30ms    | "DI: health check timeout: context deadline exceeded"    |
+  | 0       | 0      | 30ms   | HealthCheck() on the root scope        | 29ms    | nothing yet (still waiting): its own bound, not the starter's |
   | 0       | 0      | 30ms   | HealthCheckNamed(injector, "db")       | 10m     | nothing yet (still waiting): the global timeout does not apply |
 ```
 
@@ -44,6 +45,78 @@ And B's result for "db" is nil
 <!-- cases: 8 concurrency: two callers with different contexts -->
 <!-- cases: N/A 9 panics: a later requirement -->
 <!-- cases: 10 backward compatibility: each forced path keeps the bounds of health-check-timeouts and of HealthCheckSingleTimeout; report paths are in health-reports -->
+
+### Requirement: A joining caller gets what the check returned
+A caller that joined a check SHALL get what that check returned once it returns within the caller's own bound and context, also when the starter's bound cancelled the check's context meanwhile. A check that returns its context's error after that context ended counts as a timeout, matching `ErrHealthCheckTimeout` and that cause.
+
+#### Scenario: A joining caller gets the check's result after the starter's bound
+```gherkin
+Given an injector that is never started, with a fake clock and HealthCheckGlobalTimeout 30ms
+And a service "db" whose check <check>
+And a HealthCheck() call on the root scope started that check, and 10ms later the consumer called HealthCheckNamed(injector, "db")
+When the fake clock advances by 50ms, so the HealthCheck() call returns its timeout for "db", and the check is released
+Then the consumer's call returns <result>
+And the health check of "db" was called 1 time
+
+Examples:
+  | check                                                                        | result                                                  |
+  | blocks until released, ignoring its context, then returns nil                | nil                                                     |
+  | blocks until released, ignoring its context, then returns errors.New("down") | the same "down" error                                   |
+  | blocks until released or its context is done, then returns ctx.Err()         | "DI: health check timeout: context deadline exceeded"   |
+```
+
+<!-- cases: N/A 1 default: no option -->
+<!-- cases: 2 overrides: the starter's HealthCheckGlobalTimeout; the joiner's unbounded single-service path -->
+<!-- cases: N/A 3 zero values: not applicable -->
+<!-- cases: 4 boundaries: the starter's bound passed before the check returned -->
+<!-- cases: 5 errors: the check's nil, its own error, and its ended context's error as a timeout -->
+<!-- cases: N/A 6 not found/duplicate: not applicable -->
+<!-- cases: 7 lifecycle: the starter leaves at its bound while the joiner waits (verification 3, W1) -->
+<!-- cases: 8 concurrency: two callers with different bounds share one check -->
+<!-- cases: N/A 9 panics: a later requirement -->
+<!-- cases: N/A 10 backward compatibility: on 76404ef each caller ran its own check -->
+
+### Requirement: A caller whose context has already ended starts no check
+A caller whose context has already ended when it calls, and that finds no check in flight for the service it can join, SHALL start none and SHALL wait for no check started later: it SHALL get its timeout error at once, matching `ErrHealthCheckTimeout` and the context's cause, as on 76404ef. Likewise, a caller queued behind a check it could not join, whose context ends before that check returns, SHALL NOT have a fresh check started for it: it SHALL get its timeout error.
+
+#### Scenario: A caller whose context has already ended starts no check
+```gherkin
+Given an injector that is never started, with a Logf that records its lines, and a service "db" whose HealthCheck(ctx) blocks until released or ctx is done, with no check of "db" in flight
+When the consumer calls <entry> with a context that is already cancelled
+Then the call returns at once with <result>
+And the Logf recorded no line ending in "requested health check for service db"
+
+Examples:
+  | entry                                        | result                                                                        |
+  | HealthCheckWithContext on the root scope     | "DI: health check timeout: context canceled" for "db" in the map              |
+  | HealthCheckNamedWithContext(ctx, injector, "db") | "DI: health check timeout: context canceled"                              |
+  | HealthReportWithContext on the root scope    | the entry for "db" HealthUnhealthy, "DI: health check timeout: context canceled" |
+```
+
+#### Scenario: A caller that gives up behind an abandoned check starts no fresh check
+```gherkin
+Given an injector that is never started, with a service "db" whose HealthCheck() blocks until released, ignoring its context, whose first check a HealthCheckNamedWithContext call left running, abandoned
+And a caller of "db" queued behind that check, as HealthCheckWithContext queues each service before it waits
+When the caller's context is cancelled <when>, then the abandoned check returns and the caller waits
+Then the caller gets "DI: health check timeout: context canceled"
+And the health check of "db" was called 1 time
+
+Examples:
+  | when             |
+  | before it queues |
+  | after it queues  |
+```
+
+<!-- cases: N/A 1 default: a context that has not ended behaves as in the previous requirement -->
+<!-- cases: N/A 2 overrides: no option changes this rule -->
+<!-- cases: 3 zero values: a context cancelled before the call -->
+<!-- cases: 4 boundaries: no check in flight; joining a check in flight is the previous requirement -->
+<!-- cases: 5 errors: "DI: health check timeout: context canceled" on each entry point (verification W2) -->
+<!-- cases: N/A 6 not found/duplicate: not applicable -->
+<!-- cases: 7 lifecycle: a check abandoned just before returns, then a caller that already gave up; or that caller gives up after queueing behind it, before it returns (verification W2, code review R14) -->
+<!-- cases: 8 concurrency: no goroutine is started for such a caller -->
+<!-- cases: N/A 9 panics: not applicable -->
+<!-- cases: 10 backward compatibility: as on 76404ef, which never ran a check for such a caller -->
 
 ### Requirement: A check sees its starter's context
 A check SHALL receive a context carrying the values and the deadline of the caller that started it, further bounded by that caller's own bound. The context SHALL be cancelled when that bound elapses, when every caller waiting for the check has stopped waiting, or when root shutdown begins. A caller that joins a check SHALL NOT change the check's context.
@@ -85,7 +158,7 @@ While a service's check is running, any path that would check it SHALL wait for 
 
 #### Scenario: A check that ignores its context does not pile up
 ```gherkin
-Given an injector that is never started, with HealthCheckTimeout 5ms
+Given an injector that is never started, with HealthCheckTimeout 5ms and a negative HealthReportCacheTTL, so no HealthReport read is answered from a recorded result
 And a service "db" whose HealthCheck() blocks until released and ignores any context
 When the consumer calls <entry> 100 times, one after another
 Then every call returns or reports "DI: health check timeout: context deadline exceeded" for "db"
@@ -140,7 +213,7 @@ Examples:
 ```
 
 <!-- cases: 1 default: zero configuration -->
-<!-- cases: 2 overrides: with and without HealthCheckTimeout -->
+<!-- cases: 2 overrides: with and without HealthCheckTimeout; caching off (negative HealthReportCacheTTL), so every report read meets the check in flight (verification 2, W1) -->
 <!-- cases: N/A 3 zero values: not applicable -->
 <!-- cases: 4 boundaries: 1, 2, 3, 50 and 100 calls -->
 <!-- cases: 5 errors: a joining caller gets the check's error; an abandoned check's cancellation never reaches a new caller -->
@@ -187,14 +260,6 @@ When the consumer calls ProvideNamedValue(injector, "late", 42)
 Then the call returns within 1s
 ```
 
-#### Scenario: A report-path check's timeout does not count the wait for a slot
-```gherkin
-Given an injector that is never started, with a fake clock, HealthCheckParallelism 1, HealthCheckTimeout 0 and Healthcheckers "a" and "b"
-And "a"'s check blocks on the fake clock for 9s, then returns nil
-When the consumer calls HealthReport() on the root scope and the fake clock advances by 9s, then by 1s
-Then "b" is HealthHealthy in the report, not timed out
-```
-
 #### Scenario: Many services with a small limit all complete
 ```gherkin
 Given an injector that is never started, with HealthCheckParallelism 1 and 2000 Healthchecker values returning nil
@@ -208,13 +273,116 @@ Then the map has 2000 entries, each nil
 <!-- cases: 4 boundaries: exactly n running; 2000 services against a limit of 1 (the former 1000-slot queue) -->
 <!-- cases: 5 errors: the timeout error while waiting for a slot (regression D2) -->
 <!-- cases: N/A 6 not found/duplicate: not applicable -->
-<!-- cases: 7 lifecycle: a report-path check waiting for its slot -->
+<!-- cases: 7 lifecycle: a check waiting for its slot (its callers' bounds: the next requirements) -->
 <!-- cases: 8 concurrency: slot waits, scope locks, registration (regression D2) -->
 <!-- cases: N/A 9 panics: a later requirement -->
 <!-- cases: 10 backward compatibility: the default stays unlimited; single-service functions keep skipping the limit, as today -->
 
+### Requirement: A check holds its slot only until its bound has passed
+A check SHALL hold its `HealthCheckParallelism` slot until it returns, its context ends (its bound elapsed, every caller stopped waiting, or root shutdown began), or the report bound has passed since it took the slot (no time limit when the report bound is negative). A check that keeps running after that, ignoring its context, SHALL NOT count against the limit, so a hung check never stalls the callers queued behind it.
+
+#### Scenario: A check that outlives its bound gives its slot back
+```gherkin
+Given an injector with HealthCheckParallelism 1, HealthCheckTimeout <timeout> and a manual HealthScheduler
+And a service "hog" whose HealthCheck() blocks until released and ignores any context, holding the only slot in <holder>
+And a Healthchecker "db" that counts its calls, registered once "hog" holds the slot
+When <entry> is called
+Then it returns <after> after its call, with <result>
+And the health check of "db" was called 1 time
+
+Examples:
+  | timeout | holder                                                                    | entry                                          | after | result                           |
+  | 1s      | a HealthCheck() call that timed out on "hog" and returned                 | HealthCheck() on the root scope                | 1s    | nil for "db"                     |
+  | 1s      | a HealthCheck() call that timed out on "hog" and returned                 | HealthReport() on the root scope               | 1s    | the entry for "db" HealthHealthy |
+  | 1s      | a HealthCheck() call that timed out on "hog" and returned                 | the stored round, once the injector is started | 1s    | "db" recorded HealthHealthy      |
+  | 0       | a HealthCheck() call on the root scope still waiting for "hog", unbounded | HealthReport() on the root scope               | 10s   | the entry for "db" HealthHealthy |
+```
+
+<!-- cases: N/A 1 default: no limit by default, so no check holds a slot -->
+<!-- cases: 2 overrides: HealthCheckTimeout 1s, and 0 with the 10s report bound -->
+<!-- cases: N/A 3 zero values: with a negative report bound a slot has no time limit, as the check has no bound -->
+<!-- cases: 4 boundaries: a slot held past its holder's bound; the callers return at their own bounds -->
+<!-- cases: N/A 5 errors: the timeouts of the callers behind are the bound requirements' -->
+<!-- cases: N/A 6 not found/duplicate: not applicable -->
+<!-- cases: 7 lifecycle: a hung check giving its slot back once abandoned, or past the report bound while an unbounded caller still waits for it (code review R13) -->
+<!-- cases: 8 concurrency: forced calls, report reads and rounds behind a hung check under a limit of 1 -->
+<!-- cases: N/A 9 panics: not applicable -->
+<!-- cases: 10 backward compatibility: a hung check no longer holds its slot until it returns, as a 76404ef pool worker did (flagged) -->
+
+### Requirement: A caller's per-service bound starts when its check starts running
+While a check waits for a `HealthCheckParallelism` slot, the per-service bound of every caller waiting for it (`HealthCheckTimeout` on forced paths, the report bound on report paths) SHALL NOT run: it SHALL start when the check starts running. Each caller's context and `HealthCheckGlobalTimeout` SHALL still bound its wait from its call. That wait is bounded too: each check ahead of it holds its slot at most until the report bound has passed (previous requirement).
+
+#### Scenario: A caller's per-service bound does not count the wait for a slot
+```gherkin
+Given an injector that is never started, with a fake clock, HealthCheckParallelism 1 and HealthCheckTimeout <timeout>
+And Healthcheckers whose checks block on the fake clock for <takes>, one each, then return nil
+When the consumer calls <entry> on the root scope and the fake clock advances until every check returned
+Then every service is <result>
+
+Examples:
+  | timeout | takes      | entry          | result                   |
+  | 0       | 9s, 0s     | HealthReport() | HealthHealthy in the report |
+  | 0       | 9s, 2s     | HealthReport() | HealthHealthy in the report |
+  | 0       | 6s, 6s, 6s | HealthReport() | HealthHealthy in the report |
+  | 10s     | 9s, 2s     | HealthCheck()  | nil in the map           |
+```
+
+#### Scenario: HealthCheckGlobalTimeout bounds the wait for a slot from the call
+```gherkin
+Given an injector that is never started, with a fake clock, HealthCheckParallelism 1, HealthCheckTimeout 50ms and HealthCheckGlobalTimeout 30ms
+And a Healthchecker "hog" in child scope "child", whose check blocks until released and holds the only slot through a HealthReport() read on that scope
+And a Healthchecker root/"db" returning nil
+When the consumer calls HealthCheck() on the root scope, so the check of "db" waits for the slot, and the fake clock advances by <advance>
+Then the call has <returned>
+
+Examples:
+  | advance | returned                                                             |
+  | 29ms    | not returned                                                         |
+  | 30ms    | returned "DI: health check timeout: context deadline exceeded" for "db" |
+```
+
+<!-- cases: N/A 1 default: no limit by default, so no check waits for a slot -->
+<!-- cases: 2 overrides: HealthCheckParallelism 1 with the report bound (HealthCheckTimeout 0) and with a positive HealthCheckTimeout -->
+<!-- cases: 3 zero values: HealthCheckTimeout 0 uses the 10s report bound -->
+<!-- cases: 4 boundaries: checks that each fit the bound while their total exceeds it; a check that returns at once; one millisecond before and at a global timeout reached while waiting for a slot (verification 3, W5) -->
+<!-- cases: 5 errors: no timeout error for a check that fits its own bound (review R9) -->
+<!-- cases: N/A 6 not found/duplicate: not applicable -->
+<!-- cases: 7 lifecycle: report-path and forced checks waiting for their slot -->
+<!-- cases: 8 concurrency: checks serialized by a limit of 1 -->
+<!-- cases: N/A 9 panics: not applicable -->
+<!-- cases: 10 backward compatibility: as with the 76404ef pool, whose workers applied HealthCheckTimeout when they ran a job -->
+
+### Requirement: A caller queued behind an abandoned check keeps its bound from its call
+A caller that waits for a check it could not join (an abandoned check still running) SHALL keep its per-service bound running from its call, through that wait and through the slot wait of the check started for it afterwards, so a hung abandoned check never holds it past its bound.
+
+#### Scenario: A caller queued behind an abandoned check keeps its bound from its call
+```gherkin
+Given an injector that is never started, with HealthCheckParallelism 1 and HealthCheckTimeout 20ms
+And a service "leaf" whose first check blocks until released, ignoring its context, and was left running, abandoned, by HealthCheckNamedWithContext with a context that timed out after 10ms
+And a service "hog" whose check blocks until released, ignoring its context
+When <entry> is called on the root scope, 1ms later a HealthCheck() call gives "hog" the only slot, which it holds within its own 20ms bound, and 4ms after that the first check of "leaf" is released, so the check started for the caller waits for that slot
+Then the call returns 20ms after it was made, with <result>
+And "leaf" was checked once when the call returns
+
+Examples:
+  | entry          | result                                                                                  |
+  | HealthCheck()  | "DI: health check timeout: context deadline exceeded" for "leaf" in the map             |
+  | HealthReport() | the entry for "leaf" HealthUnhealthy, "DI: health check timeout: context deadline exceeded" |
+```
+
+<!-- cases: N/A 1 default: no limit by default, so no check waits for a slot -->
+<!-- cases: 2 overrides: HealthCheckParallelism 1, HealthCheckTimeout 20ms -->
+<!-- cases: N/A 3 zero values: with no per-service bound, the caller's context alone bounds its wait -->
+<!-- cases: 4 boundaries: the bound elapsing while the check started for the caller still waits for its slot -->
+<!-- cases: 5 errors: the timeout of a forced and of a report-path caller (verification W1) -->
+<!-- cases: N/A 6 not found/duplicate: not applicable -->
+<!-- cases: 7 lifecycle: queued behind an abandoned check, then behind a slot held by another check (review R2) -->
+<!-- cases: 8 concurrency: a limit of 1 held by a hung check -->
+<!-- cases: N/A 9 panics: not applicable -->
+<!-- cases: N/A 10 backward compatibility: new behavior of this change -->
+
 ### Requirement: A single-service check never waits for a slot
-A single-service function SHALL run its check at once, without a slot. When the service's check is queued for a slot, the single-service call SHALL run it at once, and every caller waiting for that check SHALL get its result. Composite checks therefore complete under any limit.
+A single-service function SHALL run its check at once, without a slot. When the service's check is queued for a slot, the single-service call SHALL run it at once, and every caller waiting for that check SHALL get its result. Composite checks therefore complete under any limit. A caller that waited for a check it could not join SHALL keep its own path's slot rule and bound in the check started for it afterwards.
 
 #### Scenario: Nested checks complete under a limit of one
 ```gherkin
@@ -231,13 +399,28 @@ Examples:
   | HealthCheckNamed(injector, "agg") | nil                       |
 ```
 
+#### Scenario: Callers queued behind a check they could not join keep their own slot rule
+```gherkin
+Given an injector that is never started, with HealthCheckParallelism 1, HealthCheckTimeout <timeout> and HealthCheckSingleTimeout <single>
+And a service "leaf" whose first check blocks until released, ignoring its context, and whose later checks record whether their context has a deadline, then return nil
+And <holder>
+And <first> left the first check of "leaf" running, abandoned
+When <second> is called, then the first check of "leaf" is released
+Then <observed>
+
+Examples:
+  | timeout | single | holder                                                                                  | first                                                                 | second                             | observed                                                                 |
+  | 0       | 0      | a service "hog" whose check blocks until released holds the slot in a HealthCheck() call | HealthCheckNamedWithContext with a context that times out after 10ms | HealthCheck() on the root scope    | the second check of "leaf" does not start while "hog" holds the slot      |
+  | 50ms    | -1ns   | no other service                                                                        | HealthCheck() on the root scope, timing out on "leaf" after 50ms      | HealthCheckNamed(injector, "leaf") | the second check of "leaf" runs, and its context has no deadline         |
+```
+
 <!-- cases: 1 default: an unlimited container runs nested checks as today -->
 <!-- cases: 2 overrides: a limit of 1, the tightest -->
 <!-- cases: N/A 3 zero values: not applicable -->
 <!-- cases: 4 boundaries: limit 1 -->
 <!-- cases: N/A 5 errors: not applicable -->
 <!-- cases: N/A 6 not found/duplicate: not applicable -->
-<!-- cases: 7 lifecycle: a single-service call taking over a check queued for a slot -->
+<!-- cases: 7 lifecycle: a single-service call taking over a check queued for a slot; callers queued behind an abandoned check, single-service and limited (review R10) -->
 <!-- cases: 8 concurrency: no deadlock under the limit -->
 <!-- cases: N/A 9 panics: a later requirement -->
 <!-- cases: 10 backward compatibility: composite checks keep working as today; a check calling itself still recurses as today (cycle detection is out of scope) -->
@@ -328,6 +511,14 @@ Examples:
   | HealthCheck() on the root scope  |
   | HealthReport() on the root scope |
   | the stored round                 |
+```
+
+#### Scenario: With no caller waiting, the hook's panic is raised on the check's goroutine
+```gherkin
+Given a child process running an injector that is never started, with HookContainerPanic that panics again with the value it receives
+And a service "db" whose HealthCheck() blocks until released, ignoring its context, then panics with "boom"
+When the consumer calls HealthCheckNamedWithContext with a context it then cancels, the call returns, and the check is released
+Then the child process exits with a non-zero status and its output starts with "panic: boom"
 ```
 
 <!-- cases: N/A 1 default: HookContainerPanic is unset by default -->

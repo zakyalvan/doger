@@ -84,6 +84,29 @@ Examples:
 <!-- cases: 9 panics: a scheduler panic is recovered; a panic raised by HookContainerPanic propagates from Start (next requirement) -->
 <!-- cases: N/A 10 backward compatibility: new option -->
 
+### Requirement: A stop returned with a scheduler error is called
+When `ScheduleHealthRounds` returns an error together with a stop function, the container SHALL stay unmonitored and SHALL call that stop once, before Start returns, with `context.Background()`. Its error SHALL be logged, and its panic handled as for any stop. Shutdown SHALL NOT call it again.
+
+#### Scenario: A stop returned with an error is called at once
+```gherkin
+Given an injector whose HealthScheduler's ScheduleHealthRounds returns a stop function that counts its calls, together with errors.New("partial"), and a Logf that records lines
+When the consumer calls Start, then Shutdown
+Then Start returns nil and HealthReport(IgnoreContainerPhase()) on the root scope has Monitored false
+And Logf recorded a line containing "health scheduler" and "partial"
+And the stop was called 1 time before Start returned, and 1 time in total after Shutdown
+```
+
+<!-- cases: N/A 1 default: a scheduler returns a nil stop with its error -->
+<!-- cases: 2 overrides: a third-party HealthScheduler returning both -->
+<!-- cases: N/A 3 zero values: a nil stop with an error is the previous requirement -->
+<!-- cases: N/A 4 boundaries: not applicable -->
+<!-- cases: 5 errors: the scheduler's error is logged; the stop's error is logged too -->
+<!-- cases: 6 not found/duplicate: the stop is called once, not again by Shutdown -->
+<!-- cases: 7 lifecycle: at Start, before it returns (verification 3, S2) -->
+<!-- cases: N/A 8 concurrency: on Start's goroutine -->
+<!-- cases: 9 panics: a panic of that stop goes to HookContainerPanic when set, logged otherwise -->
+<!-- cases: N/A 10 backward compatibility: new behavior -->
+
 ### Requirement: A panic HookContainerPanic raises for the scheduler leaves scheduling stopped
 A panic that `HookContainerPanic` raises for a panicking `ScheduleHealthRounds` SHALL propagate from Start, leaving the container unmonitored, and a later Shutdown SHALL return.
 
@@ -92,6 +115,7 @@ A panic that `HookContainerPanic` raises for a panicking `ScheduleHealthRounds` 
 Given an injector whose HealthScheduler's ScheduleHealthRounds panics with "boom", and a HookContainerPanic that panics again with the value it receives
 When the consumer calls Start under a deferred recover(), then Shutdown
 Then the recovered value is "boom"
+And HealthReport(IgnoreContainerPhase()) on the root scope has Monitored false
 And Shutdown returns within 1s
 ```
 
@@ -127,9 +151,10 @@ Examples:
 #### Scenario: A round checks each service once
 ```gherkin
 Given a started injector with a manual HealthScheduler and a Healthchecker root/"db" with an alias "hc" (AsNamed), and "child"/"svc" exported to the root, all counting their calls
-And a HealthCheck() call on the root scope is running the check of "db", blocking until released
+And a HealthCheck() call on the root scope is running the check of "db", blocking until released, and has already checked "svc" (exported to the root scope) once
 When the test runs the round and the check of "db" is released
-Then the health check of "db" was called 1 time and that of "svc" 1 time
+Then the round called the health check of "db" 0 times, as it joined the running check, and that of "svc" 1 time
+And the health check of "db" was called 1 time in total
 ```
 
 #### Scenario: A round after scheduling stopped does nothing
@@ -158,14 +183,15 @@ When root `Shutdown` begins, through the `RootScope` or the root's own `*Scope`,
 ```gherkin
 Given a started injector with a manual HealthScheduler and a Closing hook that records whether stop was already called
 When the consumer calls <shutdown>
-Then stop was called 1 time, before the Closing hook ran
+Then stop was called 1 time
+And <closing>
 And the context stop received was not done
 
 Examples:
-  | shutdown                                                  |
-  | Shutdown() on the RootScope                               |
-  | ShutdownWithContext with an already-cancelled context     |
-  | Shutdown() on the injector a provider received for "db"   |
+  | shutdown                                                  | closing                          |
+  | Shutdown() on the RootScope                               | the Closing hook ran after stop  |
+  | ShutdownWithContext with an already-cancelled context     | the Closing hook ran after stop  |
+  | Shutdown() on the injector a provider received for "db"   | no Closing hook ran, as on this path for any container |
 ```
 
 #### Scenario: A context-aware check in a round is cancelled before services shut down
@@ -195,10 +221,84 @@ And the check of "db" is released before the test ends
 <!-- cases: N/A 4 boundaries: not applicable -->
 <!-- cases: 5 errors: an error returned by stop is logged with Logf and does not fail Shutdown -->
 <!-- cases: 6 not found/duplicate: a second Shutdown returns the first report as in container-start; stop is called once -->
-<!-- cases: 7 lifecycle: order against Closing hooks and service shutdown; the root's own *Scope path; an ended Shutdown context (shutdown-context) -->
+<!-- cases: 7 lifecycle: order against Closing hooks and service shutdown; the root's own *Scope path, which runs no Closing hook; an ended Shutdown context (shutdown-context) -->
 <!-- cases: 8 concurrency: cancellation of a round in progress -->
 <!-- cases: N/A 9 panics: a panic in stop is the next requirement -->
 <!-- cases: N/A 10 backward compatibility: Shutdown without a scheduler is unchanged -->
+
+### Requirement: Shutdown cancels the checks in flight with a container-shut-down cause
+When root Shutdown begins, the container SHALL cancel the context of every check in flight with the cause `ErrStartAfterShutdown`, without waiting for the checks. A caller still waiting for such a check SHALL get an error matching `ErrHealthCheckTimeout` and `context.Canceled`.
+
+#### Scenario: Callers of a check cancelled by Shutdown
+```gherkin
+Given an injector that is never started, with a service "db" whose HealthCheck(ctx) blocks until ctx is done, then records context.Cause(ctx) and returns ctx.Err()
+And a HealthCheck() call on the root scope is waiting for that check
+When the consumer calls Shutdown
+Then the HealthCheck() call returns "DI: health check timeout: context canceled" for "db"
+And the check recorded a cause matching ErrStartAfterShutdown
+```
+
+<!-- cases: N/A 1 default: no option -->
+<!-- cases: N/A 2 overrides: none -->
+<!-- cases: N/A 3 zero values: not applicable -->
+<!-- cases: N/A 4 boundaries: not applicable -->
+<!-- cases: 5 errors: the caller's timeout error and the check's cause (verification 3, S1) -->
+<!-- cases: N/A 6 not found/duplicate: not applicable -->
+<!-- cases: 7 lifecycle: an injector never started, shut down with a forced check in flight -->
+<!-- cases: 8 concurrency: the check is cancelled, not waited for -->
+<!-- cases: N/A 9 panics: not applicable -->
+<!-- cases: N/A 10 backward compatibility: the cause's message is "DI: container is shut down" -->
+
+### Requirement: Shutdown waits for a scheduler call in progress
+When `ScheduleHealthRounds` is still running as root Shutdown begins, Shutdown SHALL wait for it to return, also past the end of Shutdown's context, then call the stop function it returned, so no goroutine of the schedule outlives Shutdown.
+
+#### Scenario: Shutdown waits for a scheduler call in progress
+```gherkin
+Given an injector whose HealthScheduler's ScheduleHealthRounds blocks until released, then returns a stop function that counts its calls
+And the consumer called Start, which is blocked in ScheduleHealthRounds with the container in PhaseReady
+When the consumer calls ShutdownWithContext with a context whose deadline is 50ms ahead, and 1 minute passes
+Then ShutdownWithContext has not returned
+And once ScheduleHealthRounds is released, ShutdownWithContext and Start return, and the stop was called 1 time
+```
+
+<!-- cases: N/A 1 default: no scheduler means no call to wait for -->
+<!-- cases: N/A 2 overrides: none -->
+<!-- cases: N/A 3 zero values: not applicable -->
+<!-- cases: 4 boundaries: Shutdown's 50ms deadline passes while the call is in progress -->
+<!-- cases: N/A 5 errors: not applicable -->
+<!-- cases: N/A 6 not found/duplicate: the stop is called once -->
+<!-- cases: 7 lifecycle: Start blocked in the scheduler at PhaseReady; unlike a Starter, which Shutdown's deadline bounds (verification 3, S3) -->
+<!-- cases: 8 concurrency: Shutdown and Start on different goroutines -->
+<!-- cases: N/A 9 panics: not applicable -->
+<!-- cases: N/A 10 backward compatibility: new behavior -->
+
+### Requirement: A shutdown through the root's own *Scope ends health recording
+A Shutdown through the root's own `*Scope` leaves the container phase unchanged, yet after it the container SHALL record no health result and call no health hook again, whichever path runs a check.
+
+#### Scenario: A shutdown through the root's own *Scope ends health recording
+```gherkin
+Given an injector that is never started, with a HookServiceHealthChanged hook that records calls
+And the consumer called Shutdown() on the injector a provider received
+When a Healthchecker value "db" returning nil is registered and the consumer calls <calls>
+Then the report's entry for "db" is HealthUnknown and its Phase is PhaseIdle
+And the hook recorded nothing
+
+Examples:
+  | calls                                                   |
+  | HealthReport() on the root scope                        |
+  | HealthCheck() on the root scope, then HealthReport()    |
+```
+
+<!-- cases: 1 default: zero configuration -->
+<!-- cases: N/A 2 overrides: none -->
+<!-- cases: N/A 3 zero values: not applicable -->
+<!-- cases: N/A 4 boundaries: not applicable -->
+<!-- cases: N/A 5 errors: none -->
+<!-- cases: N/A 6 not found/duplicate: not applicable -->
+<!-- cases: 7 lifecycle: a service registered after that shutdown, read and force-checked (W4) -->
+<!-- cases: N/A 8 concurrency: not applicable -->
+<!-- cases: N/A 9 panics: not applicable -->
+<!-- cases: 10 backward compatibility: that path's shutdown otherwise behaves as before (container-start) -->
 
 ### Requirement: A failing stop does not fail Shutdown
 An error returned by the stop function SHALL be logged with Logf. A panic in it SHALL be recovered and passed to `HookContainerPanic(root, "healthscheduler", value)` when that option is set, and logged otherwise. Neither SHALL fail Shutdown.
@@ -253,8 +353,16 @@ Then the stop function of the clone's schedule was called 1 time and the source'
 And the source's report has Monitored true
 ```
 
+#### Scenario: Clone keeps the health hooks
+```gherkin
+Given an injector that is never started, with a Healthchecker value "db", one HookServiceHealthChanged hook and one HookContainerHealthChanged hook, each counting its calls and recording the scope or root it received
+When the consumer calls Clone(), then HealthCheck() on the clone
+Then the service hook was called 1 time, with a scope of the clone
+And the container hook was called 1 time, with the clone
+```
+
 <!-- cases: N/A 1 default: same defaults as any container -->
-<!-- cases: 2 overrides: Clone copies the scheduler, CloneWithOpts takes the given one -->
+<!-- cases: 2 overrides: Clone copies the scheduler and the health hooks (verification 3, W5), CloneWithOpts takes the given ones -->
 <!-- cases: N/A 3 zero values: CloneWithOpts with no scheduler -->
 <!-- cases: N/A 4 boundaries: not applicable -->
 <!-- cases: N/A 5 errors: none -->
@@ -315,9 +423,19 @@ Examples:
   | HealthReport() on the root scope             |
 ```
 
+#### Scenario: Nil hooks are skipped
+```gherkin
+Given an injector that is never started, with a Healthchecker "db" returning nil, a HookContainerPanic and a Logf that record their calls
+And HookServiceHealthChanged holding nil and a hook R that counts its calls, HookContainerHealthChanged holding nil
+And AddServiceHealthChangedHook(nil) and AddContainerHealthChangedHook(nil) were called
+When the consumer calls HealthCheck() on the root scope and the hooks have run
+Then R was called 1 time
+And HookContainerPanic was not called and Logf recorded no hook panic
+```
+
 <!-- cases: 1 default: no hook registered is the default; nothing is called -->
 <!-- cases: 2 overrides: the InjectorOpts field and the Add method share one list -->
-<!-- cases: 3 zero values: a nil hook in the list is skipped -->
+<!-- cases: 3 zero values: a nil hook in the list is skipped, in the field and through the Add methods (verification 3, W5) -->
 <!-- cases: 4 boundaries: the first result counts as a change; an unchanged state does not -->
 <!-- cases: N/A 5 errors: hooks return nothing -->
 <!-- cases: 6 not found/duplicate: a removed service calls no service hook -->
@@ -354,10 +472,18 @@ When scope "child" is shut down
 Then within 1s the hook's last recorded call is (Unhealthy, Healthy)
 ```
 
+#### Scenario: Container hooks follow the service hooks of the same result
+```gherkin
+Given an injector that is never started, with a Healthchecker "db" returning nil
+And a HookServiceHealthChanged hook and a HookContainerHealthChanged hook appending to one shared list "service:<name>" and "container:<current state>"
+When the consumer calls HealthCheck() on the root scope and the hooks have run
+Then the list is "service:db", "container:healthy"
+```
+
 <!-- cases: 1 default: no hook registered -->
 <!-- cases: 2 overrides: field and Add method -->
 <!-- cases: 3 zero values: a nil hook is skipped -->
-<!-- cases: 4 boundaries: the first overall result counts as a change -->
+<!-- cases: 4 boundaries: the first overall result counts as a change, delivered after the service hooks of that result (verification 3, W5) -->
 <!-- cases: N/A 5 errors: hooks return nothing -->
 <!-- cases: 6 not found/duplicate: a removed service changes the overall state (timing: next requirement) -->
 <!-- cases: 7 lifecycle: rounds after Ready; a child scope shutdown; the phase gate is a read-time view and never fires this hook -->

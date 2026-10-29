@@ -43,15 +43,55 @@ Then the entry for "db" has State HealthHealthy
 <!-- cases: N/A 9 panics: a panicking check's error is specified in health-check-execution -->
 <!-- cases: N/A 10 backward compatibility: new API -->
 
+### Requirement: Report times count from the request and from the start of the check
+An entry's `PendingSince` SHALL be when its check in flight was requested, including any wait for a `HealthCheckParallelism` slot. For a check started for callers that waited behind a check they could not join, it was requested when the first of them asked. A recorded result's `Duration`, a recorded timeout's included, SHALL run from when the check started running.
+
+#### Scenario: Report times with a limiter
+```gherkin
+Given an injector that is never started, with a fake clock set to 2026-01-01T00:00:00Z, HealthCheckParallelism 1 and HealthCheckTimeout 20ms
+And a Healthchecker "a" whose check blocks on the fake clock for 1s, then returns nil, and a Healthchecker "b" whose check <b check>
+And a HealthCheck() call on the root scope is running the check of "a", with the check of "b" waiting for the slot
+When <then>
+Then the entry for "b" has <entry>
+
+Examples:
+  | b check                                                  | then                                                                      | entry                                                                 |
+  | returns nil                                              | the consumer reads HealthReport() with an already cancelled context        | PendingSince 2026-01-01T00:00:00Z                                     |
+  | blocks until released, ignoring its context              | the consumer starts reading HealthReport(), then the fake clock advances by 1s, then by 20ms, and the read returns | State HealthUnhealthy matching ErrHealthCheckTimeout and Duration 20ms |
+```
+
+#### Scenario: PendingSince of a check started behind an abandoned one
+```gherkin
+Given an injector that is never started, with a fake clock set to 2026-01-01T00:00:00Z
+And a service "db" whose first check blocks until a first release and whose later checks block until a second release, each ignoring its context
+And at 00:00:00 a HealthCheckNamedWithContext call left the first check of "db" running, abandoned
+And at 00:00:01 a HealthCheck() call on the root scope queued behind it
+When at 00:00:05 the first check returns, so a check starts for that call, and at 00:00:06 the consumer reads HealthReport() with an already cancelled context
+Then the entry for "db" has PendingSince 2026-01-01T00:00:01Z
+```
+
+<!-- cases: N/A 1 default: no limit by default, so no check waits for a slot -->
+<!-- cases: 2 overrides: HealthCheckParallelism 1 -->
+<!-- cases: N/A 3 zero values: a zero PendingSince when idle is in the previous requirement -->
+<!-- cases: 4 boundaries: a check still waiting for a slot; a timeout reached after the slot -->
+<!-- cases: 5 errors: the timeout error of a check timed out after its slot -->
+<!-- cases: N/A 6 not found/duplicate: not applicable -->
+<!-- cases: 7 lifecycle: queued, running and timed-out checks (review CR11); a check started behind an abandoned one (code review R16) -->
+<!-- cases: N/A 8 concurrency: covered by the parallelism requirements of health-check-execution -->
+<!-- cases: N/A 9 panics: not applicable -->
+<!-- cases: N/A 10 backward compatibility: new API -->
+
 ### Requirement: Report entries are ordered by scope path, then name
 `Services` SHALL be ordered by the path of scope names from the root (the root first, then shallower before deeper, then by name), and then by service name.
 
 #### Scenario: Entries are ordered by scope path then name
 ```gherkin
-Given an injector that is never started, with Healthchecker values "b" and "a" in the root scope, "z" in child scope "x", "c" in child scope "w", and "q" in scope "leaf" under "x" and "p" in scope "leaf" under "w"
+Given an injector that is never started, with Healthchecker values "b" and "a" in the root scope, "z" in child scope "x", "c" in child scope "w", and "p" in scope "leaf" under "x" and "q" in scope "leaf" under "w"
 When the consumer calls HealthReport() on the root scope
-Then the services are listed as root/"a", root/"b", "w"/"c", "x"/"z", "w/leaf"/"p", "x/leaf"/"q"
+Then the services are listed as root/"a", root/"b", "w"/"c", "x"/"z", "w/leaf"/"q", "x/leaf"/"p"
 ```
+
+The two "leaf" scopes share a name, and the service under "w/leaf" sorts after the one under "x/leaf" by name, so only the path order lists "q" first (verification 3, S4).
 
 <!-- cases: N/A 1 default: ordering has no option -->
 <!-- cases: N/A 2 overrides: none -->
@@ -114,13 +154,21 @@ Examples:
   | grandchild scope "leaf" | root/"cache", root/"q", "child"/"db", "leaf"/"queue"           |
 ```
 
+#### Scenario: The root report covers extension scopes
+```gherkin
+Given an injector that is never started, with an installed extension "redis" whose Extend registers a Healthchecker value "client" (healthy) in its scope
+When the consumer calls HealthReport() on the RootScope
+Then the report lists "ext:redis"/"client" as HealthHealthy
+And the health check of "client" was called 1 time
+```
+
 <!-- cases: N/A 1 default: coverage has no option -->
 <!-- cases: N/A 2 overrides: none -->
 <!-- cases: 3 zero values: a scope with no checker and no ancestors' checkers yields an empty Services slice -->
 <!-- cases: 4 boundaries: root, one and two levels deep -->
 <!-- cases: N/A 5 errors: none -->
 <!-- cases: 6 not found/duplicate: shadowing of "db"; the yielded default "q" -->
-<!-- cases: 7 lifecycle: nested scopes; extension scopes are scopes of the container -->
+<!-- cases: 7 lifecycle: nested scopes; extension scopes are scopes of the container (verification 3, W5) -->
 <!-- cases: N/A 8 concurrency: not applicable -->
 <!-- cases: N/A 9 panics: not applicable -->
 <!-- cases: N/A 10 backward compatibility: new API -->
@@ -268,6 +316,21 @@ When the consumer calls HealthReport() on the root scope
 Then the entry for "svc" is HealthHealthy
 ```
 
+#### Scenario: Rounds skip a service not started yet, forced paths check it
+```gherkin
+Given a started injector in PhaseReady, <scheduler>
+And an eager value "late" registered afterwards, implementing Start(ctx) error and HealthCheck() error counting its calls and returning nil
+When <caller> runs
+Then the health check of "late" was called <calls> times
+And HealthReport() on the root scope shows "late" as HealthUnknown
+
+Examples:
+  | scheduler                     | caller                                 | calls |
+  | with a manual HealthScheduler | the test's run of the stored round     | 0     |
+  | without a HealthScheduler     | HealthCheck() on the root scope        | 1     |
+  | without a HealthScheduler     | HealthCheckNamed(injector, "late")     | 1     |
+```
+
 <!-- cases: 1 default: no option -->
 <!-- cases: N/A 2 overrides: Refresh or Scope.Start is the way to make it checked -->
 <!-- cases: N/A 3 zero values: an idle container keeps today's semantics -->
@@ -277,7 +340,7 @@ Then the entry for "svc" is HealthHealthy
 <!-- cases: 7 lifecycle: registration and Extend after Ready, incremental start -->
 <!-- cases: N/A 8 concurrency: not applicable -->
 <!-- cases: N/A 9 panics: not applicable -->
-<!-- cases: 10 backward compatibility: forced paths still check such a service -->
+<!-- cases: 10 backward compatibility: forced paths still check such a service; rounds skip it like reads (verification 3, W5) -->
 
 ### Requirement: A monitored container's report runs only first checks
 While a `HealthScheduler` is scheduling the container's rounds, a report SHALL have `Monitored` true. A read SHALL return the recorded results, and SHALL check on demand only covered services that have no recorded result and no check in flight. A covered service whose first check is in flight SHALL be `HealthUnknown` with `PendingSince` set.
@@ -385,7 +448,7 @@ And "db" is HealthUnhealthy with the same "down" error
 <!-- cases: N/A 10 backward compatibility: new API -->
 
 ### Requirement: A report read is bounded by its caller's context and a per-service bound
-A read SHALL stop waiting for a service when ctx is done or when the report bound elapses: `HealthCheckTimeout` when positive, `DefaultHealthReportCheckTimeout` (10s) when 0, and no bound when negative. It SHALL report each unfinished check as `HealthUnhealthy` with an error matching `ErrHealthCheckTimeout` and the cause. `HealthCheckGlobalTimeout` SHALL NOT apply. `HealthReport()` and a nil ctx SHALL use `context.Background()`.
+A read SHALL stop waiting for a service when ctx is done or when the report bound elapses: `HealthCheckTimeout` when positive, `DefaultHealthReportCheckTimeout` (10s) when 0, and no bound when negative. It SHALL report each unfinished check as `HealthUnhealthy` (`HealthDegraded` when optional) with an error matching `ErrHealthCheckTimeout` and the cause. `HealthCheckGlobalTimeout` SHALL NOT apply. `HealthReport()` and a nil ctx SHALL use `context.Background()`.
 
 #### Scenario: A reader that stops waiting
 ```gherkin
@@ -415,9 +478,34 @@ And B's entry for "db" is HealthHealthy
 And a third read within the TTL returns HealthHealthy for "db" without a new check
 ```
 
+#### Scenario: HealthCheckGlobalTimeout does not bound a read
+```gherkin
+Given an injector that is never started, with a fake clock, HealthCheckTimeout 0 and HealthCheckGlobalTimeout 30ms
+And a service "db" whose HealthCheck() blocks until released and ignores any context
+When the consumer calls HealthReport() on the root scope and the fake clock advances by <advance>
+Then the read <returns>
+
+Examples:
+  | advance | returns                                                                  |
+  | 30ms    | has not returned                                                         |
+  | 10s     | has returned, with "db" HealthUnhealthy matching ErrHealthCheckTimeout   |
+```
+
+#### Scenario: A nil context reads like context.Background()
+```gherkin
+Given an injector that is never started, with a Healthchecker root/"db" returning nil and a Healthchecker "child"/"svc" returning nil
+When the consumer calls HealthReportWithContext(nil) on <target>
+Then the call does not panic, and the report is HealthHealthy with <entries> entries
+
+Examples:
+  | target              | entries |
+  | the RootScope       | 2       |
+  | child scope "child" | 2       |
+```
+
 <!-- cases: 1 default: 10s bound with HealthCheckTimeout 0 -->
-<!-- cases: 2 overrides: a positive and a negative HealthCheckTimeout; the caller's ctx -->
-<!-- cases: 3 zero values: HealthCheckTimeout 0; nil context -->
+<!-- cases: 2 overrides: a positive and a negative HealthCheckTimeout; the caller's ctx; HealthCheckGlobalTimeout does not apply (verification 3, W5) -->
+<!-- cases: 3 zero values: HealthCheckTimeout 0; nil context (verification 3, W5) -->
 <!-- cases: 4 boundaries: one millisecond before and exactly at the 10s default -->
 <!-- cases: 5 errors: the timeout error matches ErrHealthCheckTimeout and the cause with errors.Is -->
 <!-- cases: N/A 6 not found/duplicate: not applicable -->
@@ -480,8 +568,37 @@ Examples:
 <!-- cases: N/A 9 panics: specified in health-check-execution -->
 <!-- cases: 10 backward compatibility: forced paths keep their return values -->
 
+### Requirement: A check is recorded with what it returned
+A completed check SHALL be recorded with what it returned, also when its starter's bound cancelled its context meanwhile, unless a report path already recorded its timeout. A check that returns its context's error after that context ended SHALL be recorded as a timeout matching `ErrHealthCheckTimeout`.
+
+#### Scenario: A check its starter's bound cancelled is recorded with its result
+```gherkin
+Given an injector that is never started, with a fake clock and HealthCheckGlobalTimeout 30ms
+And a service "db" whose check <check>
+And a HealthCheck() call on the root scope started that check, and 10ms later the consumer called HealthCheckNamed(injector, "db")
+When the fake clock advances by 50ms, so the HealthCheck() call returns its timeout for "db", the check is released, and the consumer reads HealthReport() on the root scope
+Then the entry for "db" is <entry>
+
+Examples:
+  | check                                                                        | entry                                                                  |
+  | blocks until released, ignoring its context, then returns nil                | HealthHealthy                                                          |
+  | blocks until released, ignoring its context, then returns errors.New("down") | HealthUnhealthy, "down"                                                |
+  | blocks until released or its context is done, then returns ctx.Err()         | HealthUnhealthy, "DI: health check timeout: context deadline exceeded" |
+```
+
+<!-- cases: N/A 1 default: no option -->
+<!-- cases: 2 overrides: the starter's HealthCheckGlobalTimeout -->
+<!-- cases: N/A 3 zero values: not applicable -->
+<!-- cases: 4 boundaries: the starter's bound passed before the check returned -->
+<!-- cases: 5 errors: the check's nil, its own error, and its ended context's error as a timeout -->
+<!-- cases: N/A 6 not found/duplicate: not applicable -->
+<!-- cases: 7 lifecycle: a forced starter leaves at its bound, which records no timeout (design H8), while a joiner waits (verification 3, W1) -->
+<!-- cases: N/A 8 concurrency: specified in health-check-execution -->
+<!-- cases: N/A 9 panics: not applicable -->
+<!-- cases: N/A 10 backward compatibility: new API -->
+
 ### Requirement: Nothing is recorded for an abandoned check, a service that left, or after shutdown began
-A check cancelled because every caller waiting for it stopped waiting SHALL NOT be recorded, and neither SHALL a check whose service left the container while it was in flight (its scope shut down, or its registration was replaced). Once root `Shutdown` began, no result SHALL be recorded and no health hook SHALL be called.
+A check cancelled because every caller waiting for it stopped waiting SHALL NOT be recorded, and neither SHALL a check whose service left the container (its scope shut down, or its registration was replaced) while it was in flight or before it started. Once root `Shutdown` began, no result SHALL be recorded and no health hook SHALL be called.
 
 #### Scenario: An abandoned check is not recorded
 ```gherkin
@@ -521,7 +638,62 @@ Examples:
   | "db" is replaced in scope "child" with OverrideNamedValue    |
 ```
 
-<!-- cases: 7 lifecycle: during shutdown, no alert is raised for services being shut down; a service leaving with its check in flight (review R1) -->
+#### Scenario: A service that leaves before its check starts is not recorded
+```gherkin
+Given an injector with a Healthchecker root/"a" returning nil and a Healthchecker "b" in child scope "child" returning errors.New("down"), and <mode>
+And a Logf that shuts scope "child" down when the read or round starts the check of "a", after "b" was listed
+When <reader> runs
+Then the injector holds no health record and no member for "b"
+And the overall state the container hooks track is HealthHealthy
+
+Examples:
+  | mode                                        | reader                                  |
+  | it is never started                         | the consumer's HealthReport() on the root scope |
+  | a manual HealthScheduler, started           | the test's run of the stored round      |
+```
+
+#### Scenario: A timeout of a check started after its service left is not recorded
+```gherkin
+Given an injector with HealthCheckTimeout 20ms, a Healthchecker root/"a" returning nil and a Healthchecker "b" in child scope "child" that blocks until released, ignoring its context, and <mode>
+And a Logf that shuts scope "child" down when the read or round starts the check of "a", after "b" was listed
+When <reader> runs and reaches the 20ms bound of "b"
+Then the injector holds no health record and no member for "b"
+And the overall state the container hooks track is HealthHealthy
+
+Examples:
+  | mode                              | reader                                          |
+  | it is never started               | the consumer's HealthReport() on the root scope |
+  | a manual HealthScheduler, started | the test's run of the stored round              |
+```
+
+<!-- cases: 7 lifecycle: during shutdown, no alert is raised for services being shut down; a service leaving with its check in flight (review R1) or before it starts, its result or a report-path timeout (review R11, R12) -->
 <!-- cases: 8 concurrency: abandonment by every waiter; a check returning after its service left -->
 <!-- cases: N/A 9 panics: not applicable -->
 <!-- cases: N/A 10 backward compatibility: new behavior -->
+
+### Requirement: Report reads and rounds start no check for a service that left
+A report read or round SHALL NOT start the check of a covered service that left the container (its scope shut down, or its registration was replaced) before the read or round reached it; its entry SHALL show no result, as for any service that left before its check started. A service that leaves after the read or round reached it is covered by the previous requirement. Forced paths and the single-service functions SHALL run the checks they listed, as today.
+
+#### Scenario: A service that left before the read reached it is not checked
+```gherkin
+Given an injector with a Healthchecker root/"a" returning nil and a Healthchecker "b" in child scope "child" that counts its calls, and <mode>
+And a Logf that shuts scope "child" down when the read or round starts the check of "a", after "b" was listed
+When <reader> runs
+Then the health check of "b" was never called
+
+Examples:
+  | mode                              | reader                                          |
+  | it is never started               | the consumer's HealthReport() on the root scope |
+  | a manual HealthScheduler, started | the test's run of the stored round              |
+```
+
+<!-- cases: N/A 1 default: no option -->
+<!-- cases: N/A 2 overrides: none -->
+<!-- cases: N/A 3 zero values: not applicable -->
+<!-- cases: 4 boundaries: a service that left just before the read reached it; leaving after is the previous requirement -->
+<!-- cases: N/A 5 errors: not applicable -->
+<!-- cases: N/A 6 not found/duplicate: not applicable -->
+<!-- cases: 7 lifecycle: a child scope shut down between listing and checking, on a read and on a round (code review R15) -->
+<!-- cases: 8 concurrency: a service leaving between the read's registration check and the start of its check is not recorded (previous requirement) -->
+<!-- cases: N/A 9 panics: not applicable -->
+<!-- cases: 10 backward compatibility: forced paths and single-service functions keep running a listed service's check, as today -->

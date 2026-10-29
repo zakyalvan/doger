@@ -100,8 +100,8 @@ Conclusion: gocron fits as the backend behind a small root-module interface. It 
   - if shutdown began meanwhile, it calls stop at once;
   - otherwise it stores stop and sets monitored.
 
-  An error or a recovered panic is logged (`DI: health scheduler failed: ...`) or passed to `HookContainerPanic(root, "healthscheduler", v)`. The container stays unmonitored and on-demand reads keep working. The state update and the closing of the "starting" signal run in a `defer`, so a panic `HookContainerPanic` raises propagates from Start and leaves scheduling failed; a later Shutdown does not wait for a schedule call that will never finish (review R3).
-- **Stop.** Stopping comes first in `shutdownAsWinner`, and on the root-`*Scope` bypass path. Under the mutex the container sets `closing`, so nothing is recorded and no hook fires. It then cancels the monitor context, which cancels the rounds in progress, and calls stop with `context.WithoutCancel(shutdownCtx)`. That way an ended Shutdown context (shutdown-context, #14) cannot make Shutdown return before the scheduler's goroutines exit. Shutdown waits for stop. A stop error is logged; a stop panic is recovered and passed to `HookContainerPanic(root, "healthscheduler", v)` when set, logged otherwise (review R8). If a schedule call is still in progress, Shutdown waits for it, then calls its stop. The checks in flight have their contexts cancelled but are not waited for: a check may still run while its service shuts down (CR4, flagged behavior change 3).
+  An error or a recovered panic is logged (`DI: health scheduler failed: ...`) or passed to `HookContainerPanic(root, "healthscheduler", v)`. The container stays unmonitored and on-demand reads keep working. A stop function returned together with an error is called at once, through `callStop` with `context.Background()`, before Start returns, and is not kept for Shutdown: a third-party scheduler may have started part of its schedule (verification 3, S2). The state update and the closing of the "starting" signal run in a `defer`, so a panic `HookContainerPanic` raises propagates from Start and leaves scheduling failed; a later Shutdown does not wait for a schedule call that will never finish (review R3).
+- **Stop.** Stopping comes first in `shutdownAsWinner`, and on the root-`*Scope` bypass path. Under the mutex the container sets `closing`, so nothing is recorded and no hook fires. It then cancels the monitor context, which cancels the rounds in progress, and calls stop with `context.WithoutCancel(shutdownCtx)`. That way an ended Shutdown context (shutdown-context, #14) cannot make Shutdown return before the scheduler's goroutines exit. Shutdown waits for stop. A stop error is logged; a stop panic is recovered and passed to `HookContainerPanic(root, "healthscheduler", v)` when set, logged otherwise (review R8). If a schedule call is still in progress, Shutdown waits for it, also past the end of Shutdown's context, then calls its stop, so no goroutine of the schedule outlives Shutdown. This differs from a blocked Starter, which Shutdown's deadline bounds (shutdown-context); the `HealthScheduler` and `ShutdownWithContext` godoc say so (verification 3, S3). The contexts of the checks in flight are cancelled with the cause `ErrStartAfterShutdown` ("DI: container is shut down"), which only a check reading `context.Cause` sees; its waiting callers get `timeoutError(context.Canceled)` (verification 3, S1). On the root-`*Scope` bypass the phase stays unchanged, yet recording and hooks end for good, as on the RootScope path (documented, W4). The checks in flight have their contexts cancelled but are not waited for: a check may still run while its service shuts down (CR4, flagged behavior change 3).
 - **Rejected:**
   - A built-in timer loop in the root module. It is default-on in the first version and was rejected in the audit: it goes against the prior art, leaks in every `Start`-without-`Shutdown` test, and the TTL cache already solves load amplification. The user prefers gocron.
   - Importing gocron in the root module: forced dependencies on every consumer.
@@ -109,14 +109,15 @@ Conclusion: gocron fits as the backend behind a small root-module interface. It 
 
 **H2. One monitor per root, keyed by service wrapper.**
 - **State.** A `healthMonitor` on `RootScope` holds, under one mutex: `records`, `inflight`, the transition queue, the scheduling state (`idle`/`starting`/`scheduled`/`stopped`) and the stop function, all keyed by wrapper. A wrapper is unique per registration, so an Override or a re-registration starts a fresh record.
-- **Pruning.** A record is pruned when its wrapper is removed: through `RootScope.forget`, which the registration-replacement and scope-shutdown paths already call once their scope lock is released, and as a fallback when a read or round lists services. `forget` also marks the service's call in flight as left (H9). Pruning is never done under a scope lock (the earlier extra call in `storeLocked` is removed: CR10).
+- **Pruning.** A record is pruned when its wrapper is removed: through `RootScope.forget`, which the registration-replacement and scope-shutdown paths already call once their scope lock is released, and as a fallback when a read or round lists services. `forget` also marks the service's call in flight as left (H9). A check started after its service left (the read or round listed it just before) is caught when it returns: `finishCall` records only while the wrapper is still registered under its name in its scope, checked before it takes the monitor mutex; a removal after that check finds the call in flight and marks it left (review R11). A report-path waiter whose bound elapsed checks the same before it takes the monitor mutex to record its timeout (review R12). Pruning is never done under a scope lock (the earlier extra call in `storeLocked` is removed: CR10).
 - **Lock rule.** The monitor mutex is never held while listing services, calling a check, or calling user code (the scheduler, hooks).
 
 **H3. An in-flight check is a shared call; each waiter has its own bound.**
-- **States.** A `sharedCall` per service is queued (waiting for a slot), running, or returned. It holds a done channel, a result, a waiter count and a cancel function. The first caller creates it and runs it on a new goroutine; later callers join.
-- **Waiting.** Each waiter selects on `done`, its own ctx, and a timer for its own bound, started at its call (H8). When it stops early it gets `timeoutError(cause)`.
-- **Abandonment.** When the waiter count reaches zero before the call returns, the check's ctx is cancelled and the call is marked abandoned. It stays in `inflight` until its goroutine exits; a newcomer waits on its `done` within its own bound, then creates a fresh call. An abandoned result is not recorded.
+- **States.** A `sharedCall` per service is queued (waiting for a slot), running, or returned. It holds a done channel, a result, a waiter count and a cancel function. The first caller creates it and runs it on a new goroutine; later callers join. A caller whose context has already ended creates none: with no call in flight it can join, it neither starts one nor queues for a fresh one, and its wait ends at once with its timeout error, as on 76404ef (verification W2).
+- **Waiting.** Each waiter selects on `done`, its own ctx, and a timer for its own per-service bound, started at its call (H8), or, while its call waits for a slot, when the check starts running (H5, review R9). When it stops early it gets `timeoutError(cause)`.
+- **Abandonment.** When the waiter count reaches zero before the call returns, the check's ctx is cancelled and the call is marked abandoned. It stays in `inflight` until its goroutine exits; a newcomer waits on its `done` within its own bound, started at its call and still running while the fresh call waits for a slot, so a hung abandoned check never holds it past that bound (review R2, verification W1), then creates a fresh call. A newcomer whose context ends before the abandoned call returns gets no fresh call: `finishCall` skips it, and it leaves in `wait` (code review R14). Each newcomer keeps its own wait spec, so the fresh call takes the pooled flag and bound of its own starter's path, and a joining newcomer of another path keeps its own slot rule, never the old call's (review R10). An abandoned result is not recorded.
 - **The check's context.** It is built from `context.WithoutCancel(starter ctx)`, the earlier of the starter's deadline and the starter's bound (recorded with `withHealthCheckDeadline`), and a cancel for abandonment and shutdown.
+- **A waiter's result** (verification 3, W1). A waiter whose own context and bound are still live when the check returns gets what the check returned. The check's context being done, which the starter's bound may have caused after the starter left, does not by itself turn that into a timeout. Only a check that returns its context's error once that context ended gives `timeoutError(cause)`. A waiter whose own context or bound ended gets its timeout as before (`callResult`). The record follows the same rule (H9).
 - **Why not `x/sync/singleflight`.** Its function takes no context, a waiter leaving cannot cancel it, it has no per-waiter bound, and it would add a dependency.
 - **Removed from v1:** per-scope run coalescing (old H4). Per-service sharing already caps goroutines and calls during overlap (the "Concurrent forced calls share the in-flight checks" scenario). Readers that need a cost independent of the number of callers use reports.
 
@@ -129,10 +130,10 @@ Conclusion: gocron fits as the backend behind a small root-module interface. It 
   - a non-checker is kept as a nil entry for the forced map.
 - `rootForcedCheckers(root)` adds the extension scopes keyed `<scope name>/<name>`, replacing the bespoke loop in `RootScope.HealthCheckWithContext`.
 - `containerCheckers(root)` walks every scope for rounds and the root report, and deduplicates by source wrapper, so an alias or export adds no report entry (health-reports).
-- **Non-blocking lazy check (D9).** `serviceLazy` gets an atomic `built` flag, set after the build completes. `isHealthchecker` and `healthcheck` read it and copy the instance without the build lock. A service being built counts as not built. This fixes D9 at its `76404ef` location, the queued goroutine's `serviceHealthCheckFunc`.
+- **Non-blocking lazy check (D9).** `serviceLazy` gets an atomic `published` pointer (the built flag and the instance copy in one, see Implementation notes), set after the build completes. `isHealthchecker` and `healthcheck` read it and copy the instance without the build lock. A service being built counts as not built. This fixes D9 at its `76404ef` location, the queued goroutine's `serviceHealthCheckFunc`.
 
 **H5. A context-aware limiter for checks started by forced runs, reads and rounds.**
-- `HealthCheckParallelism > 0` creates a `chan struct{}` of that size in `NewWithOpts`, with no goroutine. A queued call's goroutine acquires a slot before it runs; waiting honors each waiter's ctx and bound through H3. The check's own bound starts after the slot.
+- `HealthCheckParallelism > 0` creates a `chan struct{}` of that size in `NewWithOpts`, with no goroutine. A queued call's goroutine acquires a slot before it runs; waiting honors each waiter's ctx and bound through H3. The check's own bound starts after the slot, and so does the per-service bound of every caller waiting for it; each caller's ctx and `HealthCheckGlobalTimeout` still bound its wait from its call (review R9). A caller queued behind an abandoned check is the exception: its per-service bound runs from its call (H3, verification W1). This matches the 76404ef pool, whose workers applied `HealthCheckTimeout` when they ran a job. A check holds its slot until it returns, its context ends, or the report bound has passed since it took the slot. A check that keeps running after that, ignoring its context, no longer counts against the limit, so a hung check never stalls the callers queued behind it, and their deferred per-service bound always starts (code review R13). This deviates from the 76404ef pool, where a hung worker stayed blocked (flagged).
 - **Single-service functions take no slot,** as today. When the call they need is queued, they take it over and run it at once on a new goroutine, without a slot; the queued goroutine then finds it claimed and gives up its wait for a slot. So composite checks never deadlock, without a nesting marker.
 - **Removed:** `jobPool`, `newJobPool`, `RootScope.healthCheckPool` (all unexported). This fixes D2 and D6.
 - **Removed from v1:** the ctx marker for nesting and `ErrHealthCheckCycle` (old H16). The takeover rule makes the marker unnecessary, and cycle detection was beyond the defects (out of scope, as today).
@@ -153,8 +154,9 @@ Conclusion: gocron fits as the backend behind a small root-module interface. It 
 The forced paths keep today's semantics (no default bound). Report paths get a default bound, so a `HealthReport()` with no ctx never hangs on a check that ignores its context (audit item 8).
 
 **H9. Recording: one record per check.**
-- **What is recorded.** A completed check is recorded unless it was abandoned, or a report path already recorded its timeout (the late result is discarded, so a slow check does not flap: audit item 9). Nothing is recorded once `closing` is set, nor for a call marked left because its service left the container while it ran: such a call starts no fresh call for its `next` waiters, which get its result (review R1). A report-path waiter that reaches its bound while waiting in `next` for a call it could not join records its timeout too (review R2).
+- **What is recorded.** A completed check is recorded unless it was abandoned, or a report path already recorded its timeout (the late result is discarded, so a slow check does not flap: audit item 9). It is recorded with what it returned, under H3's waiter-result rule: a forced starter leaving at its bound records no timeout (H8), so its check's later nil is recorded healthy (verification 3, W1). Nothing is recorded once `closing` is set, nor for a call marked left because its service left the container while it ran: such a call starts no fresh call for its `next` waiters, which get its result (review R1). A report-path waiter that reaches its bound while waiting in `next` for a call it could not join records its timeout too (review R2). Neither a result nor a timeout is recorded for a service that left before its check started (review R11, R12).
 - **Severity.** It is applied when recording: a failing optional check is stored as `HealthDegraded`. Forced paths return the raw error.
+- **Times.** `PendingSince` is when the call in flight was created, its wait for a slot included. A recorded result's `Duration`, a timeout's included, runs from when the check started running (review CR11). A fresh call started for `next` waiters is dated from when the first of them asked (code review R16).
 
 **H10. Reports and read modes.** `HealthReportWithContext` reads `Phase()` and the monitor state:
 - **Monitored** (a schedule is active): build from records, and check on demand only covered services with no record and no call (replaces v1's wake channel for new services).
@@ -162,7 +164,8 @@ The forced paths keep today's semantics (no default bound). Report paths get a d
 - **Starting, Started, Closing:** records only.
 - **Closed:** an empty report with state Unknown.
 - **Eligibility** (audit item 4). Once the phase is not Idle, a covered wrapper that is a Start candidate (the `container-start` candidacy rules) and not `isStarted` is listed Unknown and not checked by reads or rounds. Forced paths ignore this.
-- **Ordering** is by scope name path, then service name.
+- **Services that left** (code review R15). `checkOnDemand` and `healthRound` start no check for a covered service its scope no longer holds (`stillRegistered`, before `joinOrStart`). The recording guards in `finishCall` and `wait` stay, for a service that leaves between that check and the start; a white-box test covers them, since the R11 and R12 scenarios no longer reach them.
+- **Ordering** is by scope name path, then service name; each covered scope's path is computed once per read, not per comparison (review CR12).
 - **The phase gate** is applied last (H12).
 
 **H11. Hooks: ordered, serialized, re-entrant delivery.** Unchanged from v1:
@@ -217,7 +220,7 @@ The forced paths keep today's semantics (no default bound). Report paths get a d
   var _ doger.HealthScheduler = (*Scheduler)(nil)
   ```
 - **Own mode.** `gocron.NewScheduler(append([WithClock(clock)], schedulerOpts...)...)`, then `NewJob(def, NewTask(func(ctx context.Context){ round(ctx) }), append([WithName("doger-health-round"), WithSingletonMode(LimitModeReschedule), WithStartAt(startAt)], jobOpts...)...)`, then `Start()`. `startAt` is `WithStartImmediately()` unless `WithStartAt` replaced it: gocron combines start-at options (each sets its own field), so a start-at given through `WithJobOptions` cannot replace the default; hence the dedicated option (decided during implementation, 2026-10-28). On a `NewJob` error it shuts the scheduler down before returning, so no goroutine remains. Stop is `ShutdownWithContext`.
-- **Shared mode.** It only calls `NewJob`, wrapping the round to count the rounds of this job in progress, and returns a stop that calls `RemoveJob(id)`, treats `gocron.ErrJobNotFound` as removed (the owner may have shut its scheduler down first: review R5), then waits within ctx until no round of this job runs (review R6).
+- **Shared mode.** It only calls `NewJob` (the task is built once, for the mode in use: review CR13), wrapping the round to count the rounds of this job in progress, and returns a stop that calls `RemoveJob(id)`, treats `gocron.ErrJobNotFound` as removed (the owner may have shut its scheduler down first: review R5), then waits within ctx until no round of this job runs (review R6).
 - **Functional options return errors.** The design-pattern rule is to validate configuration at construction.
 - **Docs.** godoc warns against gocron's distributed elector/locker for this job, since health is per instance.
 
@@ -242,13 +245,14 @@ The forced paths keep today's semantics (no default bound). Report paths get a d
 - [A joining caller's context values never reach the check] → Flagged; documented on the options.
 - [A check that ignores its context stays in flight until it returns] → One goroutine; each caller stops at its own bound; report paths record a timeout.
 - [A check may run while its service shuts down: root Shutdown cancels checks in flight without waiting] → Kept, as the spec forbids Shutdown from waiting for checks; documented on Shutdown and the health-check APIs (CR4, flagged behavior change 3).
-- [A hung check holding a slot delays others under `HealthCheckParallelism`] → Callers stop at their bounds; documented.
+- [A hung check under `HealthCheckParallelism`] → It gives its slot back once its context ends or the report bound has passed, and runs on outside the limit until it returns: more than n checks can be running, at most n of them holding slots (code review R13).
 - [Readiness turns Unknown when a Starter is registered after Ready, until `Refresh`] → Intended (the service is not serving); documented on `Extend` and in the report godoc.
 - [A report covering no service is Healthy, so a mistyped tag yields Healthy] → Use the exported constants; documented on `MatchHealthTags`.
 - [Consumers of the gocron adapter get gocron's dependencies] → Only by importing the adapter; the root module is unchanged.
 - [gocron's `ShutdownWithContext` waits up to its stop timeout for a running job] → The container cancels the round ctx before stop, and a round returns at its ctx.
 - [goleak may briefly see a cancelled context-aware check exiting after Shutdown] → goleak retries; scenarios release every check.
 - [The monitor mutex is on the report path] → Reads copy records and do no I/O while holding it; `BenchmarkHealthReport_Monitored` guards it.
+- [Shutdown waits past its deadline for a `ScheduleHealthRounds` call still in progress] → Kept so the schedule's stop always runs (H1); documented on `HealthScheduler` ("return promptly") and `ShutdownWithContext` (verification 3, S3).
 
 ## Public API & Defaults
 
@@ -327,6 +331,7 @@ Test files follow the source files:
 
 Conventions:
 - Concurrency tests run under `-race` with `testWithTimeout`.
+- A loop that advances a fake clock until a call returns has a step limit and the test calls `testWithTimeout`, so a regression fails the test instead of hanging the package (code review CR14).
 - Time uses `clockwork.NewFakeClock()` (`BlockUntilContext`) or `synctest.Test`.
 - A `manualScheduler` test double (in `health_monitor_test.go`) implements `HealthScheduler` for the scheduling scenarios.
 
@@ -336,7 +341,7 @@ Conventions:
 | health-check-execution | One caller leaving does not cancel the check for the others | `TestHealthCheck_CallerLeaves` | race |
 | health-check-execution | Deadline and values reach the check | `TestHealthCheck_StarterContext/<row>` | table |
 | health-check-execution | The only caller leaving cancels the check | `TestHealthCheck_LastCallerCancels` | race |
-| health-check-execution | A check that ignores its context does not pile up | `TestHealthCheck_NoPileUp/<row>` (regression D1) | table, race, goleak |
+| health-check-execution | A check that ignores its context does not pile up | `TestHealthCheck_NoPileUp/<row>` (regression D1); caching is off, so the HealthReport row meets the check in flight (verification 2, W1) | table, race, goleak |
 | health-check-execution | Concurrent forced calls share the in-flight checks | `TestHealthCheck_ConcurrentShareInFlight` | race |
 | health-check-execution | A call that joins a running check gets its result | `TestHealthCheck_JoinRunning` | race |
 | health-check-execution | An abandoned check is never joined | `TestHealthCheck_AbandonedNotJoined` | race |
@@ -344,7 +349,7 @@ Conventions:
 | health-check-execution | Parallelism caps running checks | `TestHealthCheck_ParallelismCap/<row>` | table, race |
 | health-check-execution | Waiting for a slot honors the context | `TestHealthCheck_SlotWaitHonorsContext` (regression D2) | race |
 | health-check-execution | Registration is not blocked by checks waiting for a slot | `TestHealthCheck_SlotWaitDoesNotBlockProvide` (regression D2) | race |
-| health-check-execution | A report-path check's timeout does not count the wait for a slot | `TestHealthReport_BoundStartsAtSlot` | fake clock |
+| health-check-execution | A caller's per-service bound does not count the wait for a slot | `TestHealthCheck_BoundStartsAtSlot/<row>` (review R9) | table, fake clock |
 | health-check-execution | Many services with a small limit all complete | `TestHealthCheck_NoQueueLimit` | unit |
 | health-check-execution | Nested checks complete under a limit of one | `TestHealthCheck_SingleTakesOverQueued/<row>` | table, race |
 | health-check-execution | New starts no goroutine | `TestNew_NoHealthGoroutine/<row>` (regression D6) | table |
@@ -417,7 +422,7 @@ Conventions:
 | gocron-health-scheduler | Overridden cadence | `TestScheduler_Overrides/<row>` | table, fake clock |
 | gocron-health-scheduler | Scheduler options reach gocron | `TestScheduler_SchedulerOptions` | unit |
 | gocron-health-scheduler | Invalid options | `TestNew_InvalidOptions/<row>` | table |
-| gocron-health-scheduler | A schedule gocron rejects | `TestScheduler_RejectedJob` | goleak |
+| gocron-health-scheduler | A schedule gocron rejects | `TestScheduler_RejectedJob/<row>` (the scheduler row: verification 3, W5) | table, goleak |
 | gocron-health-scheduler | Shared scheduler | `TestScheduler_Shared` | unit |
 | gocron-health-scheduler | Clean stop | `TestScheduler_CleanStop/<row>` | table, goleak |
 | health-check-execution | A panic HookContainerPanic raises reaches the waiting callers | `TestHealthCheck_HookPanicPropagates/<row>` (review R4) | table |
@@ -427,6 +432,33 @@ Conventions:
 | health-check-scheduling | A failing stop does not fail Shutdown | `TestHealthScheduler_StopFailure/<row>` (review R8) | table |
 | health-check-scheduling | A service appearing changes the overall state at the next round | `TestHookContainerHealthChanged_Appearing/<row>` (W3) | table |
 | gocron-health-scheduler | Stopping a shared schedule | `TestScheduler_SharedStop/<row>` (review R5, R6) | table |
+| health-check-execution | Callers queued behind a check they could not join keep their own slot rule | `TestHealthCheck_QueuedKeepSlotRule/<row>` (review R10) | table |
+| health-reports | A service that leaves before its check starts is not recorded | `TestHealthReport_NotRecordedLeftBeforeStart/<row>` (review R11); `TestHealthReport_LeftDuringStart/<row>` (white-box: the service leaves between the read's registration check and the start of its check) | table |
+| health-reports | Report times with a limiter | `TestHealthReport_TimesWithLimiter/<row>` (review CR11) | table, fake clock |
+| health-check-scheduling | A shutdown through the root's own *Scope ends health recording | `TestHealthScheduler_RootScopeShutdownEndsRecording/<row>` (W4) | table |
+| health-reports | A timeout of a check started after its service left is not recorded | `TestHealthReport_TimeoutNotRecordedLeftBeforeStart/<row>` (review R12); `TestHealthReport_LeftDuringStart/<row>` (white-box, as above) | table |
+| health-check-execution | A caller whose context has already ended starts no check | `TestHealthCheck_EndedContextStartsNoCheck/<row>` (verification W2) | table |
+| health-check-execution | A caller queued behind an abandoned check keeps its bound from its call | `TestHealthCheck_QueuedBehindAbandonedKeepsBound/<row>` (verification W1) | table, synctest |
+| health-check-execution | A check that outlives its bound gives its slot back | `TestHealthCheck_OutlivedBoundFreesSlot/<row>` (code review R13) | table, synctest |
+| health-check-execution | A caller that gives up behind an abandoned check starts no fresh check | `TestHealthCheck_EndedContextQueuesNoFreshCheck/<row>` (code review R14) | table, synctest, white-box |
+| health-reports | PendingSince of a check started behind an abandoned one | `TestHealthReport_PendingSinceBehindAbandoned` (code review R16) | synctest, fake clock |
+| health-reports | A service that left before the read reached it is not checked | `TestHealthReport_LeftBeforeReadNotChecked/<row>` (code review R15) | table |
+| health-check-execution | A joining caller gets the check's result after the starter's bound | `TestHealthCheck_JoinerGetsCheckResult/<row>` (verification 3, W1) | table, synctest, fake clock |
+| health-reports | A check its starter's bound cancelled is recorded with its result | `TestHealthReport_RecordedAfterStarterBound/<row>` (verification 3, W1) | table, synctest, fake clock |
+| health-check-scheduling | A stop returned with an error is called at once | `TestHealthScheduler_StopReturnedWithError` (verification 3, S2) | unit |
+| health-check-execution | Each caller keeps its own bound when it joins a check, row `forced_global_30ms_at_29ms` | `TestHealthCheck_JoinerOwnBound/forced_global_30ms_at_29ms` (verification 3, S4) | table, fake clock |
+| health-check-execution | HealthCheckGlobalTimeout bounds the wait for a slot from the call | `TestHealthCheck_GlobalTimeoutBoundsSlotWait/<row>` (verification 3, W5) | table, synctest, fake clock |
+| health-check-execution | With no caller waiting, the hook's panic is raised on the check's goroutine | `TestHealthCheck_HookPanicNoWaiterCrashes` (child process; verification 3, W5) | subprocess |
+| health-reports | The root report covers extension scopes | `TestHealthReport_CoverageExtension` (verification 3, W5) | unit |
+| health-reports | Rounds skip a service not started yet, forced paths check it | `TestHealthReport_UnstartedByCaller/<row>` (verification 3, W5) | table |
+| health-reports | HealthCheckGlobalTimeout does not bound a read | `TestHealthReport_GlobalTimeoutNotApplied/<row>` (verification 3, W5) | table, synctest, fake clock |
+| health-reports | A nil context reads like context.Background() | `TestHealthReport_NilContext/<row>` (verification 3, W5) | table |
+| health-check-scheduling | Callers of a check cancelled by Shutdown | `TestHealthScheduler_ShutdownCancelCause` (verification 3, S1) | race |
+| health-check-scheduling | Shutdown waits for a scheduler call in progress | `TestHealthScheduler_ShutdownWaitsForSchedulerCall` (verification 3, S3) | synctest |
+| health-check-scheduling | Clone keeps the health hooks | `TestHealthHooks_CloneKeepsHooks` (verification 3, W5) | unit |
+| health-check-scheduling | Nil hooks are skipped | `TestHealthHooks_NilSkipped` (verification 3, W5) | unit |
+| health-check-scheduling | Container hooks follow the service hooks of the same result | `TestHealthHooks_ContainerAfterService` (verification 3, W5) | unit |
+| gocron-health-scheduler | Options win over the defaults and accumulate in order | `TestScheduler_OptionPrecedence/<row>` (verification 3, W5) | table, fake clock |
 
 **Hot paths and their tests:**
 
@@ -434,19 +466,22 @@ Conventions:
 |---|---|
 | Forced run (`HealthCheckWithContext`, root with extension scopes) | `TestHealthCheck_ConcurrentShareInFlight`, `_MapShape`, `_EachCheckOnce`, `_CallerLeaves`, the existing `healthcheck_timeout_test.go` and extension suites |
 | Single-service functions | `TestHealthCheck_NoPileUp/HealthCheckNamed`, `_JoinerOwnBound`, `_JoinRunning`, `_SingleTakesOverQueued` |
-| Shared call: join, leave, bound, abandonment | `_JoinerOwnBound`, `_LastCallerCancels`, `_AbandonedNotJoined`, `TestHealthReport_LateResultDiscarded`, `_AbandonedNotRecorded` |
-| Limiter | `_ParallelismCap`, `_SlotWait*`, `_NoQueueLimit`, `TestHealthReport_BoundStartsAtSlot` |
+| Shared call: join, leave, bound, abandonment | `_JoinerOwnBound`, `_LastCallerCancels`, `_AbandonedNotJoined`, `TestHealthReport_LateResultDiscarded`, `_AbandonedNotRecorded`, `_TimeoutNotRecordedLeftBeforeStart` |
+| Limiter | `_ParallelismCap`, `_SlotWait*`, `_NoQueueLimit`, `_BoundStartsAtSlot`, `_QueuedKeepSlotRule`, `_OutlivedBoundFreesSlot` |
 | Listing services | `TestServiceLazy_HealthCheckDuringBuild`, `TestHealthCheck_EachCheckOnce`, `TestHealthReport_Coverage`, `_Membership` |
 | Report read: monitored, on-demand, gate | `TestHealthReport_*`, plus `BenchmarkHealthReport_Monitored` (1,000 services) |
 | Scheduler lifecycle: Ready, failure, stop, clone | `TestHealthScheduler_*`, `TestHealthRound_*` |
 | Hooks | `TestHook*HealthChanged*`, `TestHealthHooks_*` |
 | Container state per result (review R7) | `TestHealthRound_AllocsLinear`: allocations of a round at 1,000 services stay under 2.5× those at 500 (they were 3.85×), plus `BenchmarkHealthRound` (1,000 services) |
 | Logging on cached reads (CR8) | `TestHealthReport_CachedReadsLogNothing` |
+| Report sorting (CR12) | `TestHealthReport_ReadAllocs`: a monitored read of 2,000 services across two scopes takes under 8 allocations per service (15.3 before) |
 | gocron adapter | `scheduler/gocron` suite under `-race` with goleak |
 
 **Benchmark** (`go test -run '^$' -bench BenchmarkHealthReport_Monitored -benchmem -count=3 .`, Go 1.27.3, Apple M4 Pro, 2026-10-28): a monitored read of 1,000 recorded services takes 736–800 µs/op, 1.06 MB/op and 9,053 allocs/op, and runs no check. Listing the services and building the entries dominate; the monitor mutex is held only to copy records.
 
 `BenchmarkHealthRound` (`go test -run '^$' -bench 'BenchmarkHealthRound$' -benchmem -count=3 .`, same machine, 2026-10-28, after review R7's fix): a round re-recording 1,000 results takes 3.01–3.06 ms/op, 2.80 MB/op and 33,085 allocs/op (R7 measured 351 ms and 1.04M allocations before). The same run re-measured `BenchmarkHealthReport_Monitored` at 693–753 µs/op, 0.88 MB/op and 8,052 allocs/op.
+
+`BenchmarkHealthReport_Monitored` after review CR12's fix (`go test -run '^$' -bench BenchmarkHealthReport_Monitored -benchmem -count=3 .`, same machine, 2026-10-28): 586–609 µs/op, 0.75 MB/op and 3,051 allocs/op (8,052 before). `TestHealthReport_ReadAllocs` measures 3.0 allocations per service for a monitored read of 2,000 services across the root and a grandchild scope, with and without `-race` (15.2 before, 51.7 under `-race`).
 
 **Docs:**
 - `ExampleScope_HealthReport`: an idle container, on-demand reads with the TTL.
@@ -485,7 +520,26 @@ Recorded while applying the tasks on 2026-10-28; the tests that passed on arriva
 - 31.1: the ported test is renamed `TestRootScope_HealthCheckTimeouts`, since the helper it was named after is removed in 31.2; the no-timeout row goes through `HealthCheckWithContext` (both checks at once, as the queued helper ran them) and the 10ms row through `HealthCheckNamedWithContext`.
 - 32.1: the Clone and CloneWithOpts rows pass on arrival. A goroutine started temporarily in `CloneWithOpts` made both fail only when it outlived goleak's retries (about 2s): one sleeping 200ms passed, one sleeping 5s failed both rows.
 - 33.2: the cross-check found no test for the W3 scenario "A service appearing changes the overall state at the next round" (no task created it); `TestHookContainerHealthChanged_Appearing` was added then. It passes on arrival (W3 specified the existing behavior) and failed on both rows when `keepOnly` temporarily stopped counting an appearing member.
+- 34.2: the test advances the clock after the entry returns until every check it stopped waiting for has returned, so the RED rows fail on their assertions rather than on a synctest deadlock at Shutdown. The 9s/0s row passed on arrival; 9s/2s, three 6s and `HealthCheck()` failed with timeouts, 10 runs out of 10.
+- 34.3: only a waiter of a pooled call still waiting for a slot defers its bound (`newCallWaiter` with queued); a waiter of a running call, a waiter of an unpooled call and a waiter in `next` start it at their call, the latter because its bound must cover its wait on an abandoned check (review R2). `callResult` checks the started deadline, as `healthCheckResult` does for a bound recorded in the context.
+- 34.4: two Extract Function steps: `startBoundLocked` (the start of a deferred bound, at claim) and `newCallWaiter` (the waiter of every `joinOrStart` branch, whose bound starts at once unless its call is queued).
+- 35.2: the second row's `HealthReport()` starts while "b" waits for the slot and returns after the 1s and 20ms advances; a read begun after them waits in `next` for "b"'s abandoned check. One `HealthCheck()` queues "a" and "b" in map order, so the test starts it with "a" alone, then registers "b" and starts a second `HealthCheck()`, which joins "a" and queues "b".
+- 35.3: a timeout recorded for a call that never started running has Duration 0. This supersedes note 11.2's "from when the call was queued".
+- 36.4: `call.left` does not change while `finishCall` runs, so its branch is hoisted out of the loop before `startFreshLocked` is extracted.
+- 37.4: extracted as the method `healthTarget.stillRegistered()`, since `root_start.go` already declares a function `stillRegistered(*startCandidate)`.
+- 38.2: passed on arrival; both rows failed when `Scope.ShutdownWithContext` temporarily reset `closing` after `stopScheduling` (db recorded HealthHealthy, one hook call).
+- 39.2: the read measured 15.2 allocations per service without `-race` and 51.7 with it; after 39.3, 3.0 in both.
+- Flaky tests seen while applying groups 34–41, each failing at `631c942` too (run in a separate worktree): `TestScope_ShutdownWithContextExpiration_Timeout`/`_Cancellation` (wall-clock margins), `TestHealthReport_Degraded` (a real 10ms bound under `-count=200`), `TestHealthReport_NoRecordAfterShutdown` (under `-count=4`) and `TestScope_HealthCheckWithContextExpiration_ChildScopes` (57 failures in 500 runs at `631c942`, 53 with groups 34–37).
+- R12 (found after 37.3, probe run 3 times, failing each time, deleted after the run): with `HealthCheckTimeout` 20ms, a hung "b" and the R11 `Logf`, a root `HealthReport()` timed out on "b" after its scope shut down and recorded the timeout (`recordTimeoutLocked` checks only `left`): "b" was recorded and kept as a member, and the tracked state was Unhealthy. The R11 requirement's text already covered it; group 42 adds its scenario and fix.
 - 22.2: adding scheduler/gocron to go.work required rows in the existing guard tests TestToolchain_GoDirective and TestModuleIdentity_WorkspaceModules; release.yml pins and tags scheduler/* like http/*.
+- 52.4: the slot goes back through a `sync.OnceFunc`, run by `context.AfterFunc` on the check's context, by an `AfterFunc` timer on the injector's clock at the report bound, and when the check returns; no goroutine is added per check. 52.2's mutation (a waiter in `next` deferring its bound) failed both rows with a synctest deadlock: the entry never returned.
+- 56.2: after 52.4, the temporary `runCall` that never returns no longer hangs these tests: the slot comes back at the report bound, so each fails within a second on its assertions, then on synctest's deadlock check. With `holdSlot` also disabled (the hang CR14 recorded), `TestHealthCheck_BoundStartsAtSlot` stops at its step limit ("had not returned after 60s of the fake clock"); the other two fail earlier on their own assertions.
+- 57.1: golangci-lint's modernize (`embedlit`) sets the promoted `Context` field directly in the `healthCheckContext` literal.
+- 60.2: the two `returns_ctx_err` rows passed on arrival (a check returning its ended context's error was already a timeout); the nil and "down" rows failed with the timeout error, and the report recorded HealthUnhealthy instead of HealthHealthy or "down".
+- 60.3: `callResult` keeps one case of the old rule: a check cancelled by root Shutdown (cause `ErrStartAfterShutdown`) still ends its waiters with `timeoutError(context.Canceled)`, as the requirement "Shutdown cancels the checks in flight with a container-shut-down cause" states, also for a check that ignores its context and returns nil later. The record needs no such case, since nothing is recorded once shutdown began. 60.4 extracted `checkResult`, shared by `callResult` and `finishCall`'s record.
+- 61.2: `manualScheduler` gained `stopWithErr`, returning its stop function together with `err`.
+- 62.1–62.3, 63.x, 64.x pass on arrival (they pin existing behavior). Each was shown to fail under a temporary mutant in a scratch copy of the working tree (not committed). 62.1: a round skipping svc. 62.2: a forced joiner taking the call's context; only the new 29ms row fails, the other six pass. 62.3: ordering by the scope's own name. 63.1–63.9 and 64.x: the mutants of Verification 3 evidence; each fails only its own rows. 63.4's `HealthCheckNamed` row needed a second mutant, in `serviceHealthCheck`, since the recorded one changes only `healthCheckTargets`. 63.11: `stopScheduling` cancelling with `context.Canceled` as the cause. 63.12: `stopScheduling` returning once its ctx ends, without waiting for the scheduler call.
+- 63.10: under the recorded deferred-bound mutant the 30ms row fails 30 of 30 runs without `-race` but only 10 of 30 with it: the forced caller started the queued call itself, so its deadline also ends the call's base context, which can still return the caller at 30ms. A mutant dropping the global timeout from the caller's context (`clockwork.WithTimeout` replaced by `context.WithCancel`) fails the 30ms row 20 of 20 under `-race`, the 29ms row passing; the correct code passed 50 of 50.
 
 **Review and verification findings (2026-10-28).** Each was proven before planning its fix, with a throwaway probe test asserting the expected behavior (deleted after the run):
 - R1: a child-scope check returning after `child.Shutdown()` left records=1, members=1, and the container hook reported healthy → unhealthy for the gone service.
@@ -499,6 +553,84 @@ Recorded while applying the tasks on 2026-10-28; the tests that passed on arriva
 - CR8: 10 cached reads of 50 services logged 500 "requested health check" lines and ran no check.
 - CR9: gopls finds `queueServiceHealthcheck` referenced only by `root_scope_test.go`; CR10: both replace paths (`scope.go`, `di.go`) already call `RootScope.forget`.
 - W3: a service registered after a round produced no container hook call; specified (not changed) after comparing alexliesenfeld/health, .NET and Spring Boot.
+
+**Second review evidence (2026-10-28).** The eight candidates of the code review of PR #9 were each checked before planning with a throwaway probe test, run under `-race` in a scratch copy of the repository, outside the working tree (which was not touched); the probes seed the RED tests of groups 34–39. Each probe asserted the expected behavior:
+- R9: `HealthCheckParallelism: 1`, checks taking 9s and 2s (synctest): the 9s check, which got the slot second, was recorded timed out at 10s with Duration 10s after running 8s; with three 6s checks, two were recorded timed out.
+- R10: a check started by `HealthCheck()` ran while another held the only slot, because it queued behind a single-service call abandoned at 10ms; a single-service caller queued behind a pooled call abandoned at `HealthCheckTimeout` 50ms got a check context with a deadline although `HealthCheckSingleTimeout` was -1ns.
+- R11: a `Logf` shut the child scope down when a root `HealthReport()` (and, second probe, a round) started the check of root `a`: child `b` was then checked, recorded and kept as a member, and the tracked container state was Unhealthy.
+- W4 (finding 4): after `Shutdown()` on a provider's injector, a newly registered healthy service stayed HealthUnknown through `HealthReport()` and `HealthCheck()`, with Phase idle and no hook call; this matches the health-check-scheduling requirement, so it is documented, not changed.
+- Finding 5 (not a defect): the reviewer's scenario on a joined call is H9's specified discard of a late result; on a call queued in `next` (its context already ended), the record was the same timeout with the 24.2 recording removed in a mutated copy.
+- CR11: a check queued for a slot had a `PendingSince` though it had not started; a timed-out record's Duration included the wait.
+- CR12: sorting 2,000 targets with `compareHealthTargets` took 64,285 allocations, 5 with paths computed once; a monitored read of 2,000 services across the root and a grandchild scope took 30,656 allocations, 6,076 with paths computed once.
+- CR13: by inspection, `ScheduleHealthRounds` builds a task that its shared branch replaces.
+
+**Verification findings (2026-10-28).** `/opsx:verify` after group 43 raised three warnings and three suggestions; each was checked before planning groups 44–47, with throwaway probes (deleted after the run) or with gopls:
+- W2: probe run 40 times per tree, with a context-aware check and an already-cancelled context. At `631c942`, `HealthCheckWithContext` started the check in 3 runs out of 40; at `76404ef` (worktree), in none. `HealthCheckNamedWithContext` started it in none on either tree. The race: the waiter leaves at once, but the call it created has already started its goroutine. The same race makes `TestScope_HealthCheckWithContextExpiration_ChildScopes` flaky (32 failures in 300 runs; 57 in 500 at `631c942`): when an abandoned check returns before the second call arrives, that call, whose context has ended, starts the check again. Applying 44.3 showed a second path (4 failures in 500 with only the no-call guard): the abandoned check is still in flight when the second call arrives, so the call queues in `next`, and when the check returns before the caller's wait leaves `next`, a fresh check starts for it. `TestHealthCheck_EndedContextQueuesNoFreshCheck` reproduces it deterministically (2 calls of the check); the guard covers a call that cannot be joined too.
+- W1: probe (synctest, 3 runs out of 3) with `HealthCheckParallelism` 1, `HealthCheckTimeout` 20ms, "hog" holding the slot and an abandoned "leaf" check: a `HealthCheck()` queued behind it returned after 20ms with a timeout while the check started for it waited for the slot, which the R9 requirement's text did not allow. The behavior is kept, because review R2 needs that bound to cover the wait on a hung abandoned check; the requirement now states it. The `InjectorOpts.HealthCheckParallelism` godoc (`injector.go:275`) still says that waiting for a slot "ends with each caller's context and bound", which is wrong since 34.3.
+- W3: `TestHealthReport_NoRecordAfterShutdown` failed 2 runs out of 300 (it sleeps 10ms of real time for a stray hook call). Applying 46.2 showed the real cause (9 failures in 500 under synctest alone, each missing the (Unknown, Healthy) call): `HealthReport()` returns once its waiter is done, before the check's goroutine delivers the transition it recorded, and Shutdown then drops the undelivered transition, as the requirement allows (no hook once shutdown began). The test now waits (`synctest.Wait`) for that delivery before Shutdown, which its Given step assumes. `TestHealthReport_Degraded` failed once in 200 runs at both `631c942` and the working tree (a real 10ms bound under `-count=200`), and 0 times in a later 300.
+- S1: gopls shows `callWaiter.parent`, `reportPath` and `bound` assigned only in `newCallWaiter`, from `spec` (`health_run.go:626`), and read only at `:529`, `:552` and in `startBoundLocked`.
+- S2: `stillRegistered(*startCandidate)` (`root_start.go:761`) and `healthTarget.stillRegistered` (`health_run.go:791`) make the same check under the scope's read lock.
+- S3: the `healthCheckContext` comment (`health_run.go:837`) describes only a shared check's context; `newCallWaiter` also builds a waiter's context with a deferred bound from it.
+
+**Flaky tests after group 48 (2026-10-28).** Reproduced by running the root package's race-enabled test binary repeatedly with `-test.cpu` 1, 2 or 4 beside 14 CPU-burning processes: 23 of 60 runs failed. Every failure was a test waiting on real time while starved of CPU; none is a product defect. The two that could have hidden one were checked with temporary diagnostics: the unhealthy state in `TestHealthReport_TimeoutNotRecordedLeftBeforeStart` was member "a" timing out (its check ran 416ms against a 20ms bound), and the call in `TestHealthCheck_SingleTakesOverQueued` was runnable inside `finishCall` at the 1s mark and returned 380ms later.
+- Real-time bounds and margins (`TestScope_ShutdownWithContextExpiration_*`, `TestScope_ContextExpiration_ParallelOperations`, which shutdown-context allows to skip a service reached after the cancel, `TestHealthCheck_PerServiceErrorInTime`, `TestHealthCheck_NoPileUp`, `TestHealthReport_TimeoutNotRecordedLeftBeforeStart`) and 1–2s `Eventually`/`time.After` windows (`SingleTakesOverQueued`, `NotRecordedAfterLeaving`, `ShutdownSkipsHungCheck`, the hook tests, the callers of `healthReportTestInPhase`, the slot-wait and clock tests) now run in synctest bubbles with their rows and assertions unchanged: a window there ends only once every goroutine in the bubble is blocked, so it still fails on a real hang or lost delivery, never on starvation. Mutation checks (no takeover; a pile-up; the R12 guard removed) still fail the bubbled tests.
+- `testWithTimeout` (main_test.go) treats its timeout as a hang guard with a 5s floor; the inherited 100ms and 450ms guards fired on synchronous tests starved of CPU.
+- `TestPhase_RaceFree` spun 20 goroutines without blocking, starving the package on one P; they now yield (`runtime.Gosched`), and an unlocked `Phase` still trips the race detector.
+- After the fixes: 0 of 100 runs failed under the same load. The `tests` package (its own helper) had 0 failures in 60 such runs and is unchanged.
+
+**Verification 2 (2026-10-28).** A second `/opsx:verify` raised one warning and two suggestions, each checked before planning groups 49–51:
+- W1: the HealthReport row of `TestHealthCheck_NoPileUp` passed without exercising the rule it covers. Its 100 reads fall within the default 1s `HealthReportCacheTTL`, so after the first read records the timeout, the rest are answered from that record and never reach `joinOrStart`. Probe in a scratch copy of the working tree, with a temporary pile-up (`joinOrStart` starting a call whenever the call in flight cannot be joined):
+
+  | Row setup | Correct code | Temporary pile-up |
+  |---|---|---|
+  | Default cache (today) | all rows pass | HealthCheck and HealthCheckNamed fail (100 calls); HealthReport passes |
+  | Caching off (negative TTL) | all rows pass, 200 of 200 runs | all three rows fail (100 calls) |
+
+  No report, round or scheduler test caught the pile-up either; the rule was covered for the report path only through the shared `joinOrStart`. The scenario now turns caching off. Applying 50.2 (`HealthReportCacheTTL: -time.Nanosecond`): the test passed on arrival, and with the same temporary pile-up (the `!ok` case of `joinOrStart` also taken for a call that cannot be joined) all three rows failed with 100 calls, the HealthReport row included.
+- S1: the proposal's W2 row still read "finding no check in flight", narrower than the requirement widened in group 44 ("no check in flight it can join … SHALL wait for no check started later").
+- S2: `tasks.md` recorded none of the test stabilization above (`main_test.go`, `phase_test.go`, the synctest bubbles); group 49 records it.
+
+**Code review findings (2026-10-29).** The code review of the working tree (after group 51) reported seven findings. Each was checked before planning groups 52–59, in scratch copies of the working tree and of `631c942`, with throwaway probe tests (synctest; a 1h bubble-time limit stands for "never returns"):
+- R13: `HealthCheckParallelism` 1, a hung "hog" whose `HealthCheck()` caller timed out at `HealthCheckTimeout` 1s. Behind it, `HealthCheck()`, `HealthReport()` and a round had not returned after 1h. With `HealthCheckTimeout` 0 and an unbounded `HealthCheck()` holding the slot, `HealthReport()` (report bound 10s) had not returned either. At `631c942` all four return. The cause is group 34: a queued call's per-service bound starts only when the call gets a slot, and a hung check kept its slot forever.
+- R14: a caller queued in `next` behind an abandoned check, whose context ends before that check returns, got a fresh check: 2 calls instead of 1. The same happens at `631c942`. `TestHealthCheck_EndedContextQueuesNoFreshCheck` covered only a context that ended before queueing.
+- R15: with the R11 `Logf`, "b" was checked once after its scope shut down, through `HealthReport()` and through a round; the result was discarded. The same happens at `631c942`.
+- CR14: with a temporary `runCall` that never returns, `TestHealthCheck_BoundStartsAtSlot` ran until `-timeout 30s` killed the package (all 4 rows still running). `TestHealthCheck_QueuedKeepSlotRule` and `_QueuedBehindAbandonedKeepsBound` failed at once (synctest deadlock); `_EndedContextStartsNoCheck` runs no check. `TestHealthReport_TimesWithLimiter` and `TestHealthCheck_SequentialChecksShareGlobalTimeout` use the same open-ended loop.
+- R16: a call queued at 00:00:01 behind a check abandoned at 00:00:00 got its fresh check at 00:00:05. A read at 00:00:06 showed PendingSince 00:00:05 (the fresh call's creation), not 00:00:01. The same happens at `631c942`.
+- CR15: by inspection, `newCallWaiter` builds a `healthCheckContext` only for its `Err` mapping. The `Deadline()` it reports equals that of `context.WithCancelCause(spec.ctx)`, so the second role is not a defect.
+- CR16: `BenchmarkHealthRound` (1,000 services, `-count 10`) took 3.291 ms ± 9% with `stillRegistered` and 3.258 ms ± 22% with it returning true without the lock (p = 0.971). `BenchmarkHealthReport_Monitored` runs no `finishCall`. Closed with no change.
+- Prototype of the fixes (scratch copy, not committed): the full root suite passes under `-race`, golangci-lint reports 0 issues, and every probe above passes. The only existing test that needed changes was `TestHealthCheck_QueuedBehindAbandonedKeepsBound`: with "hog"'s slot given back at its own 20ms bound, the fresh "leaf" check would run, so "hog" now takes the slot 1ms after the entry's call (20 of 20 runs pass on both trees). With R15's guard, removing the recording guards of `finishCall` and `wait` fails no existing test, hence `TestHealthReport_LeftDuringStart`. `BenchmarkHealthRound` with the R15 guard: 3.242 ms ± 3% (p = 0.247), +0.55% B/op.
+
+**Verification 3 evidence (2026-10-29).** `/opsx:verify` after group 59 reported five warnings and five suggestions. Each was checked before planning groups 60–66, in a scratch copy of the working tree (which was not touched), with throwaway probe tests (`zz_evidence_test.go` in the root and in `scheduler/gocron`) and a mutation runner. Each untested sentence was checked twice: its probe pins today's behavior, and a temporary mutant that breaks the sentence is run against the existing suite (probes skipped), then against the probe. Probes and mutants are not committed; the probes seed the tests of groups 60–64.
+- W1 (defect): `HealthCheckGlobalTimeout` 30ms; a `HealthCheck()` starts the check of a "db" that ignores its context; at +10ms an unbounded `HealthCheckNamed` joins; at +60ms the check returns nil (second row: `"down"`). The joining caller got `DI: health check timeout: context deadline exceeded` on both rows, and the record was that timeout too, 20 runs out of 20. Cause: `callResult` and the record in `finishCall` turn a done check context into a timeout (`health_run.go:863-865`, `healthCheckResult` in `utils.go`), and the starter's bound cancels that context (`newHealthCheckContext`).
+- W1b (refuted): the reviewer's queued variant (`HealthCheckParallelism` 1, "hog" holding the slot, a `HealthCheck()` with global 30ms queueing "db", a `HealthReport()` joining it) ended with "db" checked once and healthy in the reader's report, 20 runs out of 20.
+- W2: an optional service timed out on a report read is `HealthDegraded` with an error matching `ErrHealthCheckTimeout`, as health-classification says; the health-reports sentence said `HealthUnhealthy`.
+- W3: a root `HealthCheck()` alone calls the exported `"child"/"svc"` once (its map has the key `svc`), so the scenario's "svc 1 time" in total could not hold; the test asserted 2.
+- W4: `TestHealthScheduler_StopBeforeClosing/provider_injector` already asserts that no Closing hook runs on the root's own `*Scope` path, which the scenario row's Then did not allow for.
+- W5 (13 confirmed gaps, 1 refuted). Every probe passes on today's code. Under each mutant below the suite stayed green and the probe failed:
+
+  | Sentence | Mutant |
+  |---|---|
+  | `HealthCheckGlobalTimeout` does not bound a read | `reportBound` returns the global timeout when set |
+  | A nil ctx reads like `context.Background()` | the nil check in `healthReport` removed (nil dereference) |
+  | Extension scopes are in the root report | `containerCheckers` skips `extensionScopes()` |
+  | Rounds skip an unstarted Starter | `healthRound` without its `eligibleForReport` filter |
+  | Forced paths check an unstarted Starter | `healthCheckTargets` skips ineligible targets once started |
+  | `Clone()` copies the health hooks | `InjectorOpts.copy` drops both hook slices |
+  | Container hooks follow the service hooks | `recordLocked` queues the container change first |
+  | Nil hooks are skipped | the `hook != nil` guard removed (the nil call reached `HookContainerPanic`) |
+  | A re-panicking hook leaves the container unmonitored | `startScheduling`'s `err` starts nil instead of `errSchedulerInterrupted` |
+  | With no waiter, a hook panic crashes on the check's goroutine | the re-raise in `finishCall` removed (child process: exit 2, `panic: evidence-panic`; survived under the mutant) |
+  | The global timeout bounds a forced caller's slot wait | the deferred-bound waiter ignores its caller's deadline, keeping cancellation |
+  | gocron: a job option wins over the default; repeated job options accumulate in order | defaults appended after the consumer's options; `WithJobOptions` replacing earlier ones |
+  | gocron: a scheduler option wins over the default; repeated scheduler options accumulate | `WithClock(clock)` appended last; `WithSchedulerOptions` replacing earlier ones |
+  | gocron: a scheduler gocron rejects is an error | the `NewScheduler` error swallowed (`gocron.WithLocation(nil)`: "location must not be nil") |
+
+  Refuted: "a service that left shows no result" (keeping the record in `forget` fails `TestHealthReport_NotRecordedAfterLeaving`), and "`CloneWithOpts` keeps the classification" (`Clone()` is `CloneWithOpts(s.opts.copy())`, already covered by `TestHealthClassification_CloneOverrideDefaultAlias`).
+- S1 (premise refuted): at Shutdown, a forced caller of an in-flight check gets `DI: health check timeout: context canceled` (`errors.Is(err, ErrStartAfterShutdown)` false); only the check's own `context.Cause` is `ErrStartAfterShutdown`, whose message is "DI: container is shut down". Documented, not changed.
+- S2 (defect): a `HealthScheduler` returning a stop function and an error: the stop was called 0 times through Start and Shutdown, 20 runs out of 20 (`callScheduler` returns `nil, err`).
+- S3: `ShutdownWithContext` with a 50ms deadline had not returned after 1 minute (synctest) while `ScheduleHealthRounds` blocked at PhaseReady; with a blocked Starter instead, it returned by its deadline. Kept as designed (H1) and documented.
+- S4: under a mutant where a forced joiner inherits the starter's deadline, `TestHealthCheck_JoinerOwnBound` passed (every row) and the new 29ms row failed; the suite caught that mutant only through `TestHealthCheck_SlotWaitHonorsContext`. Under a mutant ordering report entries by the scope's own name instead of its path, `TestHealthReport_Order` passed; the swapped example fails it.
+- S5: read literally (the read starts after the 1s and 20ms advances), the TimesWithLimiter row gives Duration 40ms, not 20ms: the read waits in `next` behind the abandoned check (note 35.2). H4's "atomic `built` flag" text predates the `published` pointer recorded in the notes above.
 
 ## Migration Plan
 

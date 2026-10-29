@@ -39,7 +39,7 @@ This change builds on `consolidate-pending-lifecycle-work` (#8, merged), and kee
   - whether a scheduler keeps it fresh (`Monitored`).
 - **Reads without a scheduler.** A read runs stale checks on demand. A result is reused for `HealthReportCacheTTL` (default 1s; a negative value turns caching off), and concurrent readers share each check.
 - **Reads with a scheduler.** A read returns the cached results and only checks services that have never been checked.
-- **Bounds on a read.** A read is bounded by the caller's context and by `HealthCheckTimeout`. When `HealthCheckTimeout` is 0, the bound is `DefaultHealthReportCheckTimeout` (10s), so `HealthReport()` never hangs on a check that ignores its context.
+- **Bounds on a read.** A read is bounded by the caller's context and by `HealthCheckTimeout`. When `HealthCheckTimeout` is 0, the bound is `DefaultHealthReportCheckTimeout` (10s), so `HealthReport()` never hangs on a check that ignores its context. When a check waits for a `HealthCheckParallelism` slot, this per-service bound starts when the check starts running.
 - **Unknown until the first results.** A covered critical service with no result yet keeps the overall state `HealthUnknown`, so readiness does not pass before the first results.
 - **Unstarted services are not checked.** Once the container has started, a service that `Start`, `Refresh` or `Scope.Start` would start, but that is not started yet (for example one registered or installed by `Extend` after Ready), is listed as `HealthUnknown` and is not checked by reports or rounds.
 
@@ -71,7 +71,7 @@ This change builds on `consolidate-pending-lifecycle-work` (#8, merged), and kee
 **Executing checks.**
 - **One check in flight per service.** A service never has two checks in flight. A caller that finds a check in flight waits for it, within its own bound, instead of starting another. This caps check goroutines at one per service.
 - **Own bounds and the starter's context.** Each caller keeps its own context and bounds, as today. A check sees the context values and deadline of the caller that started it.
-- **Parallelism limit.** `HealthCheckParallelism` limits the checks started by `HealthCheck()`, report reads and rounds, through a context-aware limiter. The single-service functions keep running at once without a slot, as today. When the check they need is waiting for a slot, they run it immediately, so composite checks never deadlock under a limit.
+- **Parallelism limit.** `HealthCheckParallelism` limits the checks started by `HealthCheck()`, report reads and rounds, through a context-aware limiter. The single-service functions keep running at once without a slot, as today. When the check they need is waiting for a slot, they run it immediately, so composite checks never deadlock under a limit. A check holds its slot until it returns, its context ends, or the report bound has passed since it took the slot, so a hung check never stalls the checks queued behind it (code review R13).
 - **Recording.** Every completed check refreshes the report. A check whose report-path bound elapsed is recorded as timed out, and its late result is discarded, so a slow check does not flap.
 
 **Status-change hooks.**
@@ -204,3 +204,68 @@ A verification pass and a code review of the implementation found the defects be
 | R8 | A panic in the scheduler's stop never reaches `HookContainerPanic` | It is passed to `HookContainerPanic(root, "healthscheduler", v)` when set, logged otherwise | A `HealthScheduler` whose stop panics; `HookContainerPanic` set; `Shutdown()` |
 
 Also closed without a defect: the redundant record pruning under the scope lock (`storeLocked`), log lines for checks that a cached read does not run (500 lines for 10 cached reads of 50 services), the dead `queueServiceHealthcheck`/`queueWrapperHealthcheck` helpers, the godoc of the flagged behavior changes, and the timing of the container hook for a service that appears (the next round or root report, as in alexliesenfeld/health, .NET and Spring Boot, which evaluate aggregate health only when checks run or are read).
+
+### Second review findings (2026-10-28)
+
+A code review of PR #9 reported eight candidates. Each was checked with a throwaway probe test in a scratch copy of the repository before planning; design.md (Implementation notes) records every probe and its result. Three are defects:
+
+| # | Observed | Expected | Minimal reproduction |
+|---|---|---|---|
+| R9 | A report read recorded a 9s check as timed out at 10s though it ran 8s, because it waited 2s for the slot; with three 6s checks, two were recorded timed out, one without ever running | A caller's per-service bound starts when its check starts running; the wait for a slot counts only against its context and `HealthCheckGlobalTimeout` | `HealthCheckParallelism: 1`, checks taking 9s and 2s; `HealthReport()` |
+| R10 | A check started by `HealthCheck()` ran while another held the only slot; a single-service caller's check got a 50ms deadline although `HealthCheckSingleTimeout` is negative | A caller that waited behind a check it could not join keeps its own path's slot rule and bound in the fresh check | A single-service call abandons a check; `HealthCheck()` queues behind it while another check holds the slot |
+| R11 | A child-scope service shut down after a root read listed it, before its check started, was recorded and kept as a member; the container state stayed Unhealthy | A check started for a service that already left is not recorded and changes no state | A `Logf` that shuts the child scope down when the read starts the root service's check |
+| R12 | Found while applying R11's fix: a report read that timed out on a check started after its service left recorded the timeout; the service stayed a member and the container state turned Unhealthy | No timeout is recorded for that service, and no state changes | As R11, with "b" hung and `HealthCheckTimeout` 20ms |
+
+Also closed:
+- **CR11:** `PendingSince` showed the time a check was requested, while its godoc said "started"; it now means requested, slot wait included, and a recorded timeout's `Duration` runs from when the check started (it counted the slot wait: 10s recorded for 8s of running).
+- **CR12:** sorting report entries rebuilt both scope paths on every comparison: a monitored read of 2,000 services took 30,656 allocations; with paths computed once, 6,076.
+- **CR13:** the gocron adapter built one task per call that its shared mode discarded.
+- **W4:** a Shutdown through the root's own `*Scope` stops scheduling and ends health recording for good while the phase stays unchanged, as health-check-scheduling specifies; this is now documented, with a scenario.
+- Not a defect: a report-path timeout recorded while queued behind a check that could not be joined. Such a check's own result is itself a timeout (its context already ended); with that recording removed in a probe, the record was identical.
+
+### Verification findings (2026-10-28)
+
+`/opsx:verify` raised three warnings and three suggestions. Each was checked before planning, with a throwaway probe or gopls; design.md records the evidence. One is a regression from `76404ef`:
+
+| # | Observed | Expected | Minimal reproduction |
+|---|---|---|---|
+| W2 | `HealthCheckWithContext` with an already-cancelled context started the check in 3 runs out of 40 (none at `76404ef`); `TestScope_HealthCheckWithContextExpiration_ChildScopes` is flaky for the same reason | A caller whose context has already ended, finding no check in flight it can join, starts none, waits for no check started later, and gets its timeout error at once | A context-aware Healthchecker; `HealthCheckWithContext` with a cancelled context |
+
+Also closed:
+- **W1:** a caller queued behind an abandoned check keeps its per-service bound running from its call, through the slot wait of the check started for it; this is needed so a hung abandoned check never holds it past its bound (review R2). The R9 requirement now states this exception, with a scenario, and the `HealthCheckParallelism` godoc no longer says that waiting for a slot counts against the per-service bound.
+- **W3:** `TestHealthReport_Degraded` and `TestHealthReport_NoRecordAfterShutdown` depend on real time and fail under load; they move to `synctest`, keeping their rows and assertions.
+- **S1–S3:** redundant `callWaiter` fields removed, the two registration checks share one helper, and the `healthCheckContext` comment covers its second use.
+- **Verification 2:** the HealthReport row of the pile-up scenario turns caching off, so it meets the check in flight instead of a cached result (W1); the test stabilization after group 48 is recorded as task group 49 (S2); this table's W2 row matches the widened requirement (S1). Groups 49–51.
+
+### Code review findings (2026-10-29)
+
+A code review of the working tree after group 51 reported seven findings. Each was checked before planning with a throwaway probe test in scratch copies of the working tree and of `631c942`; design.md (Implementation notes) records every probe and its result. Four are defects; one is a regression from group 34:
+
+| # | Observed | Expected | Minimal reproduction |
+|---|---|---|---|
+| R13 | `HealthCheck()`, `HealthReport()` and rounds behind a hung check never return: the check keeps its slot, so the per-service bound of the calls queued behind it never starts (all return at `631c942`) | A check gives its slot back once its context ends or the report bound has passed since it took the slot; callers behind it return within their bounds | `HealthCheckParallelism` 1; a hung check abandoned at `HealthCheckTimeout` 1s; `HealthCheck()` |
+| R14 | A caller that gave up while queued behind an abandoned check still got a fresh check (2 calls) | No fresh check starts for a caller whose context has ended; it gets its timeout error | Queue behind an abandoned check, cancel, then the abandoned check returns |
+| R15 | A report read or round ran the check of a service whose scope shut down after it was listed; the result was discarded | Report reads and rounds start no check for a service that left | The R11 `Logf` |
+| R16 | PendingSince of a check started behind an abandoned one was its creation time (00:00:05), not its request (00:00:01) | PendingSince is when the first caller waiting for the check asked | A call queued at 00:00:01 behind a check abandoned at 00:00:00 that returns at 00:00:05 |
+
+Also closed:
+- **CR14:** test loops that advance a fake clock until a call returns get a step limit and `testWithTimeout`; one hung the package instead of failing.
+- **CR15:** the context of a waiter with a deferred bound gets its own type instead of sharing the shared check's, which only it needed for `Err`.
+- **CR16 (no change):** the registration check per finished check costs nothing measurable (`BenchmarkHealthRound` 3.29 ms vs 3.26 ms, p = 0.97).
+
+### Verification 3 findings (2026-10-29)
+
+A third `/opsx:verify` after group 59 reported five warnings and five suggestions. Each was checked before planning with throwaway probe tests and mutation runs in a scratch copy of the working tree; design.md (Verification 3 evidence) records each result. Two are defects:
+
+| # | Observed | Expected | Minimal reproduction |
+|---|---|---|---|
+| W1 | A caller that joined a check got `DI: health check timeout: context deadline exceeded`, and the record was that timeout, although the check returned nil (or `"down"`): the starter's bound had cancelled the check's context (20 of 20 runs) | A joining caller gets what the check returned within its own bound; only a check returning its ended context's error is a timeout; the record follows | `HealthCheckGlobalTimeout` 30ms; `HealthCheck()` starts a check that ignores its context; `HealthCheckNamed` joins at +10ms; the check returns at +60ms |
+| S2 | A stop function returned together with an error by `ScheduleHealthRounds` was never called (20 of 20 runs) | It is called once, before Start returns; the container stays unmonitored | A `HealthScheduler` returning a stop and `errors.New("partial")`; Start, then Shutdown |
+
+Also closed:
+- **Spec corrections (W2–W4, S5):** an optional service's report timeout is `HealthDegraded` in health-reports too; the round scenario counts the round's own calls, since the root `HealthCheck()` in its Given already checks the exported "svc"; the Closing-hook row of the root's own `*Scope` path says no Closing hook runs; the TimesWithLimiter row starts the read before the clock advances.
+- **Untested sentences (W5, S4):** 13 sentences that a mutant broke with the suite still green get tests: the global timeout on reads and slot waits, a nil ctx, extension scopes in the root report, unstarted Starters in rounds and forced paths, the health hooks of a clone, hook order, nil hooks, a re-panicking scheduler hook, a hook panic with no waiter, and the gocron option precedence and rejected scheduler. `TestHealthCheck_JoinerOwnBound` gets the 29ms row of its forced path, and the order scenario's example is changed so that ordering by the scope's own name fails it.
+- **Documented (S1, S3):** the checks cancelled at Shutdown carry the cause `ErrStartAfterShutdown`, while their callers get `context.Canceled`; Shutdown waits for a `ScheduleHealthRounds` call in progress past its deadline, unlike for a Starter, so the schedule's stop always runs.
+- **Refuted:** the joined-while-queued variant of W1, "a service that left shows no result" (already caught by `TestHealthReport_NotRecordedAfterLeaving`), `CloneWithOpts` classification (the same code as `Clone()`), and S1's premise that callers see `ErrStartAfterShutdown`.
+
+No default changes and no exported signature changes; `HealthScheduler`'s godoc gains the stop-with-error rule.

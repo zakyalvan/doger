@@ -70,8 +70,23 @@ When a container with it is started and shut down
 Then L recorded at least 1 call
 ```
 
+#### Scenario: Options win over the defaults and accumulate in order
+```gherkin
+Given an injector whose Clock is a fake clock C, HealthScheduler is dogergocron.New(<options>), and a Healthchecker "db" that counts its calls
+When the consumer calls Start
+Then <observed>
+
+Examples:
+  | options                                                                                                 | observed                                                                  |
+  | WithJobOptions(gocron.WithName("custom"))                                                               | the job's runs are reported to gocron's event listeners as "custom"       |
+  | WithJobOptions(gocron.WithName("first")), WithJobOptions(gocron.WithName("second"))                     | the job's runs are reported as "second"                                   |
+  | WithJobOptions(an AfterJobRuns listener L), WithJobOptions(gocron.WithName("second"))                   | L recorded the first round, as "second"                                   |
+  | WithSchedulerOptions(gocron.WithClock(D)), for another fake clock D                                     | after the first round, gocron arms its next run on D, and advancing D by 30s runs the second round |
+  | WithSchedulerOptions(gocron.WithClock(D)), WithSchedulerOptions(gocron.WithLocation(time.UTC))          | after the first round, gocron arms its next run on D                      |
+```
+
 <!-- cases: N/A 1 default: previous requirement -->
-<!-- cases: 2 overrides: interval, job definition, start-at, job and scheduler options -->
+<!-- cases: 2 overrides: interval, job definition, start-at, job and scheduler options; a job or scheduler option wins over the adapter's default, and repeated options accumulate in order (verification 3, W5) -->
 <!-- cases: N/A 3 zero values: invalid values are the next requirement -->
 <!-- cases: 4 boundaries: before and at a delayed start -->
 <!-- cases: N/A 5 errors: next requirement -->
@@ -102,17 +117,22 @@ Examples:
 
 #### Scenario: A schedule gocron rejects
 ```gherkin
-Given dogergocron.New(WithJobDefinition(gocron.CronJob("not a cron", false)))
+Given dogergocron.New(<option>)
 When ScheduleHealthRounds is called with a fake clock and a round
 Then it returns an error from gocron and a nil stop function
 And goleak reports no goroutine started by gocron
+
+Examples:
+  | option                                                    |
+  | WithJobDefinition(gocron.CronJob("not a cron", false))    |
+  | WithSchedulerOptions(gocron.WithLocation(nil))            |
 ```
 
 <!-- cases: N/A 1 default: defaults are valid -->
 <!-- cases: N/A 2 overrides: each invalid option is a row -->
 <!-- cases: 3 zero values: zero interval, nil definition, nil start-at, nil scheduler -->
 <!-- cases: 4 boundaries: 0, negative and the smallest positive interval -->
-<!-- cases: 5 errors: ErrInvalidOption and gocron's own error -->
+<!-- cases: 5 errors: ErrInvalidOption and gocron's own error, for a job and for a scheduler it rejects (verification 3, W5) -->
 <!-- cases: N/A 6 not found/duplicate: not applicable -->
 <!-- cases: 7 lifecycle: a rejected schedule leaves the container unmonitored (health-check-scheduling) -->
 <!-- cases: 8 concurrency: goleak after a rejected schedule -->
