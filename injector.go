@@ -53,6 +53,13 @@ type Injector interface {
 	// HealthCheckWithContext performs health checks with context support for cancellation and timeouts.
 	HealthCheckWithContext(context.Context) map[string]error
 
+	// HealthReport returns the health of the services the injector covers,
+	// reusing recorded results (see [Scope.HealthReport]).
+	HealthReport(opts ...HealthReportOption) HealthReport
+
+	// HealthReportWithContext is HealthReport bounded by ctx.
+	HealthReportWithContext(ctx context.Context, opts ...HealthReportOption) HealthReport
+
 	// Shutdown gracefully shuts down the injector and all its descendant scopes.
 	Shutdown() *ShutdownReport
 
@@ -263,9 +270,22 @@ type InjectorOpts struct {
 	// string and arguments similar to fmt.Printf.
 	Logf func(format string, args ...any)
 
-	// HealthCheckParallelism controls the number of concurrent health checks that can run simultaneously.
-	// Default: all health checks run in parallel (unlimited).
-	// Setting this to a positive number limits the concurrency for better resource management.
+	// HealthCheckParallelism caps the health checks running at once among
+	// those started by HealthCheck(), HealthReport reads and scheduled
+	// rounds: each takes a slot while it runs. Waiting for a slot holds no
+	// lock and counts against each caller's context and
+	// HealthCheckGlobalTimeout, while a caller's per-service bound starts
+	// once the check has its slot; only a caller that waited behind an
+	// abandoned check, still running, keeps the bound it started at its
+	// call. A check holds its slot until it returns, its context ends, or
+	// the report bound (see DefaultHealthReportCheckTimeout) has passed since
+	// it took the slot; a check that keeps running after that, ignoring its
+	// context, no longer counts against the limit. The
+	// single-service functions (HealthCheck[T], HealthCheckWithContext[T],
+	// HealthCheckNamed and HealthCheckNamedWithContext) take no slot: they
+	// run at once, as does a check waiting for a slot that one of them needs,
+	// so composite checks complete under any limit.
+	// Default: 0, all health checks run in parallel (unlimited).
 	HealthCheckParallelism uint
 
 	// HealthCheckGlobalTimeout sets a global timeout for all health check operations.
@@ -289,6 +309,48 @@ type InjectorOpts struct {
 	// Default: 0, which keeps HealthCheckTimeout for them too.
 	HealthCheckSingleTimeout time.Duration
 
+	// HealthReportCacheTTL is how long a recorded health check result is
+	// reused by a HealthReport read before the read checks the service again.
+	// A positive value is the TTL, a negative value turns caching off (every
+	// read checks again), and 0 means DefaultHealthReportCacheTTL.
+	// Concurrent reads share each check in flight either way.
+	HealthReportCacheTTL time.Duration
+
+	// HealthScheduler keeps HealthReport results fresh with scheduled
+	// rounds. Nil (default): no round is ever scheduled and the container
+	// starts no goroutine for health; reads check stale services on demand.
+	// The container calls it once, when it reaches PhaseReady, and stops it
+	// when root Shutdown begins (see HealthScheduler).
+	HealthScheduler HealthScheduler
+
+	// HookServiceHealthChanged is called when a service's recorded health
+	// state changes, including from HealthUnknown to its first result,
+	// whichever path recorded it (a report read, a round, HealthCheck() or a
+	// single-service function); a new error with the same state calls
+	// nothing. HookContainerHealthChanged is called when the overall state
+	// of the container's unfiltered report, without the phase gate, changes,
+	// after the service hooks of the same result, including when a service
+	// appears or leaves. A service leaving (its scope shut down, or its
+	// registration replaced) changes it at once. A service appearing changes
+	// it when the next round or root HealthReport lists it, counting as
+	// unknown until its first result, or when its first result is recorded;
+	// registering or building a service never does.
+	//
+	// Delivery: hooks run one at a time, in recording order and in the
+	// order they were added, with no lock held, on the goroutine that
+	// recorded the result or that is already delivering, so they get no ctx:
+	// no caller's request is there to pass one. A result reaches its callers
+	// without waiting for hooks. Hooks may call the health API, including
+	// HealthCheck and HealthReport, but should be fast: they delay the next
+	// deliveries. A nil hook is skipped. A panic is recovered and passed to
+	// HookContainerPanic with the point "healthchanged", or logged; the other
+	// hooks still run. Nothing is called once root Shutdown began, nor once
+	// the root's own *Scope (the Injector a provider receives in the root
+	// scope) was shut down: that ends health recording and these hooks for
+	// good, although the container phase stays unchanged.
+	HookServiceHealthChanged   []func(scope *Scope, serviceName string, previous, current ServiceHealth)
+	HookContainerHealthChanged []func(root *RootScope, previous, current HealthState)
+
 	// StructTagKey specifies the tag key used for struct field injection.
 	// Default: "do" (see DefaultStructTagKey constant).
 	// This allows customization of the struct tag format for injection.
@@ -296,8 +358,10 @@ type InjectorOpts struct {
 
 	// Clock is the time source of the container. It measures
 	// HealthCheckTimeout, HealthCheckSingleTimeout and HealthCheckGlobalTimeout,
-	// lazy service build times, and shutdown durations. Child scopes and Clone
-	// use the root scope's clock.
+	// HealthReportCacheTTL and the report bound, the CheckedAt, Duration and
+	// PendingSince of HealthReport entries, lazy service build times, and
+	// shutdown durations, and it is passed to HealthScheduler. Child scopes
+	// and Clone use the root scope's clock.
 	// Default: the real clock (clockwork.NewRealClock()).
 	// Set a clockwork.NewFakeClock() to control time in tests. A health check
 	// running on a fake clock must wait on ctx.Done(): ctx.Err() blocks on a
@@ -339,33 +403,37 @@ type InjectorOpts struct {
 
 func (o *InjectorOpts) copy() *InjectorOpts {
 	return &InjectorOpts{
-		HookBeforeRegistration:   append([]func(*Scope, string){}, o.HookBeforeRegistration...),
-		HookAfterRegistration:    append([]func(*Scope, string){}, o.HookAfterRegistration...),
-		HookBeforeInvocation:     append([]func(*Scope, string){}, o.HookBeforeInvocation...),
-		HookAfterInvocation:      append([]func(*Scope, string, error){}, o.HookAfterInvocation...),
-		HookAfterBuild:           append([]func(*Scope, string, any){}, o.HookAfterBuild...),
-		HookBeforeShutdown:       append([]func(*Scope, string){}, o.HookBeforeShutdown...),
-		HookAfterShutdown:        append([]func(*Scope, string, error){}, o.HookAfterShutdown...),
-		HookBeforeStart:          append([]func(*Scope, string){}, o.HookBeforeStart...),
-		HookAfterStart:           append([]func(*Scope, string, error){}, o.HookAfterStart...),
-		HookContainerStarting:    append([]func(context.Context, *RootScope) error{}, o.HookContainerStarting...),
-		HookContainerStarted:     append([]func(context.Context, *RootScope){}, o.HookContainerStarted...),
-		HookContainerReady:       append([]func(context.Context, *RootScope){}, o.HookContainerReady...),
-		HookContainerFailed:      append([]func(context.Context, *RootScope, error){}, o.HookContainerFailed...),
-		HookContainerClosing:     append([]func(context.Context, *RootScope){}, o.HookContainerClosing...),
-		HookContainerClosed:      append([]func(context.Context, *RootScope, *ShutdownReport){}, o.HookContainerClosed...),
-		HookContainerPanic:       o.HookContainerPanic,
-		HookScopeStarting:        append([]func(context.Context, *Scope) error{}, o.HookScopeStarting...),
-		HookScopeStarted:         append([]func(context.Context, *Scope){}, o.HookScopeStarted...),
-		HookScopeClosing:         append([]func(context.Context, *Scope){}, o.HookScopeClosing...),
-		HookScopeClosed:          append([]func(context.Context, *Scope){}, o.HookScopeClosed...),
-		Logf:                     o.Logf,
-		HealthCheckParallelism:   o.HealthCheckParallelism,
-		HealthCheckGlobalTimeout: o.HealthCheckGlobalTimeout,
-		HealthCheckTimeout:       o.HealthCheckTimeout,
-		HealthCheckSingleTimeout: o.HealthCheckSingleTimeout,
-		StructTagKey:             o.StructTagKey,
-		Clock:                    o.Clock,
+		HookBeforeRegistration:     append([]func(*Scope, string){}, o.HookBeforeRegistration...),
+		HookAfterRegistration:      append([]func(*Scope, string){}, o.HookAfterRegistration...),
+		HookBeforeInvocation:       append([]func(*Scope, string){}, o.HookBeforeInvocation...),
+		HookAfterInvocation:        append([]func(*Scope, string, error){}, o.HookAfterInvocation...),
+		HookAfterBuild:             append([]func(*Scope, string, any){}, o.HookAfterBuild...),
+		HookBeforeShutdown:         append([]func(*Scope, string){}, o.HookBeforeShutdown...),
+		HookAfterShutdown:          append([]func(*Scope, string, error){}, o.HookAfterShutdown...),
+		HookBeforeStart:            append([]func(*Scope, string){}, o.HookBeforeStart...),
+		HookAfterStart:             append([]func(*Scope, string, error){}, o.HookAfterStart...),
+		HookContainerStarting:      append([]func(context.Context, *RootScope) error{}, o.HookContainerStarting...),
+		HookContainerStarted:       append([]func(context.Context, *RootScope){}, o.HookContainerStarted...),
+		HookContainerReady:         append([]func(context.Context, *RootScope){}, o.HookContainerReady...),
+		HookContainerFailed:        append([]func(context.Context, *RootScope, error){}, o.HookContainerFailed...),
+		HookContainerClosing:       append([]func(context.Context, *RootScope){}, o.HookContainerClosing...),
+		HookContainerClosed:        append([]func(context.Context, *RootScope, *ShutdownReport){}, o.HookContainerClosed...),
+		HookContainerPanic:         o.HookContainerPanic,
+		HookScopeStarting:          append([]func(context.Context, *Scope) error{}, o.HookScopeStarting...),
+		HookScopeStarted:           append([]func(context.Context, *Scope){}, o.HookScopeStarted...),
+		HookScopeClosing:           append([]func(context.Context, *Scope){}, o.HookScopeClosing...),
+		HookScopeClosed:            append([]func(context.Context, *Scope){}, o.HookScopeClosed...),
+		Logf:                       o.Logf,
+		HealthCheckParallelism:     o.HealthCheckParallelism,
+		HealthCheckGlobalTimeout:   o.HealthCheckGlobalTimeout,
+		HealthCheckTimeout:         o.HealthCheckTimeout,
+		HealthCheckSingleTimeout:   o.HealthCheckSingleTimeout,
+		HealthReportCacheTTL:       o.HealthReportCacheTTL,
+		HealthScheduler:            o.HealthScheduler,
+		HookServiceHealthChanged:   append([]func(*Scope, string, ServiceHealth, ServiceHealth){}, o.HookServiceHealthChanged...),
+		HookContainerHealthChanged: append([]func(*RootScope, HealthState, HealthState){}, o.HookContainerHealthChanged...),
+		StructTagKey:               o.StructTagKey,
+		Clock:                      o.Clock,
 
 		DisableStarterAutoDetection: o.DisableStarterAutoDetection,
 		StartParallelism:            o.StartParallelism,

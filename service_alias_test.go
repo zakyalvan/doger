@@ -61,16 +61,23 @@ func TestServiceAlias_getServiceType(t *testing.T) {
 func TestServiceAlias_getReflectType(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, 100*time.Millisecond)
-	is := assert.New(t)
 
-	service1 := newServiceAlias[string, int]("foobar1", nil, "foobar2")
-	is.Equal("int", service1.getReflectType().String())
+	tests := []struct {
+		name    string
+		service serviceWrapperAny
+		want    string
+	}{
+		{name: "int", service: newServiceAlias[string, int]("foobar1", nil, "foobar2"), want: "int"},
+		{name: "pointer_to_interface", service: newServiceAlias[*lazyTestHeathcheckerOK, Healthchecker]("foobar2", nil, "foobar3"), want: pkgName + ".Healthchecker"},
+		{name: "interface_to_interface", service: newServiceAlias[iTestHeathchecker, Healthchecker]("foobar3", nil, "foobar4"), want: pkgName + ".Healthchecker"},
+	}
 
-	service2 := newServiceAlias[*lazyTestHeathcheckerOK, Healthchecker]("foobar2", nil, "foobar3")
-	is.Equal(pkgName+".Healthchecker", service2.getReflectType().String())
-
-	service3 := newServiceAlias[iTestHeathchecker, Healthchecker]("foobar3", nil, "foobar4")
-	is.Equal(pkgName+".Healthchecker", service3.getReflectType().String())
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
+			is.Equal(tt.want, tt.service.getReflectType().String())
+		})
+	}
 }
 
 func TestServiceAlias_getInstanceAny(t *testing.T) {
@@ -226,43 +233,75 @@ func TestServiceAlias_isHealthchecker(t *testing.T) {
 	service1, _ := i1.serviceGet("interface {}")
 	is.False(service1.(serviceWrapper[any]).isHealthchecker())
 
-	// healthcheck ok
-	i2 := New()
-	Provide(i2, func(i Injector) (*lazyTestHeathcheckerOK, error) {
-		return &lazyTestHeathcheckerOK{foobar: "foobar"}, nil
-	})
-	is.NoError(As[*lazyTestHeathcheckerOK, Healthchecker](i2))
-	service2, _ := i2.serviceGet("github.com/kartaladev/doger.Healthchecker")
-	is.False(service2.(serviceWrapperIsHealthchecker).isHealthchecker())
-	_, _ = service2.(serviceWrapperGetInstanceAny).getInstanceAny(i2)
-	is.True(service2.(serviceWrapperIsHealthchecker).isHealthchecker())
+	// target registered: a healthchecker once the target is built
+	targets := []struct {
+		name     string
+		register func(i *RootScope) error // registers the target and its alias
+	}{
+		{
+			name: "healthcheck_ok",
+			register: func(i *RootScope) error {
+				Provide(i, func(i Injector) (*lazyTestHeathcheckerOK, error) {
+					return &lazyTestHeathcheckerOK{foobar: "foobar"}, nil
+				})
+				return As[*lazyTestHeathcheckerOK, Healthchecker](i)
+			},
+		},
+		{
+			name: "healthcheck_ko",
+			register: func(i *RootScope) error {
+				Provide(i, func(i Injector) (*lazyTestHeathcheckerKO, error) {
+					return &lazyTestHeathcheckerKO{foobar: "foobar"}, nil
+				})
+				return As[*lazyTestHeathcheckerKO, Healthchecker](i)
+			},
+		},
+	}
 
-	// healthcheck ko
-	i3 := New()
-	Provide(i3, func(i Injector) (*lazyTestHeathcheckerKO, error) {
-		return &lazyTestHeathcheckerKO{foobar: "foobar"}, nil
-	})
-	is.NoError(As[*lazyTestHeathcheckerKO, Healthchecker](i3))
-	service3, _ := i3.serviceGet("github.com/kartaladev/doger.Healthchecker")
-	is.False(service3.(serviceWrapperIsHealthchecker).isHealthchecker())
-	_, _ = service3.(serviceWrapperGetInstanceAny).getInstanceAny(i3)
-	is.True(service3.(serviceWrapperIsHealthchecker).isHealthchecker())
+	for _, tt := range targets {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
 
-	// service not found (wrong type)
-	i4 := New()
-	service4 := newServiceAlias[*lazyTestHeathcheckerKO, Healthchecker]("github.com/kartaladev/doger.Healthchecker", i4, "*github.com/kartaladev/doger.lazyTestHeathcheckerKO")
-	is.False(service4.isHealthchecker())
-	_, err4 := service4.getInstanceAny(i4)
-	is.Error(err4)
-	is.False(service4.isHealthchecker())
+			i := New()
+			is.NoError(tt.register(i))
+			service, _ := i.serviceGet("github.com/kartaladev/doger.Healthchecker")
+			is.False(service.(serviceWrapperIsHealthchecker).isHealthchecker())
+			_, _ = service.(serviceWrapperGetInstanceAny).getInstanceAny(i)
+			is.True(service.(serviceWrapperIsHealthchecker).isHealthchecker())
+		})
+	}
 
-	// service not found (wrong name)
-	i5 := New()
-	service5 := newServiceAlias[*lazyTestHeathcheckerOK, Healthchecker]("github.com/kartaladev/doger.Healthchecker", i5, "*github.com/kartaladev/doger.lazyTestHeathcheckerKO")
-	is.False(service5.isHealthchecker())
-	_, err5 := service5.getInstanceAny(i5)
-	is.Error(err5)
-	is.False(service5.isHealthchecker())
+	// service not found
+	missing := []struct {
+		name    string
+		service func(scope Injector) serviceWrapperAny
+	}{
+		{
+			name: "wrong_type",
+			service: func(scope Injector) serviceWrapperAny {
+				return newServiceAlias[*lazyTestHeathcheckerKO, Healthchecker]("github.com/kartaladev/doger.Healthchecker", scope, "*github.com/kartaladev/doger.lazyTestHeathcheckerKO")
+			},
+		},
+		{
+			name: "wrong_name",
+			service: func(scope Injector) serviceWrapperAny {
+				return newServiceAlias[*lazyTestHeathcheckerOK, Healthchecker]("github.com/kartaladev/doger.Healthchecker", scope, "*github.com/kartaladev/doger.lazyTestHeathcheckerKO")
+			},
+		},
+	}
+
+	for _, tt := range missing {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
+
+			i := New()
+			service := tt.service(i)
+			is.False(service.isHealthchecker())
+			_, err := service.getInstanceAny(i)
+			is.Error(err)
+			is.False(service.isHealthchecker())
+		})
+	}
 }
 
 func TestServiceAlias_healthcheck(t *testing.T) {
@@ -303,19 +342,36 @@ func TestServiceAlias_healthcheck(t *testing.T) {
 	_, _ = service3.(serviceWrapper[Healthchecker]).getInstance(i3)
 	is.Equal(assert.AnError, service3.(serviceWrapper[Healthchecker]).healthcheck(ctx))
 
-	// service not found (wrong type)
-	i4 := New()
-	service4 := newServiceAlias[*lazyTestHeathcheckerKO, Healthchecker]("github.com/kartaladev/doger.Healthchecker", i4, "*github.com/kartaladev/doger.lazyTestHeathcheckerKO")
-	is.NoError(service4.healthcheck(ctx))
-	_, _ = service4.getInstanceAny(i4)
-	is.NoError(service4.healthcheck(ctx))
+	// service not found
+	missing := []struct {
+		name    string
+		service func(scope Injector) serviceWrapperAny
+	}{
+		{
+			name: "wrong_type",
+			service: func(scope Injector) serviceWrapperAny {
+				return newServiceAlias[*lazyTestHeathcheckerKO, Healthchecker]("github.com/kartaladev/doger.Healthchecker", scope, "*github.com/kartaladev/doger.lazyTestHeathcheckerKO")
+			},
+		},
+		{
+			name: "wrong_name",
+			service: func(scope Injector) serviceWrapperAny {
+				return newServiceAlias[*lazyTestHeathcheckerOK, Healthchecker]("github.com/kartaladev/doger.Healthchecker", scope, "*github.com/kartaladev/doger.lazyTestHeathcheckerKO")
+			},
+		},
+	}
 
-	// service not found (wrong name)
-	i5 := New()
-	service5 := newServiceAlias[*lazyTestHeathcheckerOK, Healthchecker]("github.com/kartaladev/doger.Healthchecker", i5, "*github.com/kartaladev/doger.lazyTestHeathcheckerKO")
-	is.NoError(service5.healthcheck(ctx))
-	_, _ = service5.getInstanceAny(i5)
-	is.NoError(service5.healthcheck(ctx))
+	for _, tt := range missing {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
+
+			i := New()
+			service := tt.service(i)
+			is.NoError(service.healthcheck(ctx))
+			_, _ = service.getInstanceAny(i)
+			is.NoError(service.healthcheck(ctx))
+		})
+	}
 
 	// Test with context scenarios
 	// Test with canceled context
@@ -368,41 +424,74 @@ func TestServiceAlias_isShutdowner(t *testing.T) {
 	service1, _ := i1.serviceGet("interface {}")
 	is.False(service1.(serviceWrapper[any]).isShutdowner())
 
-	// shutdown ok
-	i2 := New()
-	Provide(i2, func(i Injector) (*lazyTestShutdownerOK, error) {
-		return &lazyTestShutdownerOK{foobar: "foobar"}, nil
-	})
-	is.NoError(As[*lazyTestShutdownerOK, ShutdownerWithContextAndError](i2))
-	service2, _ := i2.serviceGet("github.com/kartaladev/doger.ShutdownerWithContextAndError")
-	is.False(service2.(serviceWrapper[ShutdownerWithContextAndError]).isShutdowner())
-	_, _ = service2.(serviceWrapper[ShutdownerWithContextAndError]).getInstance(i2)
-	is.True(service2.(serviceWrapper[ShutdownerWithContextAndError]).isShutdowner())
+	// target registered: a shutdowner once the target is built
+	targets := []struct {
+		name     string
+		register func(i *RootScope) error // registers the target and its alias
+	}{
+		{
+			name: "shutdown_ok",
+			register: func(i *RootScope) error {
+				Provide(i, func(i Injector) (*lazyTestShutdownerOK, error) {
+					return &lazyTestShutdownerOK{foobar: "foobar"}, nil
+				})
+				return As[*lazyTestShutdownerOK, ShutdownerWithContextAndError](i)
+			},
+		},
+		{
+			name: "shutdown_ko",
+			register: func(i *RootScope) error {
+				Provide(i, func(i Injector) (*contextValueShutdownerAlias, error) {
+					return &contextValueShutdownerAlias{}, nil
+				})
+				return As[*contextValueShutdownerAlias, ShutdownerWithContextAndError](i)
+			},
+		},
+	}
 
-	// shutdown ko
-	i3 := New()
-	Provide(i3, func(i Injector) (*contextValueShutdownerAlias, error) {
-		return &contextValueShutdownerAlias{}, nil
-	})
-	is.NoError(As[*contextValueShutdownerAlias, ShutdownerWithContextAndError](i3))
-	service3, _ := i3.serviceGet("github.com/kartaladev/doger.ShutdownerWithContextAndError")
-	is.False(service3.(serviceWrapper[ShutdownerWithContextAndError]).isShutdowner())
-	_, _ = service3.(serviceWrapper[ShutdownerWithContextAndError]).getInstance(i3)
-	is.True(service3.(serviceWrapper[ShutdownerWithContextAndError]).isShutdowner())
+	for _, tt := range targets {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
 
-	// service not found (wrong type)
-	i4 := New()
-	service4 := newServiceAlias[*lazyTestShutdownerKO, Healthchecker]("*github.com/kartaladev/doger.Healthchecker", i4, "*github.com/kartaladev/doger.lazyTestShutdownerKO")
-	is.False(service4.isShutdowner())
-	_, _ = service4.getInstanceAny(i4)
-	is.False(service4.isShutdowner())
+			i := New()
+			is.NoError(tt.register(i))
+			service, _ := i.serviceGet("github.com/kartaladev/doger.ShutdownerWithContextAndError")
+			is.False(service.(serviceWrapper[ShutdownerWithContextAndError]).isShutdowner())
+			_, _ = service.(serviceWrapper[ShutdownerWithContextAndError]).getInstance(i)
+			is.True(service.(serviceWrapper[ShutdownerWithContextAndError]).isShutdowner())
+		})
+	}
 
-	// service not found (wrong name)
-	i5 := New()
-	service5 := newServiceAlias[*lazyTestShutdownerOK, Healthchecker]("*github.com/kartaladev/doger.Healthchecker", i5, "*github.com/kartaladev/doger.lazyTestShutdownerKO")
-	is.False(service5.isShutdowner())
-	_, _ = service5.getInstanceAny(i5)
-	is.False(service5.isShutdowner())
+	// service not found
+	missing := []struct {
+		name    string
+		service func(scope Injector) serviceWrapperAny
+	}{
+		{
+			name: "wrong_type",
+			service: func(scope Injector) serviceWrapperAny {
+				return newServiceAlias[*lazyTestShutdownerKO, Healthchecker]("*github.com/kartaladev/doger.Healthchecker", scope, "*github.com/kartaladev/doger.lazyTestShutdownerKO")
+			},
+		},
+		{
+			name: "wrong_name",
+			service: func(scope Injector) serviceWrapperAny {
+				return newServiceAlias[*lazyTestShutdownerOK, Healthchecker]("*github.com/kartaladev/doger.Healthchecker", scope, "*github.com/kartaladev/doger.lazyTestShutdownerKO")
+			},
+		},
+	}
+
+	for _, tt := range missing {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
+
+			i := New()
+			service := tt.service(i)
+			is.False(service.isShutdowner())
+			_, _ = service.getInstanceAny(i)
+			is.False(service.isShutdowner())
+		})
+	}
 }
 
 func TestServiceAlias_shutdown(t *testing.T) {
@@ -443,12 +532,36 @@ func TestServiceAlias_shutdown(t *testing.T) {
 	_, _ = service3.(serviceWrapper[ShutdownerWithContextAndError]).getInstance(i3)
 	is.NoError(service3.(serviceWrapper[ShutdownerWithContextAndError]).shutdown(ctx)) // the target is never shut down through its alias
 
-	// service not found (wrong type)
-	i4 := New()
-	service4 := newServiceAlias[*lazyTestShutdownerKO, Healthchecker]("github.com/kartaladev/doger.Healthchecker", i4, "*github.com/kartaladev/doger.lazyTestShutdownerKO")
-	is.NoError(service4.shutdown(ctx))
-	_, _ = service4.getInstanceAny(i4)
-	is.NoError(service4.shutdown(ctx))
+	// service not found
+	missing := []struct {
+		name    string
+		service func(scope Injector) serviceWrapperAny
+	}{
+		{
+			name: "wrong_type",
+			service: func(scope Injector) serviceWrapperAny {
+				return newServiceAlias[*lazyTestShutdownerKO, Healthchecker]("github.com/kartaladev/doger.Healthchecker", scope, "*github.com/kartaladev/doger.lazyTestShutdownerKO")
+			},
+		},
+		{
+			name: "wrong_name",
+			service: func(scope Injector) serviceWrapperAny {
+				return newServiceAlias[*lazyTestShutdownerOK, Healthchecker]("github.com/kartaladev/doger.Healthchecker", scope, "*github.com/kartaladev/doger.lazyTestHeathcheckerKO")
+			},
+		},
+	}
+
+	for _, tt := range missing {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
+
+			i := New()
+			service := tt.service(i)
+			is.NoError(service.shutdown(ctx))
+			_, _ = service.getInstanceAny(i)
+			is.NoError(service.shutdown(ctx))
+		})
+	}
 
 	// Context scenarios: the alias never shuts its target down, so its own
 	// shutdown succeeds whatever the context.
@@ -508,13 +621,6 @@ func TestServiceAlias_shutdown(t *testing.T) {
 	_, _ = errorService.getInstanceAny(i7)
 	err5 := errorService.shutdown(canceledCtx)
 	is.NoError(err5)
-
-	// service not found (wrong name)
-	i5 := New()
-	service5 := newServiceAlias[*lazyTestShutdownerOK, Healthchecker]("github.com/kartaladev/doger.Healthchecker", i5, "*github.com/kartaladev/doger.lazyTestHeathcheckerKO")
-	is.NoError(service5.shutdown(ctx))
-	_, _ = service5.getInstanceAny(i5)
-	is.NoError(service5.shutdown(ctx))
 }
 
 func TestServiceAlias_clone(t *testing.T) {

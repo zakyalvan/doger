@@ -59,16 +59,30 @@ func TestFrame_String(t *testing.T) {
 
 func TestShortFuncName(t *testing.T) {
 	t.Parallel()
-	is := assert.New(t)
 
-	is.Equal("FuncName", shortFuncName("github.com/palantir/shield/package.FuncName"))
-	is.Equal("Receiver.MethodName", shortFuncName("github.com/palantir/shield/package.Receiver.MethodName"))
-	is.Equal("PtrReceiver.MethodName", shortFuncName("github.com/palantir/shield/package.(*PtrReceiver).MethodName"))
-	// Go may collapse generic type arguments to "[...]" in runtime function names.
-	// Regardless of the exact formatting, shortFuncName should only strip the
-	// pointer-receiver prefix, not "*" characters inside type arguments.
-	is.Equal("ServiceLazy[...].getInstance", shortFuncName("github.com/samber/do/v2.(*ServiceLazy[...]).getInstance"))
-	is.Equal("ServiceLazy[*int].getInstance", shortFuncName("github.com/samber/do/v2.(*ServiceLazy[*int]).getInstance"))
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{name: "func", input: "github.com/palantir/shield/package.FuncName", expected: "FuncName"},
+		{name: "value_receiver_method", input: "github.com/palantir/shield/package.Receiver.MethodName", expected: "Receiver.MethodName"},
+		{name: "pointer_receiver_method", input: "github.com/palantir/shield/package.(*PtrReceiver).MethodName", expected: "PtrReceiver.MethodName"},
+		// Go may collapse generic type arguments to "[...]" in runtime function names.
+		// Regardless of the exact formatting, shortFuncName should only strip the
+		// pointer-receiver prefix, not "*" characters inside type arguments.
+		{name: "generic_collapsed_type_args", input: "github.com/samber/do/v2.(*ServiceLazy[...]).getInstance", expected: "ServiceLazy[...].getInstance"},
+		{name: "generic_pointer_type_arg", input: "github.com/samber/do/v2.(*ServiceLazy[*int]).getInstance", expected: "ServiceLazy[*int].getInstance"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			is := assert.New(t)
+
+			is.Equal(tt.expected, shortFuncName(tt.input))
+		})
+	}
 }
 
 func TestNewFrameFromPC_ZeroPC(t *testing.T) {

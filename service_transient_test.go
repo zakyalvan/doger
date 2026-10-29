@@ -53,99 +53,132 @@ func (t *transientTestShutdownerKO) Shutdown() error {
 	return assert.AnError
 }
 
+// transientTestService is a *serviceTransient[T] of any T, for tables whose rows differ in T.
+type transientTestService struct {
+	serviceWrapperAny
+	getInstance func(Injector) (any, error) // the typed getInstance, its instance as any
+
+	// the fields set by newServiceTransient
+	name     string
+	typeName string
+	provider any
+}
+
+// transientTestServiceOf wraps s for a table row.
+func transientTestServiceOf[T any](s *serviceTransient[T]) transientTestService {
+	return transientTestService{
+		serviceWrapperAny: s,
+		getInstance:       func(i Injector) (any, error) { return s.getInstance(i) },
+		name:              s.name,
+		typeName:          s.typeName,
+		provider:          s.provider,
+	}
+}
+
 func TestNewServiceTransient(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, 100*time.Millisecond)
-	is := assert.New(t)
 
-	// Test with int provider
-	provider1 := func(i Injector) (int, error) {
-		return 42, nil
-	}
-	service1 := newServiceTransient("int-service", provider1)
-	is.Equal("int-service", service1.name)
-	is.Equal("int", service1.typeName)
-	is.NotNil(service1.provider)
-
-	// Test with string provider
-	provider2 := func(i Injector) (string, error) {
-		return "test-value", nil
-	}
-	service2 := newServiceTransient("string-service", provider2)
-	is.Equal("string-service", service2.name)
-	is.Equal("string", service2.typeName)
-	is.NotNil(service2.provider)
-
-	// Test with struct provider
 	testStruct := transientTest{foobar: "test"}
-	provider3 := func(i Injector) (transientTest, error) {
-		return testStruct, nil
-	}
-	service3 := newServiceTransient("struct-service", provider3)
-	is.Equal("struct-service", service3.name)
-	is.Equal("github.com/kartaladev/doger.transientTest", service3.typeName)
-	is.NotNil(service3.provider)
 
-	// Test with pointer provider
-	provider4 := func(i Injector) (*transientTest, error) {
-		return &testStruct, nil
+	tests := []struct {
+		name         string
+		service      transientTestService
+		wantName     string
+		wantTypeName string
+		providerMsg  string
+	}{
+		{
+			name: "int_provider",
+			service: transientTestServiceOf(newServiceTransient("int-service", func(i Injector) (int, error) {
+				return 42, nil
+			})),
+			wantName:     "int-service",
+			wantTypeName: "int",
+			providerMsg:  "Service1 provider should be set",
+		},
+		{
+			name: "string_provider",
+			service: transientTestServiceOf(newServiceTransient("string-service", func(i Injector) (string, error) {
+				return "test-value", nil
+			})),
+			wantName:     "string-service",
+			wantTypeName: "string",
+			providerMsg:  "Service2 provider should be set",
+		},
+		{
+			name: "struct_provider",
+			service: transientTestServiceOf(newServiceTransient("struct-service", func(i Injector) (transientTest, error) {
+				return testStruct, nil
+			})),
+			wantName:     "struct-service",
+			wantTypeName: "github.com/kartaladev/doger.transientTest",
+			providerMsg:  "Service3 provider should be set",
+		},
+		{
+			name: "pointer_provider",
+			service: transientTestServiceOf(newServiceTransient("pointer-service", func(i Injector) (*transientTest, error) {
+				return &testStruct, nil
+			})),
+			wantName:     "pointer-service",
+			wantTypeName: "*github.com/kartaladev/doger.transientTest",
+			providerMsg:  "Service4 provider should be set",
+		},
+		{
+			name: "interface_provider",
+			service: transientTestServiceOf(newServiceTransient("interface-service", func(i Injector) (Healthchecker, error) {
+				return &lazyTestHeathcheckerOK{foobar: "healthchecker"}, nil
+			})),
+			wantName:     "interface-service",
+			wantTypeName: "github.com/kartaladev/doger.Healthchecker",
+			providerMsg:  "Service5 provider should be set",
+		},
+		{
+			name: "slice_provider",
+			service: transientTestServiceOf(newServiceTransient("slice-service", func(i Injector) ([]string, error) {
+				return []string{"a", "b", "c"}, nil
+			})),
+			wantName:     "slice-service",
+			wantTypeName: "[]string",
+			providerMsg:  "Service6 provider should be set",
+		},
+		{
+			name: "map_provider",
+			service: transientTestServiceOf(newServiceTransient("map-service", func(i Injector) (map[string]int, error) {
+				return map[string]int{"key": 42}, nil
+			})),
+			wantName:     "map-service",
+			wantTypeName: "map[string]int",
+			providerMsg:  "Service7 provider should be set",
+		},
+		{
+			name: "boolean_provider",
+			service: transientTestServiceOf(newServiceTransient("bool-service", func(i Injector) (bool, error) {
+				return true, nil
+			})),
+			wantName:     "bool-service",
+			wantTypeName: "bool",
+			providerMsg:  "Service8 provider should be set",
+		},
 	}
-	service4 := newServiceTransient("pointer-service", provider4)
-	is.Equal("pointer-service", service4.name)
-	is.Equal("*github.com/kartaladev/doger.transientTest", service4.typeName)
-	is.NotNil(service4.provider)
 
-	// Test with interface provider
-	provider5 := func(i Injector) (Healthchecker, error) {
-		return &lazyTestHeathcheckerOK{foobar: "healthchecker"}, nil
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
+
+			is.Equal(tt.wantName, tt.service.name)
+			is.Equal(tt.wantTypeName, tt.service.typeName)
+			is.NotNil(tt.service.provider)
+
+			// Test that the service is properly initialized
+			is.NotNil(tt.service.provider, tt.providerMsg)
+		})
 	}
-	service5 := newServiceTransient("interface-service", provider5)
-	is.Equal("interface-service", service5.name)
-	is.Equal("github.com/kartaladev/doger.Healthchecker", service5.typeName)
-	is.NotNil(service5.provider)
-
-	// Test with slice provider
-	provider6 := func(i Injector) ([]string, error) {
-		return []string{"a", "b", "c"}, nil
-	}
-	service6 := newServiceTransient("slice-service", provider6)
-	is.Equal("slice-service", service6.name)
-	is.Equal("[]string", service6.typeName)
-	is.NotNil(service6.provider)
-
-	// Test with map provider
-	provider7 := func(i Injector) (map[string]int, error) {
-		return map[string]int{"key": 42}, nil
-	}
-	service7 := newServiceTransient("map-service", provider7)
-	is.Equal("map-service", service7.name)
-	is.Equal("map[string]int", service7.typeName)
-	is.NotNil(service7.provider)
-
-	// Test with boolean provider
-	provider8 := func(i Injector) (bool, error) {
-		return true, nil
-	}
-	service8 := newServiceTransient("bool-service", provider8)
-	is.Equal("bool-service", service8.name)
-	is.Equal("bool", service8.typeName)
-	is.NotNil(service8.provider)
-
-	// Test that all services are properly initialized
-	is.NotNil(service1.provider, "Service1 provider should be set")
-	is.NotNil(service2.provider, "Service2 provider should be set")
-	is.NotNil(service3.provider, "Service3 provider should be set")
-	is.NotNil(service4.provider, "Service4 provider should be set")
-	is.NotNil(service5.provider, "Service5 provider should be set")
-	is.NotNil(service6.provider, "Service6 provider should be set")
-	is.NotNil(service7.provider, "Service7 provider should be set")
-	is.NotNil(service8.provider, "Service8 provider should be set")
 }
 
 func TestServiceTransient_getName(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, 100*time.Millisecond)
-	is := assert.New(t)
 
 	test := transientTest{foobar: "foobar"}
 
@@ -156,17 +189,26 @@ func TestServiceTransient_getName(t *testing.T) {
 		return test, nil
 	}
 
-	service1 := newServiceTransient("foobar1", provider1)
-	is.Equal("foobar1", service1.getName())
+	tests := []struct {
+		name    string
+		service serviceWrapperAny
+		want    string
+	}{
+		{name: "int", service: newServiceTransient("foobar1", provider1), want: "foobar1"},
+		{name: "struct", service: newServiceTransient("foobar2", provider2), want: "foobar2"},
+	}
 
-	service2 := newServiceTransient("foobar2", provider2)
-	is.Equal("foobar2", service2.getName())
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
+			is.Equal(tt.want, tt.service.getName())
+		})
+	}
 }
 
 func TestServiceTransient_getTypeName(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, 100*time.Millisecond)
-	is := assert.New(t)
 
 	test := transientTest{foobar: "foobar"}
 
@@ -177,17 +219,26 @@ func TestServiceTransient_getTypeName(t *testing.T) {
 		return test, nil
 	}
 
-	service1 := newServiceTransient("foobar1", provider1)
-	is.Equal("int", service1.getTypeName())
+	tests := []struct {
+		name    string
+		service serviceWrapperAny
+		want    string
+	}{
+		{name: "int", service: newServiceTransient("foobar1", provider1), want: "int"},
+		{name: "struct", service: newServiceTransient("foobar2", provider2), want: "github.com/kartaladev/doger.transientTest"},
+	}
 
-	service2 := newServiceTransient("foobar2", provider2)
-	is.Equal("github.com/kartaladev/doger.transientTest", service2.getTypeName())
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
+			is.Equal(tt.want, tt.service.getTypeName())
+		})
+	}
 }
 
 func TestServiceTransient_getServiceType(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, 100*time.Millisecond)
-	is := assert.New(t)
 
 	test := transientTest{foobar: "foobar"}
 
@@ -198,17 +249,26 @@ func TestServiceTransient_getServiceType(t *testing.T) {
 		return test, nil
 	}
 
-	service1 := newServiceTransient("foobar1", provider1)
-	is.Equal(ServiceTypeTransient, service1.getServiceType())
+	tests := []struct {
+		name    string
+		service serviceWrapperAny
+		want    ServiceType
+	}{
+		{name: "int", service: newServiceTransient("foobar1", provider1), want: ServiceTypeTransient},
+		{name: "struct", service: newServiceTransient("foobar2", provider2), want: ServiceTypeTransient},
+	}
 
-	service2 := newServiceTransient("foobar2", provider2)
-	is.Equal(ServiceTypeTransient, service2.getServiceType())
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
+			is.Equal(tt.want, tt.service.getServiceType())
+		})
+	}
 }
 
 func TestServiceTransient_getReflectType(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, 100*time.Millisecond)
-	is := assert.New(t)
 
 	test := lazyTest{foobar: "foobar"}
 
@@ -225,17 +285,23 @@ func TestServiceTransient_getReflectType(t *testing.T) {
 		return &test, nil
 	}
 
-	service1 := newServiceTransient("foobar1", provider1)
-	is.Equal("int", service1.getReflectType().String())
+	tests := []struct {
+		name    string
+		service serviceWrapperAny
+		want    string
+	}{
+		{name: "int", service: newServiceTransient("foobar1", provider1), want: "int"},
+		{name: "struct", service: newServiceTransient("foobar2", provider2), want: pkgName + ".lazyTest"},
+		{name: "interface", service: newServiceTransient("foobar3", provider3), want: pkgName + ".Healthchecker"},
+		{name: "pointer", service: newServiceTransient("foobar1", provider4), want: "*" + pkgName + ".lazyTest"},
+	}
 
-	service2 := newServiceTransient("foobar2", provider2)
-	is.Equal(pkgName+".lazyTest", service2.getReflectType().String())
-
-	service3 := newServiceTransient("foobar3", provider3)
-	is.Equal(pkgName+".Healthchecker", service3.getReflectType().String())
-
-	service4 := newServiceTransient("foobar1", provider4)
-	is.Equal("*"+pkgName+".lazyTest", service4.getReflectType().String())
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
+			is.Equal(tt.want, tt.service.getReflectType().String())
+		})
+	}
 }
 
 func TestServiceTransient_getInstanceAny(t *testing.T) {
@@ -263,42 +329,43 @@ func TestServiceTransient_getInstanceAny(t *testing.T) {
 
 	i := New()
 
-	// basic type
-	service1 := newServiceTransient("foobar", provider1)
-	instance1, err1 := service1.getInstanceAny(i)
-	is.NoError(err1)
-	is.Equal(42, instance1)
+	tests := []struct {
+		name    string
+		service serviceWrapperAny
+		want    any
+		wantErr error // nil: the provider succeeds
+	}{
+		{name: "basic_type", service: newServiceTransient("foobar", provider1), want: 42},
+		{name: "struct", service: newServiceTransient("hello", provider2), want: test},
+		// provider panics, but panic is catched by getInstanceAny
+		{name: "provider_panics_error", service: newServiceTransient("plop", provider4), wantErr: fmt.Errorf("error")},
+		{name: "provider_returns_error", service: newServiceTransient("plop", provider5), wantErr: fmt.Errorf("error")},
+	}
 
-	// struct
-	service2 := newServiceTransient("hello", provider2)
-	instance2, err2 := service2.getInstanceAny(i)
-	is.NoError(err2)
-	is.Equal(test, instance2)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
+
+			if tt.wantErr == nil {
+				instance, err := tt.service.getInstanceAny(i)
+				is.NoError(err)
+				is.Equal(tt.want, instance)
+				return
+			}
+
+			is.NotPanics(func() {
+				instance, err := tt.service.getInstanceAny(i)
+				is.Error(err)
+				is.Empty(instance)
+				is.Equal(tt.wantErr, err)
+			})
+		})
+	}
 
 	// provider panics, but panic is catched by getInstanceAny
 	is.NotPanics(func() {
 		service3 := newServiceTransient("baz", provider3)
 		_, _ = service3.getInstanceAny(i)
-	})
-
-	// provider panics, but panic is catched by getInstanceAny
-	is.NotPanics(func() {
-		service4 := newServiceTransient("plop", provider4)
-		instance4, err4 := service4.getInstanceAny(i)
-		is.Error(err4)
-		is.Empty(instance4)
-		expected := fmt.Errorf("error")
-		is.Equal(expected, err4)
-	})
-
-	// provider returning error
-	is.NotPanics(func() {
-		service5 := newServiceTransient("plop", provider5)
-		instance5, err5 := service5.getInstanceAny(i)
-		is.Error(err5)
-		is.Empty(instance5)
-		expected := fmt.Errorf("error")
-		is.Equal(expected, err5)
 	})
 }
 
@@ -327,42 +394,43 @@ func TestServiceTransient_getInstance(t *testing.T) {
 
 	i := New()
 
-	// basic type
-	service1 := newServiceTransient("foobar", provider1)
-	instance1, err1 := service1.getInstance(i)
-	is.NoError(err1)
-	is.Equal(42, instance1)
+	tests := []struct {
+		name    string
+		service transientTestService
+		want    any
+		wantErr error // nil: the provider succeeds
+	}{
+		{name: "basic_type", service: transientTestServiceOf(newServiceTransient("foobar", provider1)), want: 42},
+		{name: "struct", service: transientTestServiceOf(newServiceTransient("hello", provider2)), want: test},
+		// provider panics, but panic is catched by getInstance
+		{name: "provider_panics_error", service: transientTestServiceOf(newServiceTransient("plop", provider4)), wantErr: fmt.Errorf("error")},
+		{name: "provider_returns_error", service: transientTestServiceOf(newServiceTransient("plop", provider5)), wantErr: fmt.Errorf("error")},
+	}
 
-	// struct
-	service2 := newServiceTransient("hello", provider2)
-	instance2, err2 := service2.getInstance(i)
-	is.NoError(err2)
-	is.Equal(test, instance2)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
+
+			if tt.wantErr == nil {
+				instance, err := tt.service.getInstance(i)
+				is.NoError(err)
+				is.Equal(tt.want, instance)
+				return
+			}
+
+			is.NotPanics(func() {
+				instance, err := tt.service.getInstance(i)
+				is.Error(err)
+				is.Empty(instance)
+				is.Equal(tt.wantErr, err)
+			})
+		})
+	}
 
 	// provider panics, but panic is catched by getInstance
 	is.NotPanics(func() {
 		service3 := newServiceTransient("baz", provider3)
 		_, _ = service3.getInstance(i)
-	})
-
-	// provider panics, but panic is catched by getInstance
-	is.NotPanics(func() {
-		service4 := newServiceTransient("plop", provider4)
-		instance4, err4 := service4.getInstance(i)
-		is.Error(err4)
-		is.Empty(instance4)
-		expected := fmt.Errorf("error")
-		is.Equal(expected, err4)
-	})
-
-	// provider returning error
-	is.NotPanics(func() {
-		service5 := newServiceTransient("plop", provider5)
-		instance5, err5 := service5.getInstance(i)
-		is.Error(err5)
-		is.Empty(instance5)
-		expected := fmt.Errorf("error")
-		is.Equal(expected, err5)
 	})
 }
 
@@ -414,29 +482,46 @@ func TestServiceTransient_healthcheck(t *testing.T) {
 
 	ctx := context.Background()
 
-	// no healthcheck
-	service1 := newServiceTransient("foobar", func(i Injector) (lazyTest, error) {
-		return lazyTest{foobar: "foobar"}, nil
-	})
-	is.NoError(service1.healthcheck(ctx))
-	_, _ = service1.getInstance(nil)
-	is.NoError(service1.healthcheck(ctx))
+	tests := []struct {
+		name    string
+		service transientTestService
+	}{
+		{
+			name: "no_healthcheck",
+			service: transientTestServiceOf(newServiceTransient("foobar", func(i Injector) (lazyTest, error) {
+				return lazyTest{foobar: "foobar"}, nil
+			})),
+		},
+		{
+			name: "healthcheck_ok",
+			service: transientTestServiceOf(newServiceTransient("foobar", func(i Injector) (*lazyTestHeathcheckerOK, error) {
+				return &lazyTestHeathcheckerOK{foobar: "foobar"}, nil
+			})),
+		},
+		{
+			name: "healthcheck_ko",
+			service: transientTestServiceOf(newServiceTransient("foobar", func(i Injector) (*lazyTestHeathcheckerKO, error) {
+				return &lazyTestHeathcheckerKO{foobar: "foobar"}, nil
+			})),
+		},
+		{
+			// Test with HealthcheckerWithContext provider: should still return nil even with failing healthchecker
+			name: "healthchecker_with_context",
+			service: transientTestServiceOf(newServiceTransient("foobar", func(i Injector) (*eagerTestHeathcheckerWithContext, error) {
+				return &eagerTestHeathcheckerWithContext{foobar: "test", shouldFail: true}, nil
+			})),
+		},
+	}
 
-	// healthcheck ok
-	service2 := newServiceTransient("foobar", func(i Injector) (*lazyTestHeathcheckerOK, error) {
-		return &lazyTestHeathcheckerOK{foobar: "foobar"}, nil
-	})
-	is.NoError(service2.healthcheck(ctx))
-	_, _ = service2.getInstance(nil)
-	is.NoError(service2.healthcheck(ctx))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
 
-	// healthcheck ko
-	service3 := newServiceTransient("foobar", func(i Injector) (*lazyTestHeathcheckerKO, error) {
-		return &lazyTestHeathcheckerKO{foobar: "foobar"}, nil
-	})
-	is.NoError(service3.healthcheck(ctx))
-	_, _ = service3.getInstance(nil)
-	is.NoError(service3.healthcheck(ctx))
+			is.NoError(tt.service.healthcheck(ctx))
+			_, _ = tt.service.getInstance(nil)
+			is.NoError(tt.service.healthcheck(ctx))
+		})
+	}
 
 	// Test with different context scenarios - transient services always return nil
 	canceledCtx, cancel := context.WithCancel(context.Background())
@@ -457,14 +542,6 @@ func TestServiceTransient_healthcheck(t *testing.T) {
 	defer cancel()
 
 	is.NoError(service4.healthcheck(futureCtx))
-
-	// Test with HealthcheckerWithContext provider
-	service5 := newServiceTransient("foobar", func(i Injector) (*eagerTestHeathcheckerWithContext, error) {
-		return &eagerTestHeathcheckerWithContext{foobar: "test", shouldFail: true}, nil
-	})
-	is.NoError(service5.healthcheck(ctx))
-	_, _ = service5.getInstance(nil)
-	is.NoError(service5.healthcheck(ctx)) // Should still return nil even with failing healthchecker
 }
 
 func TestServiceTransient_isShutdowner(t *testing.T) {
@@ -522,29 +599,53 @@ func TestServiceTransient_shutdown(t *testing.T) {
 
 	ctx := context.Background()
 
-	// no shutdown
-	service1 := newServiceTransient("foobar", func(i Injector) (lazyTest, error) {
-		return lazyTest{foobar: "foobar"}, nil
-	})
-	is.NoError(service1.shutdown(ctx))
-	_, _ = service1.getInstance(nil)
-	is.NoError(service1.shutdown(ctx))
+	tests := []struct {
+		name    string
+		service transientTestService
+	}{
+		{
+			name: "no_shutdown",
+			service: transientTestServiceOf(newServiceTransient("foobar", func(i Injector) (lazyTest, error) {
+				return lazyTest{foobar: "foobar"}, nil
+			})),
+		},
+		{
+			name: "shutdown_ok",
+			service: transientTestServiceOf(newServiceTransient("foobar", func(i Injector) (*lazyTestShutdownerOK, error) {
+				return &lazyTestShutdownerOK{foobar: "foobar"}, nil
+			})),
+		},
+		{
+			name: "shutdown_ko",
+			service: transientTestServiceOf(newServiceTransient("foobar", func(i Injector) (*lazyTestShutdownerKO, error) {
+				return &lazyTestShutdownerKO{foobar: "foobar"}, nil
+			})),
+		},
+		{
+			// Should still return nil even with context shutdowner
+			name: "shutdowner_with_context",
+			service: transientTestServiceOf(newServiceTransient("foobar", func(i Injector) (*eagerTestShutdownerWithContext, error) {
+				return &eagerTestShutdownerWithContext{foobar: "test"}, nil
+			})),
+		},
+		{
+			// Should still return nil even with void shutdowner
+			name: "shutdowner_void",
+			service: transientTestServiceOf(newServiceTransient("foobar", func(i Injector) (*eagerTestShutdownerVoid, error) {
+				return &eagerTestShutdownerVoid{foobar: "test"}, nil
+			})),
+		},
+	}
 
-	// shutdown ok
-	service2 := newServiceTransient("foobar", func(i Injector) (*lazyTestShutdownerOK, error) {
-		return &lazyTestShutdownerOK{foobar: "foobar"}, nil
-	})
-	is.NoError(service2.shutdown(ctx))
-	_, _ = service2.getInstance(nil)
-	is.NoError(service2.shutdown(ctx))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
 
-	// shutdown ko
-	service3 := newServiceTransient("foobar", func(i Injector) (*lazyTestShutdownerKO, error) {
-		return &lazyTestShutdownerKO{foobar: "foobar"}, nil
-	})
-	is.NoError(service3.shutdown(ctx))
-	_, _ = service3.getInstance(nil)
-	is.NoError(service3.shutdown(ctx))
+			is.NoError(tt.service.shutdown(ctx))
+			_, _ = tt.service.getInstance(nil)
+			is.NoError(tt.service.shutdown(ctx))
+		})
+	}
 
 	// Test with different context scenarios - transient services always return nil
 	canceledCtx, cancel := context.WithCancel(context.Background())
@@ -565,21 +666,6 @@ func TestServiceTransient_shutdown(t *testing.T) {
 	defer cancel()
 
 	is.NoError(service4.shutdown(futureCtx))
-
-	// Test with different shutdowner types
-	service5 := newServiceTransient("foobar", func(i Injector) (*eagerTestShutdownerWithContext, error) {
-		return &eagerTestShutdownerWithContext{foobar: "test"}, nil
-	})
-	is.NoError(service5.shutdown(ctx))
-	_, _ = service5.getInstance(nil)
-	is.NoError(service5.shutdown(ctx)) // Should still return nil even with context shutdowner
-
-	service6 := newServiceTransient("foobar", func(i Injector) (*eagerTestShutdownerVoid, error) {
-		return &eagerTestShutdownerVoid{foobar: "test"}, nil
-	})
-	is.NoError(service6.shutdown(ctx))
-	_, _ = service6.getInstance(nil)
-	is.NoError(service6.shutdown(ctx)) // Should still return nil even with void shutdowner
 }
 
 func TestServiceTransient_clone(t *testing.T) {

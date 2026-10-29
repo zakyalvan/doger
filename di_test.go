@@ -14,13 +14,26 @@ import (
 func TestNameOf(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, 100*time.Millisecond)
-	is := assert.New(t)
 
-	is.Equal("int", NameOf[int]())
-	is.Equal("github.com/kartaladev/doger.eagerTest", NameOf[eagerTest]())
-	is.Equal("*github.com/kartaladev/doger.eagerTest", NameOf[*eagerTest]())
-	is.Equal("*map[int]bool", NameOf[*map[int]bool]())
-	is.Equal("github.com/kartaladev/doger.serviceWrapper[int]", NameOf[serviceWrapper[int]]())
+	tests := []struct {
+		name   string
+		nameOf func() string
+		want   string
+	}{
+		{name: "int", nameOf: NameOf[int], want: "int"},
+		{name: "struct", nameOf: NameOf[eagerTest], want: "github.com/kartaladev/doger.eagerTest"},
+		{name: "struct_pointer", nameOf: NameOf[*eagerTest], want: "*github.com/kartaladev/doger.eagerTest"},
+		{name: "map_pointer", nameOf: NameOf[*map[int]bool], want: "*map[int]bool"},
+		{name: "generic_struct", nameOf: NameOf[serviceWrapper[int]], want: "github.com/kartaladev/doger.serviceWrapper[int]"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
+
+			is.Equal(tt.want, tt.nameOf())
+		})
+	}
 }
 
 func TestNameOf_LibraryTypes(t *testing.T) {
@@ -539,68 +552,63 @@ func TestOverride(t *testing.T) {
 	})
 }
 
-func TestOverrideNamed(t *testing.T) {
+func TestOverride_Variants(t *testing.T) {
 	t.Parallel()
-	testWithTimeout(t, 100*time.Millisecond)
-	is := assert.New(t)
 
 	type test struct {
 		foobar int
 	}
 
-	i := New()
-
-	Provide(i, func(i Injector) (*test, error) {
-		return &test{42}, nil
-	})
-	is.Equal(42, MustInvoke[*test](i).foobar)
-
-	OverrideNamed(i, "*github.com/kartaladev/doger.test", func(i Injector) (*test, error) {
-		return &test{2}, nil
-	})
-	is.Equal(2, MustInvoke[*test](i).foobar)
-}
-
-func TestOverrideValue(t *testing.T) {
-	t.Parallel()
-	testWithTimeout(t, 100*time.Millisecond)
-	is := assert.New(t)
-
-	type test struct {
-		foobar int
+	tests := []struct {
+		name     string
+		override func(i Injector)
+		want     int
+	}{
+		{
+			// formerly TestOverrideNamed
+			name: "override_named",
+			override: func(i Injector) {
+				OverrideNamed(i, "*github.com/kartaladev/doger.test", func(i Injector) (*test, error) {
+					return &test{2}, nil
+				})
+			},
+			want: 2,
+		},
+		{
+			// formerly TestOverrideValue
+			name: "override_value",
+			override: func(i Injector) {
+				OverrideValue(i, &test{3})
+			},
+			want: 3,
+		},
+		{
+			// formerly TestOverrideNamedValue
+			name: "override_named_value",
+			override: func(i Injector) {
+				OverrideNamedValue(i, "*github.com/kartaladev/doger.test", &test{4})
+			},
+			want: 4,
+		},
 	}
 
-	i := New()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, 100*time.Millisecond)
+			is := assert.New(t)
 
-	Provide(i, func(i Injector) (*test, error) {
-		return &test{42}, nil
-	})
-	is.Equal(42, MustInvoke[*test](i).foobar)
+			i := New()
 
-	OverrideNamed(i, "*github.com/kartaladev/doger.test", func(i Injector) (*test, error) {
-		return &test{2}, nil
-	})
-	is.Equal(2, MustInvoke[*test](i).foobar)
-}
+			Provide(i, func(i Injector) (*test, error) {
+				return &test{42}, nil
+			})
+			is.Equal(42, MustInvoke[*test](i).foobar)
 
-func TestOverrideNamedValue(t *testing.T) {
-	t.Parallel()
-	testWithTimeout(t, 100*time.Millisecond)
-	is := assert.New(t)
-
-	type test struct {
-		foobar int
+			tt.override(i)
+			is.Equal(tt.want, MustInvoke[*test](i).foobar)
+		})
 	}
-
-	i := New()
-
-	Provide(i, func(i Injector) (*test, error) {
-		return &test{42}, nil
-	})
-	is.Equal(42, MustInvoke[*test](i).foobar)
-
-	OverrideNamedValue(i, "*github.com/kartaladev/doger.test", &test{4})
-	is.Equal(4, MustInvoke[*test](i).foobar)
 }
 
 func TestOverrideTransient(t *testing.T) {
@@ -1264,8 +1272,6 @@ func TestMustInvokeAs(t *testing.T) {
 
 func TestPackage(t *testing.T) {
 	t.Parallel()
-	testWithTimeout(t, 100*time.Millisecond)
-	is := assert.New(t)
 
 	type test struct{}
 	type iTest any
@@ -1274,75 +1280,70 @@ func TestPackage(t *testing.T) {
 		return &test{}, nil
 	}
 
-	pkg := Package(
-		Lazy(provider1),
-		Eager(test{}),
-		Bind[*test, iTest](),
-	)
+	tests := []struct {
+		name  string
+		build func() *RootScope
+	}{
+		{
+			name: "applied_to_root",
+			build: func() *RootScope {
+				pkg := Package(
+					Lazy(provider1),
+					Eager(test{}),
+					Bind[*test, iTest](),
+				)
 
-	root := New()
-	pkg(root)
+				root := New()
+				pkg(root)
+				return root
+			},
+		},
+		{
+			// formerly TestNewWithPackage
+			name: "new_with_package",
+			build: func() *RootScope {
+				pkg := Package(
+					Lazy(provider1),
+					Eager(test{}),
+				)
 
-	svc1 := newServiceDescription(root.ID(), root.Name(), NameOf[*test]())
-	svc2 := newServiceDescription(root.ID(), root.Name(), NameOf[test]())
-	svc3 := newServiceDescription(root.ID(), root.Name(), NameOf[iTest]())
-
-	is.ElementsMatch([]ServiceDescription{svc1, svc2, svc3}, root.ListProvidedServices())
-	is.ElementsMatch([]ServiceDescription{}, root.ListInvokedServices())
-
-	is.NotPanics(func() {
-		_ = MustInvoke[*test](root)
-		_ = MustInvoke[test](root)
-		_ = MustInvoke[iTest](root)
-	})
-
-	is.ElementsMatch([]ServiceDescription{svc1, svc2, svc3}, root.ListProvidedServices())
-	is.ElementsMatch([]ServiceDescription{svc1, svc2, svc3}, root.ListInvokedServices())
-}
-
-func TestNewWithPackage(t *testing.T) {
-	t.Parallel()
-	testWithTimeout(t, 100*time.Millisecond)
-	is := assert.New(t)
-
-	type test struct{}
-	type iTest any
-
-	provider1 := func(i Injector) (*test, error) {
-		return &test{}, nil
+				return New(
+					pkg,
+					Bind[*test, iTest](),
+				)
+			},
+		},
 	}
 
-	pkg := Package(
-		Lazy(provider1),
-		Eager(test{}),
-	)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, 100*time.Millisecond)
+			is := assert.New(t)
 
-	root := New(
-		pkg,
-		Bind[*test, iTest](),
-	)
+			root := tt.build()
 
-	svc1 := newServiceDescription(root.ID(), root.Name(), NameOf[*test]())
-	svc2 := newServiceDescription(root.ID(), root.Name(), NameOf[test]())
-	svc3 := newServiceDescription(root.ID(), root.Name(), NameOf[iTest]())
+			svc1 := newServiceDescription(root.ID(), root.Name(), NameOf[*test]())
+			svc2 := newServiceDescription(root.ID(), root.Name(), NameOf[test]())
+			svc3 := newServiceDescription(root.ID(), root.Name(), NameOf[iTest]())
 
-	is.ElementsMatch([]ServiceDescription{svc1, svc2, svc3}, root.ListProvidedServices())
-	is.ElementsMatch([]ServiceDescription{}, root.ListInvokedServices())
+			is.ElementsMatch([]ServiceDescription{svc1, svc2, svc3}, root.ListProvidedServices())
+			is.ElementsMatch([]ServiceDescription{}, root.ListInvokedServices())
 
-	is.NotPanics(func() {
-		_ = MustInvoke[*test](root)
-		_ = MustInvoke[test](root)
-		_ = MustInvoke[iTest](root)
-	})
+			is.NotPanics(func() {
+				_ = MustInvoke[*test](root)
+				_ = MustInvoke[test](root)
+				_ = MustInvoke[iTest](root)
+			})
 
-	is.ElementsMatch([]ServiceDescription{svc1, svc2, svc3}, root.ListProvidedServices())
-	is.ElementsMatch([]ServiceDescription{svc1, svc2, svc3}, root.ListInvokedServices())
+			is.ElementsMatch([]ServiceDescription{svc1, svc2, svc3}, root.ListProvidedServices())
+			is.ElementsMatch([]ServiceDescription{svc1, svc2, svc3}, root.ListInvokedServices())
+		})
+	}
 }
 
-func TestLazy(t *testing.T) {
+func TestLazyAndTransient(t *testing.T) {
 	t.Parallel()
-	testWithTimeout(t, 100*time.Millisecond)
-	is := assert.New(t)
 
 	type test struct{}
 
@@ -1354,29 +1355,46 @@ func TestLazy(t *testing.T) {
 		return test{}, fmt.Errorf("error")
 	}
 
-	root := New()
-	Lazy(provider1)(root)
-	Lazy(provider2)(root)
+	tests := []struct {
+		name     string
+		register []func(Injector)
+	}{
+		// formerly TestLazy
+		{name: "lazy", register: []func(Injector){Lazy(provider1), Lazy(provider2)}},
+		// formerly TestTransient
+		{name: "transient", register: []func(Injector){Transient(provider1), Transient(provider2)}},
+	}
 
-	svc1 := newServiceDescription(root.ID(), root.Name(), NameOf[*test]())
-	svc2 := newServiceDescription(root.ID(), root.Name(), NameOf[test]())
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, 100*time.Millisecond)
+			is := assert.New(t)
 
-	is.ElementsMatch([]ServiceDescription{svc1, svc2}, root.ListProvidedServices())
-	is.ElementsMatch([]ServiceDescription{}, root.ListInvokedServices())
+			root := New()
+			for _, register := range tt.register {
+				register(root)
+			}
 
-	is.NotPanics(func() {
-		_ = MustInvoke[*test](root)
-		_, _ = Invoke[test](root)
-	})
+			svc1 := newServiceDescription(root.ID(), root.Name(), NameOf[*test]())
+			svc2 := newServiceDescription(root.ID(), root.Name(), NameOf[test]())
 
-	is.ElementsMatch([]ServiceDescription{svc1, svc2}, root.ListProvidedServices())
-	is.ElementsMatch([]ServiceDescription{svc1}, root.ListInvokedServices())
+			is.ElementsMatch([]ServiceDescription{svc1, svc2}, root.ListProvidedServices())
+			is.ElementsMatch([]ServiceDescription{}, root.ListInvokedServices())
+
+			is.NotPanics(func() {
+				_ = MustInvoke[*test](root)
+				_, _ = Invoke[test](root)
+			})
+
+			is.ElementsMatch([]ServiceDescription{svc1, svc2}, root.ListProvidedServices())
+			is.ElementsMatch([]ServiceDescription{svc1}, root.ListInvokedServices())
+		})
+	}
 }
 
-func TestLazyNamed(t *testing.T) {
+func TestLazyAndTransientNamed(t *testing.T) {
 	t.Parallel()
-	testWithTimeout(t, 100*time.Millisecond)
-	is := assert.New(t)
 
 	type test struct{}
 
@@ -1388,23 +1406,42 @@ func TestLazyNamed(t *testing.T) {
 		return test{}, fmt.Errorf("error")
 	}
 
-	root := New()
-	LazyNamed("p1", provider1)(root)
-	LazyNamed("p2", provider2)(root)
+	tests := []struct {
+		name     string
+		register []func(Injector)
+	}{
+		// formerly TestLazyNamed
+		{name: "lazy_named", register: []func(Injector){LazyNamed("p1", provider1), LazyNamed("p2", provider2)}},
+		// formerly TestTransientNamed
+		{name: "transient_named", register: []func(Injector){TransientNamed("p1", provider1), TransientNamed("p2", provider2)}},
+	}
 
-	svc1 := newServiceDescription(root.ID(), root.Name(), "p1")
-	svc2 := newServiceDescription(root.ID(), root.Name(), "p2")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, 100*time.Millisecond)
+			is := assert.New(t)
 
-	is.ElementsMatch([]ServiceDescription{svc1, svc2}, root.ListProvidedServices())
-	is.ElementsMatch([]ServiceDescription{}, root.ListInvokedServices())
+			root := New()
+			for _, register := range tt.register {
+				register(root)
+			}
 
-	is.NotPanics(func() {
-		_ = MustInvokeNamed[*test](root, "p1")
-		_, _ = InvokeNamed[test](root, "p2")
-	})
+			svc1 := newServiceDescription(root.ID(), root.Name(), "p1")
+			svc2 := newServiceDescription(root.ID(), root.Name(), "p2")
 
-	is.ElementsMatch([]ServiceDescription{svc1, svc2}, root.ListProvidedServices())
-	is.ElementsMatch([]ServiceDescription{svc1}, root.ListInvokedServices())
+			is.ElementsMatch([]ServiceDescription{svc1, svc2}, root.ListProvidedServices())
+			is.ElementsMatch([]ServiceDescription{}, root.ListInvokedServices())
+
+			is.NotPanics(func() {
+				_ = MustInvokeNamed[*test](root, "p1")
+				_, _ = InvokeNamed[test](root, "p2")
+			})
+
+			is.ElementsMatch([]ServiceDescription{svc1, svc2}, root.ListProvidedServices())
+			is.ElementsMatch([]ServiceDescription{svc1}, root.ListInvokedServices())
+		})
+	}
 }
 
 func TestEager(t *testing.T) {
@@ -1459,78 +1496,8 @@ func TestEagerNamed(t *testing.T) {
 	is.ElementsMatch([]ServiceDescription{svc1, svc2}, root.ListInvokedServices())
 }
 
-func TestTransient(t *testing.T) {
-	t.Parallel()
-	testWithTimeout(t, 100*time.Millisecond)
-	is := assert.New(t)
-
-	type test struct{}
-
-	provider1 := func(i Injector) (*test, error) {
-		return &test{}, nil
-	}
-
-	provider2 := func(i Injector) (test, error) {
-		return test{}, fmt.Errorf("error")
-	}
-
-	root := New()
-	Transient(provider1)(root)
-	Transient(provider2)(root)
-
-	svc1 := newServiceDescription(root.ID(), root.Name(), NameOf[*test]())
-	svc2 := newServiceDescription(root.ID(), root.Name(), NameOf[test]())
-
-	is.ElementsMatch([]ServiceDescription{svc1, svc2}, root.ListProvidedServices())
-	is.ElementsMatch([]ServiceDescription{}, root.ListInvokedServices())
-
-	is.NotPanics(func() {
-		_ = MustInvoke[*test](root)
-		_, _ = Invoke[test](root)
-	})
-
-	is.ElementsMatch([]ServiceDescription{svc1, svc2}, root.ListProvidedServices())
-	is.ElementsMatch([]ServiceDescription{svc1}, root.ListInvokedServices())
-}
-
-func TestTransientNamed(t *testing.T) {
-	t.Parallel()
-	testWithTimeout(t, 100*time.Millisecond)
-	is := assert.New(t)
-
-	type test struct{}
-
-	provider1 := func(i Injector) (*test, error) {
-		return &test{}, nil
-	}
-
-	provider2 := func(i Injector) (test, error) {
-		return test{}, fmt.Errorf("error")
-	}
-
-	root := New()
-	TransientNamed("p1", provider1)(root)
-	TransientNamed("p2", provider2)(root)
-
-	svc1 := newServiceDescription(root.ID(), root.Name(), "p1")
-	svc2 := newServiceDescription(root.ID(), root.Name(), "p2")
-
-	is.ElementsMatch([]ServiceDescription{svc1, svc2}, root.ListProvidedServices())
-	is.ElementsMatch([]ServiceDescription{}, root.ListInvokedServices())
-
-	is.NotPanics(func() {
-		_ = MustInvokeNamed[*test](root, "p1")
-		_, _ = InvokeNamed[test](root, "p2")
-	})
-
-	is.ElementsMatch([]ServiceDescription{svc1, svc2}, root.ListProvidedServices())
-	is.ElementsMatch([]ServiceDescription{svc1}, root.ListInvokedServices())
-}
-
 func TestBind(t *testing.T) {
 	t.Parallel()
-	testWithTimeout(t, 100*time.Millisecond)
-	is := assert.New(t)
 
 	type test struct{}
 	type iTest any
@@ -1543,64 +1510,43 @@ func TestBind(t *testing.T) {
 		return test{}, fmt.Errorf("error")
 	}
 
-	root := New()
-	Lazy(provider1)(root)
-	Lazy(provider2)(root)
-	Bind[*test, iTest]()(root)
-
-	svc1 := newServiceDescription(root.ID(), root.Name(), NameOf[*test]())
-	svc2 := newServiceDescription(root.ID(), root.Name(), NameOf[test]())
-	svc3 := newServiceDescription(root.ID(), root.Name(), NameOf[iTest]())
-
-	is.ElementsMatch([]ServiceDescription{svc1, svc2, svc3}, root.ListProvidedServices())
-	is.ElementsMatch([]ServiceDescription{}, root.ListInvokedServices())
-
-	is.NotPanics(func() {
-		_ = MustInvoke[*test](root)
-		_, _ = Invoke[test](root)
-		_ = MustInvoke[iTest](root)
-	})
-
-	is.ElementsMatch([]ServiceDescription{svc1, svc2, svc3}, root.ListProvidedServices())
-	is.ElementsMatch([]ServiceDescription{svc1, svc3}, root.ListInvokedServices())
-}
-
-func TestBindNamed(t *testing.T) {
-	t.Parallel()
-	testWithTimeout(t, 100*time.Millisecond)
-	is := assert.New(t)
-
-	type test struct{}
-	type iTest any
-
-	provider1 := func(i Injector) (*test, error) {
-		return &test{}, nil
+	tests := []struct {
+		name string
+		bind func(Injector)
+	}{
+		{name: "bind", bind: Bind[*test, iTest]()},
+		// formerly TestBindNamed
+		{name: "bind_named", bind: BindNamed[*test, iTest](NameOf[*test](), NameOf[iTest]())},
 	}
 
-	provider2 := func(i Injector) (test, error) {
-		return test{}, fmt.Errorf("error")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, 100*time.Millisecond)
+			is := assert.New(t)
+
+			root := New()
+			Lazy(provider1)(root)
+			Lazy(provider2)(root)
+			tt.bind(root)
+
+			svc1 := newServiceDescription(root.ID(), root.Name(), NameOf[*test]())
+			svc2 := newServiceDescription(root.ID(), root.Name(), NameOf[test]())
+			svc3 := newServiceDescription(root.ID(), root.Name(), NameOf[iTest]())
+
+			is.ElementsMatch([]ServiceDescription{svc1, svc2, svc3}, root.ListProvidedServices())
+			is.ElementsMatch([]ServiceDescription{}, root.ListInvokedServices())
+
+			is.NotPanics(func() {
+				_ = MustInvoke[*test](root)
+				_, _ = Invoke[test](root)
+				_ = MustInvoke[iTest](root)
+			})
+
+			is.ElementsMatch([]ServiceDescription{svc1, svc2, svc3}, root.ListProvidedServices())
+			is.ElementsMatch([]ServiceDescription{svc1, svc3}, root.ListInvokedServices())
+		})
 	}
-
-	root := New()
-	Lazy(provider1)(root)
-	Lazy(provider2)(root)
-	BindNamed[*test, iTest](NameOf[*test](), NameOf[iTest]())(root)
-
-	svc1 := newServiceDescription(root.ID(), root.Name(), NameOf[*test]())
-	svc2 := newServiceDescription(root.ID(), root.Name(), NameOf[test]())
-	svc3 := newServiceDescription(root.ID(), root.Name(), NameOf[iTest]())
-
-	is.ElementsMatch([]ServiceDescription{svc1, svc2, svc3}, root.ListProvidedServices())
-	is.ElementsMatch([]ServiceDescription{}, root.ListInvokedServices())
-
-	is.NotPanics(func() {
-		_ = MustInvoke[*test](root)
-		_, _ = Invoke[test](root)
-		_ = MustInvoke[iTest](root)
-	})
-
-	is.ElementsMatch([]ServiceDescription{svc1, svc2, svc3}, root.ListProvidedServices())
-	is.ElementsMatch([]ServiceDescription{svc1, svc3}, root.ListInvokedServices())
 }
 
 func TestProvide_DefaultSameScope(t *testing.T) {

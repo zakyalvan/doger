@@ -3,6 +3,7 @@ package doger
 import (
 	"context"
 	"errors"
+	"runtime"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -149,6 +150,7 @@ func TestPhase_RaceFree(t *testing.T) {
 				case <-stop:
 					return
 				default:
+					runtime.Gosched() // spinning must not starve Start and Shutdown on one P
 				}
 			}
 		})

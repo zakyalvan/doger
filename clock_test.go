@@ -187,25 +187,28 @@ func TestClock_TimeoutWaitsForClock(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			testWithTimeout(t, 5*time.Second)
-			is := assert.New(t)
-			must := require.New(t)
 
-			fc := clockwork.NewFakeClock()
-			i := NewWithOpts(tt.opts(fc))
-			check := newHealthCheckTestBlocking()
-			defer close(check.release)
-			ProvideNamedValue(i, "svc", check)
+			synctest.Test(t, func(t *testing.T) {
+				is := assert.New(t)
+				must := require.New(t)
 
-			result := healthCheckTestAsync(context.Background(), i)
-			waitCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			defer cancel()
-			must.NoError(fc.BlockUntilContext(waitCtx, 1)) // the timeout's timer
+				fc := clockwork.NewFakeClock()
+				i := NewWithOpts(tt.opts(fc))
+				check := newHealthCheckTestBlocking()
+				defer close(check.release)
+				ProvideNamedValue(i, "svc", check)
 
-			time.Sleep(50 * time.Millisecond) // wall time, fake clock not advanced
-			is.False(healthCheckTestReturned(result), "returned on wall time")
+				result := healthCheckTestAsync(context.Background(), i)
+				waitCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				defer cancel()
+				must.NoError(fc.BlockUntilContext(waitCtx, 1)) // the timeout's timer
 
-			fc.Advance(10 * time.Millisecond)
-			is.EqualError((<-result)["svc"], healthCheckTestDeadlineMessage)
+				time.Sleep(50 * time.Millisecond) // wall time, fake clock not advanced
+				is.False(healthCheckTestReturned(result), "returned on wall time")
+
+				fc.Advance(10 * time.Millisecond)
+				is.EqualError((<-result)["svc"], healthCheckTestDeadlineMessage)
+			})
 		})
 	}
 }
@@ -282,6 +285,78 @@ func TestClock_DerivedInjectors(t *testing.T) {
 				close(check.release)
 				synctest.Wait()
 			})
+		})
+	}
+}
+
+func TestClock_HealthReportTimes(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, 5*time.Second)
+	is := assert.New(t)
+
+	fc := clockwork.NewFakeClockAt(healthReportTestEpoch)
+	i := NewWithOpts(&InjectorOpts{Clock: fc})
+	ProvideNamed(i, "svc", func(Injector) (*healthReportTestOnClock, error) {
+		return &healthReportTestOnClock{clock: fc, takes: 4 * time.Second}, nil
+	})
+	must1(InvokeNamed[*healthReportTestOnClock](i, "svc"))
+
+	entry := healthReportTestEntry(t, i.HealthReport(), "svc")
+	is.Equal(4*time.Second, entry.Duration)
+	is.Equal(healthReportTestEpoch.Add(4*time.Second), entry.CheckedAt)
+}
+
+func TestClock_HealthCacheOnClock(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, 5*time.Second)
+
+	synctest.Test(t, func(t *testing.T) {
+		is := assert.New(t)
+
+		fc := clockwork.NewFakeClock()
+		i := NewWithOpts(&InjectorOpts{Clock: fc, HealthReportCacheTTL: 10 * time.Second})
+		svc := &healthReportTestSwitch{}
+		ProvideNamedValue(i, "svc", svc)
+
+		i.HealthReport()
+		time.Sleep(50 * time.Millisecond)
+		i.HealthReport()
+		is.Equal(int32(1), svc.calls.Load(), "calls once wall time passed")
+
+		fc.Advance(10 * time.Second)
+		i.HealthReport()
+		is.Equal(int32(2), svc.calls.Load(), "calls once the fake clock reached the TTL")
+	})
+}
+
+func TestClock_HealthSchedulerClock(t *testing.T) {
+	t.Parallel()
+
+	fake := clockwork.NewFakeClock()
+	tests := []struct {
+		name  string
+		clock clockwork.Clock
+		check func(t *testing.T, got clockwork.Clock)
+	}{
+		{name: "fake", clock: fake, check: func(t *testing.T, got clockwork.Clock) { t.Helper(); assert.Same(t, fake, got) }},
+		{name: "default_real", check: func(t *testing.T, got clockwork.Clock) {
+			t.Helper()
+			assert.IsType(t, clockwork.NewRealClock(), got)
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testWithTimeout(t, 5*time.Second)
+
+			scheduler := &manualScheduler{}
+			i := NewWithOpts(&InjectorOpts{Clock: tt.clock, HealthScheduler: scheduler})
+			require.NoError(t, i.Start())
+			defer i.Shutdown()
+
+			require.Len(t, scheduler.clocks, 1)
+			tt.check(t, scheduler.clocks[0])
 		})
 	}
 }

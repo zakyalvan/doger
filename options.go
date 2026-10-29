@@ -14,6 +14,9 @@ type serviceOptions struct {
 	kinds           []kindBinding
 	order           *int // collection order set by WithOrder; nil when unset
 	isDefault       bool // registered with AsDefault: replaceable by an explicit registration
+	healthTags      []string
+	healthTagsSet   bool // WithHealthTags given: healthTags replace the default tag
+	optionalHealth  bool // AsOptionalHealth: a failure degrades instead of failing
 }
 
 // ProvideOption attaches an opt-in to a registration. Values come only from
@@ -101,6 +104,54 @@ func AsDefault() ProvideOption {
 	}
 }
 
+const (
+	// HealthTagReadiness is the health tag of the checks that tell whether
+	// the container may receive traffic. A health checker registered without
+	// WithHealthTags carries it, and only it.
+	HealthTagReadiness = "readiness"
+	// HealthTagLiveness is the health tag of the checks that tell whether the
+	// container is alive. No checker carries it unless registered with
+	// WithHealthTags(HealthTagLiveness): with zero configuration, liveness
+	// depends only on the container phase, as liveness should not depend on
+	// external systems.
+	HealthTagLiveness = "liveness"
+)
+
+// WithHealthTags sets the health tags of the registration, replacing the
+// default HealthTagReadiness. Repeated options accumulate, duplicates
+// collapsed; WithHealthTags() with no tag leaves the service with no tag, so
+// it appears only in unfiltered reports. Tags select the services a report
+// covers (see MatchHealthTags) and have no effect on HealthCheck() or the
+// single-service functions, nor on a service that is not a health checker.
+//
+// Registration panics, before the service is stored, for an empty tag ("DI:
+// service `name` has an empty health tag") or a transient registration ("DI:
+// transient service `name` cannot be health-checked").
+func WithHealthTags(tags ...string) ProvideOption {
+	return func(o *serviceOptions) {
+		o.healthTagsSet = true
+		for _, tag := range tags {
+			if !slices.Contains(o.healthTags, tag) {
+				o.healthTags = append(o.healthTags, tag)
+			}
+		}
+	}
+}
+
+// AsOptionalHealth marks the registration's health check optional: a
+// failure makes its report entry HealthDegraded instead of HealthUnhealthy,
+// whatever its tags. Repeating it is the same as giving it once. It has no
+// effect on HealthCheck() or the single-service functions, which return the
+// check's error unchanged, nor on a service that is not a health checker.
+//
+// Registration panics, before the service is stored, for a transient
+// registration ("DI: transient service `name` cannot be health-checked").
+func AsOptionalHealth() ProvideOption {
+	return func(o *serviceOptions) {
+		o.optionalHealth = true
+	}
+}
+
 // buildServiceOptions applies opts and returns the resulting options, or nil
 // when no non-nil option was given, so registrations without options keep
 // their current code paths.
@@ -142,6 +193,10 @@ func validateServiceOptions(name string, service serviceWrapperAny, opts *servic
 		return
 	}
 
+	if slices.Contains(opts.healthTags, "") {
+		panic(fmt.Errorf("DI: service `%s` has an empty health tag", name))
+	}
+
 	if service.getServiceType() == ServiceTypeTransient {
 		validateTransientOpts(name, opts)
 		return
@@ -158,6 +213,9 @@ func validateTransientOpts(name string, opts *serviceOptions) {
 	}
 	if len(opts.kinds) > 0 {
 		panic(fmt.Errorf("DI: transient service `%s` cannot be handled by kind `%s`", name, opts.kinds[0].id.name))
+	}
+	if opts.healthTagsSet || opts.optionalHealth {
+		panic(fmt.Errorf("DI: transient service `%s` cannot be health-checked", name))
 	}
 }
 

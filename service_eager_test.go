@@ -181,120 +181,171 @@ func TestNewServiceEager(t *testing.T) {
 func TestServiceEager_getName(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, 100*time.Millisecond)
-	is := assert.New(t)
 
 	test := eagerTest{foobar: "foobar"}
 
-	service1 := newServiceEager("foobar1", 42)
-	is.Equal("foobar1", service1.getName())
+	tests := []struct {
+		name    string
+		service serviceWrapperAny
+		want    string
+	}{
+		{name: "int", service: newServiceEager("foobar1", 42), want: "foobar1"},
+		{name: "struct", service: newServiceEager("foobar2", test), want: "foobar2"},
+	}
 
-	service2 := newServiceEager("foobar2", test)
-	is.Equal("foobar2", service2.getName())
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
+			is.Equal(tt.want, tt.service.getName())
+		})
+	}
 }
 
 func TestServiceEager_getTypeName(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, 100*time.Millisecond)
-	is := assert.New(t)
 
 	test := eagerTest{foobar: "foobar"}
 
-	service1 := newServiceEager("foobar1", 42)
-	is.Equal("int", service1.getTypeName())
+	tests := []struct {
+		name    string
+		service serviceWrapperAny
+		want    string
+	}{
+		{name: "int", service: newServiceEager("foobar1", 42), want: "int"},
+		{name: "struct", service: newServiceEager("foobar2", test), want: "github.com/kartaladev/doger.eagerTest"},
+	}
 
-	service2 := newServiceEager("foobar2", test)
-	is.Equal("github.com/kartaladev/doger.eagerTest", service2.getTypeName())
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
+			is.Equal(tt.want, tt.service.getTypeName())
+		})
+	}
 }
 
 func TestServiceEager_getServiceType(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, 100*time.Millisecond)
-	is := assert.New(t)
 
 	test := eagerTest{foobar: "foobar"}
 
-	service1 := newServiceEager("foobar1", 42)
-	is.Equal(ServiceTypeEager, service1.getServiceType())
+	tests := []struct {
+		name    string
+		service serviceWrapperAny
+		want    ServiceType
+	}{
+		{name: "int", service: newServiceEager("foobar1", 42), want: ServiceTypeEager},
+		{name: "struct", service: newServiceEager("foobar2", test), want: ServiceTypeEager},
+	}
 
-	service2 := newServiceEager("foobar2", test)
-	is.Equal(ServiceTypeEager, service2.getServiceType())
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
+			is.Equal(tt.want, tt.service.getServiceType())
+		})
+	}
 }
 
 func TestServiceEager_getReflectType(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, 100*time.Millisecond)
-	is := assert.New(t)
 
 	test := eagerTest{foobar: "foobar"}
 
-	service1 := newServiceEager("foobar1", 42)
-	is.Equal("int", service1.getReflectType().String())
+	tests := []struct {
+		name    string
+		service serviceWrapperAny
+		want    string
+	}{
+		{name: "int", service: newServiceEager("foobar1", 42), want: "int"},
+		{name: "struct", service: newServiceEager("foobar2", test), want: pkgName + ".eagerTest"},
+		{name: "nil_interface_value", service: newServiceEager("foobar3", Healthchecker(nil)), want: pkgName + ".Healthchecker"},
+		{name: "nil_interface_type_argument", service: newServiceEager[Healthchecker]("foobar4", nil), want: pkgName + ".Healthchecker"},
+		{name: "pointer", service: newServiceEager("foobar1", &test), want: "*" + pkgName + ".eagerTest"},
+	}
 
-	service2 := newServiceEager("foobar2", test)
-	is.Equal(pkgName+".eagerTest", service2.getReflectType().String())
-
-	service3 := newServiceEager("foobar3", Healthchecker(nil))
-	is.Equal(pkgName+".Healthchecker", service3.getReflectType().String())
-
-	service4 := newServiceEager[Healthchecker]("foobar4", nil)
-	is.Equal(pkgName+".Healthchecker", service4.getReflectType().String())
-
-	service5 := newServiceEager("foobar1", &test)
-	is.Equal("*"+pkgName+".eagerTest", service5.getReflectType().String())
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
+			is.Equal(tt.want, tt.service.getReflectType().String())
+		})
+	}
 }
 
 func TestServiceEager_getInstanceAny(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, 100*time.Millisecond)
-	is := assert.New(t)
 
 	test := eagerTest{foobar: "foobar"}
 
-	service1 := newServiceEager("foobar", test)
-	instance1, err1 := service1.getInstanceAny(nil)
-	is.NoError(err1)
-	is.Equal(test, instance1)
+	tests := []struct {
+		name    string
+		service serviceWrapperAny
+		want    any
+	}{
+		{name: "struct", service: newServiceEager("foobar", test), want: test},
+		{name: "int", service: newServiceEager("foobar", 42), want: 42},
+	}
 
-	service2 := newServiceEager("foobar", 42)
-	instance2, err2 := service2.getInstanceAny(nil)
-	is.NoError(err2)
-	is.Equal(42, instance2)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
+
+			instance, err := tt.service.getInstanceAny(nil)
+			is.NoError(err)
+			is.Equal(tt.want, instance)
+		})
+	}
 }
 
 func TestServiceEager_getInstance(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, 100*time.Millisecond)
-	is := assert.New(t)
 
 	test := eagerTest{foobar: "foobar"}
-
 	service1 := newServiceEager("foobar", test)
-	instance1, err1 := service1.getInstance(nil)
-	is.NoError(err1)
-	is.Equal(test, instance1)
-
 	service2 := newServiceEager("foobar", 42)
-	instance2, err2 := service2.getInstance(nil)
-	is.NoError(err2)
-	is.Equal(42, instance2)
+
+	tests := []struct {
+		name        string
+		getInstance func(Injector) (any, error) // the typed getInstance, its instance as any
+		want        any
+	}{
+		{name: "struct", getInstance: func(i Injector) (any, error) { return service1.getInstance(i) }, want: test},
+		{name: "int", getInstance: func(i Injector) (any, error) { return service2.getInstance(i) }, want: 42},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
+
+			instance, err := tt.getInstance(nil)
+			is.NoError(err)
+			is.Equal(tt.want, instance)
+		})
+	}
 }
 
 func TestServiceEager_isHealthchecker(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, 100*time.Millisecond)
-	is := assert.New(t)
 
-	// no healthcheck
-	service1 := newServiceEager("foobar", &eagerTest{foobar: "foobar"})
-	is.False(service1.isHealthchecker())
+	tests := []struct {
+		name    string
+		service serviceWrapperAny
+		want    assert.BoolAssertionFunc
+	}{
+		{name: "no_healthcheck", service: newServiceEager("foobar", &eagerTest{foobar: "foobar"}), want: assert.False},
+		{name: "healthcheck_ok", service: newServiceEager("foobar", &eagerTestHeathcheckerOK{foobar: "foobar"}), want: assert.True},
+		{name: "healthcheck_ko", service: newServiceEager("foobar", &eagerTestHeathcheckerKO{foobar: "foobar"}), want: assert.True},
+	}
 
-	// healthcheck ok
-	service2 := newServiceEager("foobar", &eagerTestHeathcheckerOK{foobar: "foobar"})
-	is.True(service2.isHealthchecker())
-
-	// healthcheck ko
-	service3 := newServiceEager("foobar", &eagerTestHeathcheckerKO{foobar: "foobar"})
-	is.True(service3.isHealthchecker())
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.want(t, tt.service.isHealthchecker())
+		})
+	}
 }
 
 func TestServiceEager_healthcheck(t *testing.T) {
@@ -303,16 +354,6 @@ func TestServiceEager_healthcheck(t *testing.T) {
 	is := assert.New(t)
 
 	ctx := context.Background()
-
-	// no healthcheck
-	service1 := newServiceEager("foobar", &eagerTest{foobar: "foobar"})
-	err1 := service1.healthcheck(ctx)
-	is.NoError(err1)
-
-	// healthcheck ok
-	service2 := newServiceEager("foobar", &eagerTestHeathcheckerOK{foobar: "foobar"})
-	err2 := service2.healthcheck(ctx)
-	is.NoError(err2)
 
 	// healthcheck ko
 	service3 := newServiceEager("foobar", &eagerTestHeathcheckerKO{foobar: "foobar"})
@@ -325,60 +366,67 @@ func TestServiceEager_healthcheck(t *testing.T) {
 	canceledCtx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately
 
-	service4 := newServiceEager("foobar", &eagerTestHeathcheckerOK{foobar: "foobar"})
-	err4 := service4.healthcheck(canceledCtx)
-	is.Error(err4)
-	is.Equal(context.Canceled, err4)
-
 	// Test with timeout context that expires
 	timeoutCtx, cancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
 	defer cancel()
 	time.Sleep(2 * time.Millisecond) // Ensure timeout expires
 
-	service5 := newServiceEager("foobar", &eagerTestHeathcheckerOK{foobar: "foobar"})
-	err5 := service5.healthcheck(timeoutCtx)
-	is.Error(err5)
-	is.Equal(context.DeadlineExceeded, err5)
-
 	// Test with context that has deadline but hasn't expired
 	futureCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	service6 := newServiceEager("foobar", &eagerTestHeathcheckerOK{foobar: "foobar"})
-	err6 := service6.healthcheck(futureCtx)
-	is.NoError(err6) // Should succeed since context hasn't expired
+	tests := []struct {
+		name    string
+		service serviceWrapperAny
+		ctx     context.Context
+		wantErr error
+	}{
+		{name: "no_healthcheck", service: newServiceEager("foobar", &eagerTest{foobar: "foobar"}), ctx: ctx},
+		{name: "healthcheck_ok", service: newServiceEager("foobar", &eagerTestHeathcheckerOK{foobar: "foobar"}), ctx: ctx},
+		{name: "canceled_context", service: newServiceEager("foobar", &eagerTestHeathcheckerOK{foobar: "foobar"}), ctx: canceledCtx, wantErr: context.Canceled},
+		{name: "expired_timeout", service: newServiceEager("foobar", &eagerTestHeathcheckerOK{foobar: "foobar"}), ctx: timeoutCtx, wantErr: context.DeadlineExceeded},
+		// Should succeed since context hasn't expired
+		{name: "unexpired_deadline", service: newServiceEager("foobar", &eagerTestHeathcheckerOK{foobar: "foobar"}), ctx: futureCtx},
+		// Test HealthcheckerWithContext interface: should work with normal context
+		{name: "healthchecker_with_context", service: newServiceEager("foobar", &eagerTestHeathcheckerWithContext{foobar: "test", shouldFail: false}), ctx: ctx},
+		// Test context error handling with canceled context and error healthchecker: context error takes precedence
+		{name: "healthcheck_ko_canceled_context", service: newServiceEager("foobar", &eagerTestHeathcheckerKO{foobar: "foobar"}), ctx: canceledCtx, wantErr: context.Canceled},
+	}
 
-	// Test HealthcheckerWithContext type
-	healthcheckerWithCtx := &eagerTestHeathcheckerWithContext{foobar: "test", shouldFail: false}
-	service7 := newServiceEager("foobar", healthcheckerWithCtx)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
 
-	// Test HealthcheckerWithContext interface
-	err7 := service7.healthcheck(ctx)
-	is.NoError(err7) // Should work with normal context
-
-	// Test context error handling with canceled context and error healthchecker
-	service8 := newServiceEager("foobar", &eagerTestHeathcheckerKO{foobar: "foobar"})
-	err8 := service8.healthcheck(canceledCtx)
-	is.Error(err8)
-	is.Equal(context.Canceled, err8) // Context error takes precedence
+			err := tt.service.healthcheck(tt.ctx)
+			if tt.wantErr == nil {
+				is.NoError(err)
+				return
+			}
+			is.Error(err)
+			is.Equal(tt.wantErr, err)
+		})
+	}
 }
 
 func TestServiceEager_isShutdowner(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, 100*time.Millisecond)
-	is := assert.New(t)
 
-	// no shutdown
-	service1 := newServiceEager("foobar", &eagerTest{foobar: "foobar"})
-	is.False(service1.isShutdowner())
+	tests := []struct {
+		name    string
+		service serviceWrapperAny
+		want    assert.BoolAssertionFunc
+	}{
+		{name: "no_shutdown", service: newServiceEager("foobar", &eagerTest{foobar: "foobar"}), want: assert.False},
+		{name: "shutdown_ok", service: newServiceEager("foobar", &eagerTestShutdownerOK{foobar: "foobar"}), want: assert.True},
+		{name: "shutdown_ko", service: newServiceEager("foobar", &eagerTestShutdownerKO{foobar: "foobar"}), want: assert.True},
+	}
 
-	// shutdown ok
-	service2 := newServiceEager("foobar", &eagerTestShutdownerOK{foobar: "foobar"})
-	is.True(service2.isShutdowner())
-
-	// shutdown ko
-	service3 := newServiceEager("foobar", &eagerTestShutdownerKO{foobar: "foobar"})
-	is.True(service3.isShutdowner())
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.want(t, tt.service.isShutdowner())
+		})
+	}
 }
 
 func TestServiceEager_shutdown(t *testing.T) {
@@ -387,16 +435,6 @@ func TestServiceEager_shutdown(t *testing.T) {
 	is := assert.New(t)
 
 	ctx := context.Background()
-
-	// no shutdown
-	service1 := newServiceEager("foobar", &eagerTest{foobar: "foobar"})
-	err1 := service1.shutdown(ctx)
-	is.NoError(err1)
-
-	// shutdown ok
-	service2 := newServiceEager("foobar", &eagerTestShutdownerOK{foobar: "foobar"})
-	err2 := service2.shutdown(ctx)
-	is.NoError(err2)
 
 	// shutdown ko
 	service3 := newServiceEager("foobar", &eagerTestShutdownerKO{foobar: "foobar"})
@@ -409,63 +447,55 @@ func TestServiceEager_shutdown(t *testing.T) {
 	canceledCtx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately
 
-	service4 := newServiceEager("foobar", &eagerTestShutdownerOK{foobar: "foobar"})
-	err4 := service4.shutdown(canceledCtx)
-	is.Error(err4)
-	is.Equal(context.Canceled, err4)
-
 	// Test with timeout context that expires
 	timeoutCtx, cancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
 	defer cancel()
 	time.Sleep(2 * time.Millisecond) // Ensure timeout expires
 
-	service5 := newServiceEager("foobar", &eagerTestShutdownerOK{foobar: "foobar"})
-	err5 := service5.shutdown(timeoutCtx)
-	is.Error(err5)
-	is.Equal(context.DeadlineExceeded, err5)
-
 	// Test with context that has deadline but hasn't expired
 	futureCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	service6 := newServiceEager("foobar", &eagerTestShutdownerOK{foobar: "foobar"})
-	err6 := service6.shutdown(futureCtx)
-	is.NoError(err6) // Should succeed since context hasn't expired
-
-	// Test different shutdowner types with context
-
-	// Test ShutdownerWithContextAndError (already tested above)
-	service7 := newServiceEager("foobar", &eagerTestShutdownerOK{foobar: "foobar"})
-	err7 := service7.shutdown(ctx)
-	is.NoError(err7)
-
-	// Test ShutdownerWithError with canceled context
-	service8 := newServiceEager("foobar", &eagerTestShutdownerKO{foobar: "foobar"})
-	err8 := service8.shutdown(canceledCtx)
-	is.Error(err8)
-	is.Equal(context.Canceled, err8) // Context error takes precedence
-
-	// Test ShutdownerWithContext type (void return)
 	shutdownerWithCtx := &eagerTestShutdownerWithContext{foobar: "test"}
-	service9 := newServiceEager("foobar", shutdownerWithCtx)
-
-	// Test ShutdownerWithContext interface
-	err9 := service9.shutdown(ctx)
-	is.NoError(err9) // Should work with normal context
-
-	// Test Shutdowner type (void return, no context)
 	shutdownerVoid := &eagerTestShutdownerVoid{foobar: "test"}
-	service10 := newServiceEager("foobar", shutdownerVoid)
 
-	// Test Shutdowner interface
-	err10 := service10.shutdown(ctx)
-	is.NoError(err10) // Should work
+	tests := []struct {
+		name    string
+		service serviceWrapperAny
+		ctx     context.Context
+		wantErr error
+	}{
+		{name: "no_shutdown", service: newServiceEager("foobar", &eagerTest{foobar: "foobar"}), ctx: ctx},
+		{name: "shutdown_ok", service: newServiceEager("foobar", &eagerTestShutdownerOK{foobar: "foobar"}), ctx: ctx},
+		{name: "canceled_context", service: newServiceEager("foobar", &eagerTestShutdownerOK{foobar: "foobar"}), ctx: canceledCtx, wantErr: context.Canceled},
+		{name: "expired_timeout", service: newServiceEager("foobar", &eagerTestShutdownerOK{foobar: "foobar"}), ctx: timeoutCtx, wantErr: context.DeadlineExceeded},
+		// Should succeed since context hasn't expired
+		{name: "unexpired_deadline", service: newServiceEager("foobar", &eagerTestShutdownerOK{foobar: "foobar"}), ctx: futureCtx},
+		// Test ShutdownerWithContextAndError (already tested above)
+		{name: "shutdowner_with_context_and_error", service: newServiceEager("foobar", &eagerTestShutdownerOK{foobar: "foobar"}), ctx: ctx},
+		// Test ShutdownerWithError with canceled context: context error takes precedence
+		{name: "shutdowner_with_error_canceled_context", service: newServiceEager("foobar", &eagerTestShutdownerKO{foobar: "foobar"}), ctx: canceledCtx, wantErr: context.Canceled},
+		// Test ShutdownerWithContext type (void return): should work with normal context
+		{name: "shutdowner_with_context", service: newServiceEager("foobar", shutdownerWithCtx), ctx: ctx},
+		// Test Shutdowner type (void return, no context)
+		{name: "shutdowner", service: newServiceEager("foobar", shutdownerVoid), ctx: ctx},
+		// Test context error handling with canceled context and different shutdowner types: context error takes precedence
+		{name: "shutdowner_with_context_canceled_context", service: newServiceEager("foobar", shutdownerWithCtx), ctx: canceledCtx, wantErr: context.Canceled},
+	}
 
-	// Test context error handling with canceled context and different shutdowner types
-	service11 := newServiceEager("foobar", shutdownerWithCtx)
-	err11 := service11.shutdown(canceledCtx)
-	is.Error(err11)
-	is.Equal(context.Canceled, err11) // Context error takes precedence
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
+
+			err := tt.service.shutdown(tt.ctx)
+			if tt.wantErr == nil {
+				is.NoError(err)
+				return
+			}
+			is.Error(err)
+			is.Equal(tt.wantErr, err)
+		})
+	}
 }
 
 func TestServiceEager_clone(t *testing.T) {

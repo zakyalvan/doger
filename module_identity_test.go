@@ -168,6 +168,7 @@ func TestModuleIdentity_WorkspaceModules(t *testing.T) {
 		"http/fiber":                   modulePath + "/http/fiber",
 		"http/gin":                     modulePath + "/http/gin",
 		"http/std":                     modulePath + "/http/std",
+		"scheduler/gocron":             modulePath + "/scheduler/gocron",
 	}
 
 	dirs := readWorkspaceDirs(t, ".")

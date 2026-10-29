@@ -28,4 +28,6 @@ use (
 	./http/fiber
 	./http/gin
 	./http/std
+
+	./scheduler/gocron
 )

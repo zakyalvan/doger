@@ -27,7 +27,11 @@ type serviceLazy[T any] struct {
 	instance T
 
 	// lazy loading
-	built     bool
+	built bool
+	// published holds the instance once built, nil otherwise; health
+	// checks read it without s.mu, which a build holds for the whole
+	// provider call.
+	published atomic.Pointer[T]
 	buildTime time.Duration
 	provider  Provider[T]
 
@@ -132,6 +136,7 @@ func (s *serviceLazy[T]) build(i Injector) (err error) {
 	s.instance = instance
 	s.built = true
 	s.buildTime = clock.Since(start)
+	s.published.Store(&instance)
 
 	return nil
 }
@@ -169,28 +174,37 @@ func injectorClock(i Injector) clockwork.Clock {
 	return i.RootScope().opts.Clock
 }
 
-func (s *serviceLazy[T]) isHealthchecker() bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+// builtInstance returns the instance and whether it is built, without
+// taking s.mu: a service being built counts as not built.
+func (s *serviceLazy[T]) builtInstance() (instance T, built bool) {
+	published := s.published.Load()
+	if published == nil {
+		return empty[T](), false
+	}
 
-	if !s.built {
+	return *published, true
+}
+
+func (s *serviceLazy[T]) isHealthchecker() bool {
+	instance, built := s.builtInstance()
+	if !built {
 		return false
 	}
 
-	_, ok1 := any(s.instance).(HealthcheckerWithContext)
-	_, ok2 := any(s.instance).(Healthchecker)
+	_, ok1 := any(instance).(HealthcheckerWithContext)
+	_, ok2 := any(instance).(Healthchecker)
 	return ok1 || ok2
 }
 
+// healthcheck runs the check of the built instance without holding s.mu, so
+// a check in flight never delays the service's shutdown or invocation.
 func (s *serviceLazy[T]) healthcheck(ctx context.Context) error {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if !s.built {
+	instance, built := s.builtInstance()
+	if !built {
 		return nil
 	}
 
-	switch instance := any(s.instance).(type) {
+	switch instance := any(instance).(type) {
 	case HealthcheckerWithContext:
 		if err := contextDone(ctx); err != nil {
 			return err
@@ -230,6 +244,7 @@ func (s *serviceLazy[T]) shutdown(ctx context.Context) error {
 		// whatever the outcome, reset `build` flag and instance
 		s.built = false
 		s.instance = empty[T]()
+		s.published.Store(nil)
 		s.mu.Unlock()
 	}()
 

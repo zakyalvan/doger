@@ -14,6 +14,10 @@ var (
 	ErrServiceNotMatch    = errors.New("DI: could not find service satisfying interface")
 	ErrCircularDependency = errors.New("DI: circular dependency detected")
 	ErrHealthCheckTimeout = errors.New("DI: health check timeout")
+	// ErrHealthCheckPanic is matched by the result of a health check that
+	// panicked. The panic value follows it in the message, and an error value
+	// is wrapped, so errors.Is and errors.As also match it.
+	ErrHealthCheckPanic = errors.New("DI: health check panic")
 
 	// ErrAlreadyStarted is returned by a Start call after the first one, whether
 	// the first one succeeded or failed.
@@ -21,7 +25,8 @@ var (
 	// ErrStartAfterShutdown is returned by Start, Refresh and Scope.Start once
 	// root Shutdown has begun. It is also the cause Shutdown gives the context
 	// of a running Start, Refresh or Scope.Start, so the error a run that
-	// Shutdown interrupted returns matches it.
+	// Shutdown interrupted returns matches it, and the cause of the context of
+	// a health check in flight (see [context.Cause]).
 	ErrStartAfterShutdown = errors.New("DI: container is shut down")
 	// ErrNotStarted is returned by Refresh and Scope.Start while the
 	// container's first Start has not succeeded.

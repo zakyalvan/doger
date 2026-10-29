@@ -404,6 +404,7 @@ func TestHealthCheck_TimeoutOptionsOnClock(t *testing.T) {
 
 func TestHealthCheck_SequentialChecksShareGlobalTimeout(t *testing.T) {
 	t.Parallel()
+	testWithTimeout(t, 5*time.Second)
 
 	synctest.Test(t, func(t *testing.T) {
 		is := assert.New(t)
@@ -419,11 +420,12 @@ func TestHealthCheck_SequentialChecksShareGlobalTimeout(t *testing.T) {
 		}
 
 		result := healthCheckTestAsync(context.Background(), i)
-		for {
+		for steps := 0; ; steps++ {
 			synctest.Wait()
 			if healthCheckTestReturned(result) {
 				break
 			}
+			require.Less(t, steps, 100, "the call had not returned after 1s of the fake clock")
 			fc.Advance(10 * time.Millisecond)
 		}
 		results := <-result
@@ -590,14 +592,16 @@ func TestHealthCheck_PerServiceErrorInTime(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, time.Second)
 
-	errDBDown := errors.New("db down")
-	i := NewWithOpts(&InjectorOpts{HealthCheckTimeout: 10 * time.Millisecond})
-	ProvideNamedValue(i, "svc", &healthCheckTestResult{err: errDBDown})
+	synctest.Test(t, func(t *testing.T) {
+		errDBDown := errors.New("db down")
+		i := NewWithOpts(&InjectorOpts{HealthCheckTimeout: 10 * time.Millisecond})
+		ProvideNamedValue(i, "svc", &healthCheckTestResult{err: errDBDown})
 
-	err := HealthCheckNamed(i, "svc")
+		err := HealthCheckNamed(i, "svc")
 
-	assert.Same(t, errDBDown, err)
-	assert.NotErrorIs(t, err, ErrHealthCheckTimeout)
+		assert.Same(t, errDBDown, err)
+		assert.NotErrorIs(t, err, ErrHealthCheckTimeout)
+	})
 }
 
 func TestHealthCheckSingleTimeout(t *testing.T) {

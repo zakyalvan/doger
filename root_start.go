@@ -34,7 +34,12 @@ func (s *RootScope) Start() error {
 // registered type implements a Starter variant (unless
 // [InjectorOpts.DisableStarterAutoDetection] is set) or that were registered
 // with [AsStarter]. Services registered after Start, and scopes created after
-// it, are not started until [RootScope.Refresh] or [Scope.Start].
+// it, are not started until [RootScope.Refresh] or [Scope.Start]; until then,
+// health reports list such a Starter as [HealthUnknown] and do not check it
+// (see [RootScope.HealthReport]), so readiness stays unknown until it starts.
+//
+// Health: once Start succeeded and the container is ready, the
+// [InjectorOpts.HealthScheduler], when set, is called before the Ready hooks.
 //
 // A container starts at most once: any later call returns an error matching
 // [ErrAlreadyStarted], even when the first one failed, and a call after root
@@ -135,7 +140,9 @@ func (s *RootScope) dispatchAfterStart(ctx context.Context, err error, first *ho
 	}
 
 	s.runObserverHooks(ctx, "started", s.opts.HookContainerStarted, first)
-	s.markReady()
+	if s.markReady() {
+		s.startScheduling()
+	}
 	s.runObserverHooks(ctx, "ready", s.opts.HookContainerReady, first)
 }
 
@@ -237,14 +244,18 @@ func runObserverHooksWith[H observerHook](root *RootScope, subject, point string
 	}
 }
 
-// markReady moves the start phase from started to ready.
-func (s *RootScope) markReady() {
+// markReady moves the start phase from started to ready. It reports whether
+// the container became ready while root Shutdown has not begun.
+func (s *RootScope) markReady() bool {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
 
-	if s.startPhase == startStarted {
-		s.startPhase = startReady
+	if s.startPhase != startStarted {
+		return false
 	}
+	s.startPhase = startReady
+
+	return s.closePhase == closeOpen
 }
 
 // beginStart moves the start phase from idle to starting.
@@ -534,9 +545,7 @@ func (s *RootScope) newStartCandidate(scope *Scope, name string, depth int, serv
 	}
 
 	opts := service.getOptions()
-	starter := ((opts != nil && opts.starter) ||
-		(!s.opts.DisableStarterAutoDetection && typeIsStarter(service.getReflectType()))) &&
-		!s.isStarted(service)
+	starter := s.declaresStarter(service) && !s.isStarted(service)
 	var kinds []kindBinding
 	if opts != nil {
 		kinds = opts.kinds
@@ -566,6 +575,19 @@ func (s *RootScope) newStartCandidate(scope *Scope, name string, depth int, serv
 		starter:  starter,
 		kinds:    kinds,
 	}
+}
+
+// declaresStarter reports whether Start, Refresh and Scope.Start start
+// service: it opted in with AsStarter, or its registered type is a Starter
+// and auto-detection is on. Transient services and aliases never are.
+func (s *RootScope) declaresStarter(service serviceWrapperAny) bool {
+	if serviceType := service.getServiceType(); serviceType == ServiceTypeTransient || serviceType == ServiceTypeAlias {
+		return false
+	}
+
+	opts := service.getOptions()
+	return (opts != nil && opts.starter) ||
+		(!s.opts.DisableStarterAutoDetection && typeIsStarter(service.getReflectType()))
 }
 
 // buildCandidates invokes every candidate, keeping its instance.
@@ -737,10 +759,7 @@ func (s *RootScope) startCandidate(startCtx context.Context, candidate *startCan
 // stillRegistered reports whether the candidate's scope still holds its
 // wrapper.
 func stillRegistered(candidate *startCandidate) bool {
-	candidate.scope.mu.RLock()
-	defer candidate.scope.mu.RUnlock()
-
-	return candidate.scope.services[candidate.name] == candidate.service
+	return scopeHolds(candidate.scope, candidate.name, candidate.service)
 }
 
 // startInstance calls the Start method of the instance's Starter variant.

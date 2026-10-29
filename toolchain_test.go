@@ -46,6 +46,7 @@ func TestToolchain_GoDirective(t *testing.T) {
 		"http/fiber/go.mod",
 		"http/gin/go.mod",
 		"http/std/go.mod",
+		"scheduler/gocron/go.mod",
 		"examples/dag/go.mod",
 		"examples/eager-loading/go.mod",
 		"examples/event-driven/go.mod",

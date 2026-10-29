@@ -90,7 +90,6 @@ func TestDAG_removeService(t *testing.T) {
 func TestDAG_explainService(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, 100*time.Millisecond)
-	is := assert.New(t)
 
 	edge1 := newServiceDescription("scope1", "scope1", "service1")
 	edge2 := newServiceDescription("scope2", "scope2", "service2")
@@ -100,23 +99,47 @@ func TestDAG_explainService(t *testing.T) {
 	dag.addDependency("scope1", "scope1", "service1", "scope2", "scope2", "service2", DependencySourceInvoked)
 	dag.addDependency("scope3", "scope3", "service3", "scope2", "scope2", "service2", DependencySourceInvoked)
 
-	// edge1
-	a, b := dag.explainService("scope1", "scope1", "service1")
-	is.ElementsMatch([]ServiceDescription{edge2}, a)
-	is.ElementsMatch([]ServiceDescription{}, b)
+	tests := []struct {
+		name             string
+		scopeID          string
+		scopeName        string
+		service          string
+		wantDependencies []ServiceDescription
+		wantDependents   []ServiceDescription
+	}{
+		{
+			name:    "edge1",
+			scopeID: "scope1", scopeName: "scope1", service: "service1",
+			wantDependencies: []ServiceDescription{edge2},
+			wantDependents:   []ServiceDescription{},
+		},
+		{
+			name:    "edge2",
+			scopeID: "scope2", scopeName: "scope2", service: "service2",
+			wantDependencies: []ServiceDescription{},
+			wantDependents:   []ServiceDescription{edge1, edge3},
+		},
+		{
+			name:    "edge3",
+			scopeID: "scope3", scopeName: "scope3", service: "service3",
+			wantDependencies: []ServiceDescription{edge2},
+			wantDependents:   []ServiceDescription{},
+		},
+		{
+			name:    "not_found",
+			scopeID: "scopeX", scopeName: "scopeX", service: "serviceX",
+			wantDependencies: []ServiceDescription{},
+			wantDependents:   []ServiceDescription{},
+		},
+	}
 
-	// edge2
-	a, b = dag.explainService("scope2", "scope2", "service2")
-	is.ElementsMatch([]ServiceDescription{}, a)
-	is.ElementsMatch([]ServiceDescription{edge1, edge3}, b)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
 
-	// edge3
-	a, b = dag.explainService("scope3", "scope3", "service3")
-	is.ElementsMatch([]ServiceDescription{edge2}, a)
-	is.ElementsMatch([]ServiceDescription{}, b)
-
-	// not found
-	a, b = dag.explainService("scopeX", "scopeX", "serviceX")
-	is.ElementsMatch([]ServiceDescription{}, a)
-	is.ElementsMatch([]ServiceDescription{}, b)
+			a, b := dag.explainService(tt.scopeID, tt.scopeName, tt.service)
+			is.ElementsMatch(tt.wantDependencies, a)
+			is.ElementsMatch(tt.wantDependents, b)
+		})
+	}
 }

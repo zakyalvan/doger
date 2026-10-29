@@ -196,7 +196,9 @@ var extensionNamePattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 // Phase: Extend is allowed while the container is idle, starting (from a
 // HookContainerStarting hook, its services are then started by that Start),
 // started, ready or failed. After a successful Start, call
-// [RootScope.Refresh] to start the services an extension added; after a
+// [RootScope.Refresh] to start the services an extension added (until then,
+// health reports list its Starters as [HealthUnknown] without checking
+// them); after a
 // failed Start, Refresh returns [ErrNotStarted] as usual. Once root Shutdown
 // began, Extend returns an error matching [ErrStartAfterShutdown] and
 // installs nothing. Like the hook adders, Extend must not be called

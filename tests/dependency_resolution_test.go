@@ -197,26 +197,53 @@ func TestDAGCircularDependencyDetection(t *testing.T) {
 	is.Contains(err.Error(), "circular dependency")
 }
 
-// TestDAGSelfDependency tests DAG behavior with self-dependencies
-func TestDAGSelfDependency(t *testing.T) {
-	testWithTimeout(t, 100*time.Millisecond)
-	is := assert.New(t)
+// TestDAGUnresolvableDependency tests DAG behavior when a dependency cannot be resolved
+func TestDAGUnresolvableDependency(t *testing.T) {
+	tests := []struct {
+		name       string
+		service    string
+		dependency string
+		value      string
+		wantErr    string
+	}{
+		{
+			// Service that depends on itself: should detect circular dependency
+			name:       "self_dependency",
+			service:    "self-dependent-service",
+			dependency: "self-dependent-service",
+			value:      "self-dependent-value",
+			wantErr:    "circular dependency",
+		},
+		{
+			// Service that depends on a non-existent service: should fail with service not found error
+			name:       "service_not_found",
+			service:    "dependent-service",
+			dependency: "non-existent-service",
+			value:      "should-not-reach-here",
+			wantErr:    "could not find service",
+		},
+	}
 
-	root := doger.New()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testWithTimeout(t, 100*time.Millisecond)
+			is := assert.New(t)
 
-	// Service that depends on itself
-	doger.ProvideNamed(root, "self-dependent-service", func(i doger.Injector) (string, error) {
-		_, err := doger.InvokeNamed[string](i, "self-dependent-service")
-		if err != nil {
-			return "", err
-		}
-		return "self-dependent-value", nil
-	})
+			root := doger.New()
 
-	// Attempting to invoke should detect circular dependency
-	_, err := doger.InvokeNamed[string](root, "self-dependent-service")
-	is.Error(err)
-	is.Contains(err.Error(), "circular dependency")
+			doger.ProvideNamed(root, tt.service, func(i doger.Injector) (string, error) {
+				_, err := doger.InvokeNamed[string](i, tt.dependency)
+				if err != nil {
+					return "", err
+				}
+				return tt.value, nil
+			})
+
+			_, err := doger.InvokeNamed[string](root, tt.service)
+			is.Error(err)
+			is.Contains(err.Error(), tt.wantErr)
+		})
+	}
 }
 
 // TestDAGNestedScopes tests DAG behavior with nested scopes
@@ -254,28 +281,6 @@ func TestDAGNestedScopes(t *testing.T) {
 	result, err := doger.InvokeNamed[string](child2, "dependent-service")
 	is.NoError(err)
 	is.Equal("root-value-child1-value-child2-value", result)
-}
-
-// TestDAGServiceNotFound tests DAG behavior when services are not found
-func TestDAGServiceNotFound(t *testing.T) {
-	testWithTimeout(t, 100*time.Millisecond)
-	is := assert.New(t)
-
-	root := doger.New()
-
-	// Service that depends on a non-existent service
-	doger.ProvideNamed(root, "dependent-service", func(i doger.Injector) (string, error) {
-		_, err := doger.InvokeNamed[string](i, "non-existent-service")
-		if err != nil {
-			return "", err
-		}
-		return "should-not-reach-here", nil
-	})
-
-	// Attempting to invoke should fail with service not found error
-	_, err := doger.InvokeNamed[string](root, "dependent-service")
-	is.Error(err)
-	is.Contains(err.Error(), "could not find service")
 }
 
 // TestDAGProviderErrors tests DAG behavior when providers return errors
@@ -457,7 +462,6 @@ func TestComplexDependencyChains(t *testing.T) {
 // TestDependencyResolutionAcrossScopes tests dependency resolution across nested scopes
 func TestDependencyResolutionAcrossScopes(t *testing.T) {
 	testWithTimeout(t, 300*time.Millisecond)
-	is := assert.New(t)
 
 	// Create scope structure with multiple branches
 	root := doger.New()
@@ -496,21 +500,33 @@ func TestDependencyResolutionAcrossScopes(t *testing.T) {
 		return "leaf2a-" + config + "-" + branch2Val, nil
 	})
 
-	// Test that services can access their dependencies
-	value1, err := doger.InvokeNamed[string](leaf1a, "leaf1a-service")
-	is.NoError(err)
-	is.Equal("leaf1a-config-value-branch1-value", value1)
+	tests := []struct {
+		name    string
+		scope   doger.Injector
+		service string
+		want    string
+		wantErr string
+	}{
+		// Test that services can access their dependencies
+		{name: "leaf1a_resolves_dependencies", scope: leaf1a, service: "leaf1a-service", want: "leaf1a-config-value-branch1-value"},
+		{name: "leaf2a_resolves_dependencies", scope: leaf2a, service: "leaf2a-service", want: "leaf2a-config-value-branch2-value"},
+		// Test that services cannot access services from sibling branches
+		{name: "leaf1a_cannot_see_branch2", scope: leaf1a, service: "branch2-service", wantErr: "could not find service"},
+		{name: "leaf2a_cannot_see_branch1", scope: leaf2a, service: "branch1-service", wantErr: "could not find service"},
+	}
 
-	value2, err := doger.InvokeNamed[string](leaf2a, "leaf2a-service")
-	is.NoError(err)
-	is.Equal("leaf2a-config-value-branch2-value", value2)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
 
-	// Test that services cannot access services from sibling branches
-	_, err = doger.InvokeNamed[string](leaf1a, "branch2-service")
-	is.Error(err)
-	is.Contains(err.Error(), "could not find service")
-
-	_, err = doger.InvokeNamed[string](leaf2a, "branch1-service")
-	is.Error(err)
-	is.Contains(err.Error(), "could not find service")
+			value, err := doger.InvokeNamed[string](tt.scope, tt.service)
+			if tt.wantErr != "" {
+				is.Error(err)
+				is.Contains(err.Error(), tt.wantErr)
+				return
+			}
+			is.NoError(err)
+			is.Equal(tt.want, value)
+		})
+	}
 }

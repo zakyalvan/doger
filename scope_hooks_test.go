@@ -26,14 +26,14 @@ func TestScopeHooks_RegistrationOrder(t *testing.T) {
 			return nil
 		}
 	}
-	start := func(scope *Scope) { assert.NoError(t, scope.Start()) }
-	shutdown := func(scope *Scope) { assert.True(t, scope.Shutdown().Succeed) }
+	start := func(t *testing.T, scope *Scope) { assert.NoError(t, scope.Start()) }
+	shutdown := func(t *testing.T, scope *Scope) { assert.True(t, scope.Shutdown().Succeed) }
 
 	tests := []struct {
 		name string
 		// register sets h1, nil, h2 in the options, then adds h3 and nil
 		register func(calls *callRecorder) *RootScope
-		trigger  func(scope *Scope)
+		trigger  func(t *testing.T, scope *Scope)
 	}{
 		{
 			name: "HookScopeStarting",
@@ -95,7 +95,7 @@ func TestScopeHooks_RegistrationOrder(t *testing.T) {
 			require.NoError(t, root.Start())
 			tenant := root.Scope("tenant")
 
-			assert.NotPanics(t, func() { tt.trigger(tenant) })
+			assert.NotPanics(t, func() { tt.trigger(t, tenant) })
 			assert.Equal(t, []string{"h1 tenant", "h2 tenant", "h3 tenant"}, calls.list())
 		})
 	}

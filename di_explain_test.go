@@ -50,19 +50,28 @@ func fakeProvider6(i Injector) (int, error) {
 func TestFromTemplate(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, 100*time.Millisecond)
-	is := assert.New(t)
 
-	output := fromTemplate("foobar", nil)
-	is.Equal("foobar", output)
+	tests := []struct {
+		name     string
+		template string
+		data     map[string]any
+		expected string
+	}{
+		{name: "nil_data", template: "foobar", data: nil, expected: "foobar"},
+		{name: "unused_data", template: "foobar", data: map[string]any{"foo": "bar"}, expected: "foobar"},
+		{name: "field", template: "foo {{.Bar}}", data: map[string]any{"Bar": "bar"}, expected: "foo bar"},
+		{name: "missing_field", template: "foo {{.Foo}}", data: map[string]any{"Baz": "bar"}, expected: "foo "},
+	}
 
-	output = fromTemplate("foobar", map[string]any{"foo": "bar"})
-	is.Equal("foobar", output)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			is := assert.New(t)
 
-	output = fromTemplate("foo {{.Bar}}", map[string]any{"Bar": "bar"})
-	is.Equal("foo bar", output)
-
-	output = fromTemplate("foo {{.Foo}}", map[string]any{"Baz": "bar"})
-	is.Equal("foo ", output)
+			output := fromTemplate(tt.template, tt.data)
+			is.Equal(tt.expected, output)
+		})
+	}
 }
 
 /////////////////////////////////////////////////////////////////////////////
@@ -72,27 +81,31 @@ func TestFromTemplate(t *testing.T) {
 func TestExplainService_String(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, 100*time.Millisecond)
-	is := assert.New(t)
 
-	// Test with all fields populated
-	output := ExplainServiceOutput{
-		ScopeID:          "scope-123",
-		ScopeName:        "test-scope",
-		ServiceName:      "test-service",
-		ServiceType:      ServiceTypeLazy,
-		ServiceBuildTime: 2 * time.Second,
-		Invoked:          &stacktrace.Frame{File: "test.go", Line: 42, Function: "provider"},
-		Dependencies: []ExplainServiceDependencyOutput{
-			{ScopeID: "scope-123", ScopeName: "test-scope", Service: "dep1", Recursive: []ExplainServiceDependencyOutput{}},
-			{ScopeID: "scope-123", ScopeName: "test-scope", Service: "dep2", Recursive: []ExplainServiceDependencyOutput{}},
-		},
-		Dependents: []ExplainServiceDependencyOutput{
-			{ScopeID: "scope-123", ScopeName: "test-scope", Service: "dependent1", Recursive: []ExplainServiceDependencyOutput{}},
-			{ScopeID: "scope-123", ScopeName: "test-scope", Service: "dependent2", Recursive: []ExplainServiceDependencyOutput{}},
-		},
-	}
-
-	expected := `
+	tests := []struct {
+		name     string
+		output   ExplainServiceOutput
+		expected string
+	}{
+		{
+			name: "all_fields",
+			output: ExplainServiceOutput{
+				ScopeID:          "scope-123",
+				ScopeName:        "test-scope",
+				ServiceName:      "test-service",
+				ServiceType:      ServiceTypeLazy,
+				ServiceBuildTime: 2 * time.Second,
+				Invoked:          &stacktrace.Frame{File: "test.go", Line: 42, Function: "provider"},
+				Dependencies: []ExplainServiceDependencyOutput{
+					{ScopeID: "scope-123", ScopeName: "test-scope", Service: "dep1", Recursive: []ExplainServiceDependencyOutput{}},
+					{ScopeID: "scope-123", ScopeName: "test-scope", Service: "dep2", Recursive: []ExplainServiceDependencyOutput{}},
+				},
+				Dependents: []ExplainServiceDependencyOutput{
+					{ScopeID: "scope-123", ScopeName: "test-scope", Service: "dependent1", Recursive: []ExplainServiceDependencyOutput{}},
+					{ScopeID: "scope-123", ScopeName: "test-scope", Service: "dependent2", Recursive: []ExplainServiceDependencyOutput{}},
+				},
+			},
+			expected: `
 Scope ID: scope-123
 Scope name: test-scope
 
@@ -108,18 +121,17 @@ Dependencies:
 Dependents:
 * dependent1 from scope test-scope
 * dependent2 from scope test-scope
-`
-	is.Equal(expected, output.String())
-
-	// Test with minimal fields
-	output2 := ExplainServiceOutput{
-		ScopeID:     "scope-123",
-		ScopeName:   "test-scope",
-		ServiceName: "test-service",
-		ServiceType: ServiceTypeEager,
-	}
-
-	expected2 := `
+`,
+		},
+		{
+			name: "minimal_fields",
+			output: ExplainServiceOutput{
+				ScopeID:     "scope-123",
+				ScopeName:   "test-scope",
+				ServiceName: "test-service",
+				ServiceType: ServiceTypeEager,
+			},
+			expected: `
 Scope ID: scope-123
 Scope name: test-scope
 
@@ -132,20 +144,19 @@ Dependencies:
 
 Dependents:
 
-`
-	is.Equal(expected2, output2.String())
-
-	// Test with no dependencies or dependents
-	output3 := ExplainServiceOutput{
-		ScopeID:      "scope-123",
-		ScopeName:    "test-scope",
-		ServiceName:  "test-service",
-		ServiceType:  ServiceTypeTransient,
-		Dependencies: []ExplainServiceDependencyOutput{},
-		Dependents:   []ExplainServiceDependencyOutput{},
-	}
-
-	expected3 := `
+`,
+		},
+		{
+			name: "no_dependencies_or_dependents",
+			output: ExplainServiceOutput{
+				ScopeID:      "scope-123",
+				ScopeName:    "test-scope",
+				ServiceName:  "test-service",
+				ServiceType:  ServiceTypeTransient,
+				Dependencies: []ExplainServiceDependencyOutput{},
+				Dependents:   []ExplainServiceDependencyOutput{},
+			},
+			expected: `
 Scope ID: scope-123
 Scope name: test-scope
 
@@ -158,14 +169,23 @@ Dependencies:
 
 Dependents:
 
-`
-	is.Equal(expected3, output3.String())
+`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			is := assert.New(t)
+
+			is.Equal(tt.expected, tt.output.String())
+		})
+	}
 }
 
 func TestExplainServiceDependency_String(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, 100*time.Millisecond)
-	is := assert.New(t)
 
 	a1 := ExplainServiceDependencyOutput{
 		ScopeID:   "1234",
@@ -192,19 +212,41 @@ func TestExplainServiceDependency_String(t *testing.T) {
 		Recursive: []ExplainServiceDependencyOutput{b},
 	}
 
-	expected := `* service-a1 from scope scope-a`
-	is.Equal(expected, a1.String())
-
-	expected = `* service-b from scope scope-a
+	tests := []struct {
+		name       string
+		dependency ExplainServiceDependencyOutput
+		expected   string
+	}{
+		{
+			name:       "service-a1",
+			dependency: a1,
+			expected:   `* service-a1 from scope scope-a`,
+		},
+		{
+			name:       "service-b",
+			dependency: b,
+			expected: `* service-b from scope scope-a
   * service-a1 from scope scope-a
-  * service-a2 from scope scope-a`
-	is.Equal(expected, b.String())
-
-	expected = `* service-c from scope scope-a
+  * service-a2 from scope scope-a`,
+		},
+		{
+			name:       "service-c",
+			dependency: c,
+			expected: `* service-c from scope scope-a
   * service-b from scope scope-a
     * service-a1 from scope scope-a
-    * service-a2 from scope scope-a`
-	is.Equal(expected, c.String())
+    * service-a2 from scope scope-a`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			is := assert.New(t)
+
+			is.Equal(tt.expected, tt.dependency.String())
+		})
+	}
 }
 
 func TestExplainService(t *testing.T) {
@@ -270,8 +312,18 @@ func TestExplainNamedService(t *testing.T) {
 	ProvideNamed(scope, "SERVICE-F", fakeProvider6)
 	_, _ = InvokeNamed[int](scope, "SERVICE-F")
 
-	// full explain
-	expected := `
+	output, ok := ExplainNamedService(scope, "SERVICE-E")
+	is.True(ok)
+
+	tests := []struct {
+		name      string
+		buildTime time.Duration
+		expected  string
+	}{
+		{
+			name:      "full_explain",
+			buildTime: 1 * time.Second,
+			expected: `
 Scope ID: scope-id-123
 Scope name: scope-child
 
@@ -293,14 +345,12 @@ Dependencies:
 
 Dependents:
 * SERVICE-F from scope scope-child
-`
-	output, ok := ExplainNamedService(scope, "SERVICE-E")
-	is.True(ok)
-	output.ServiceBuildTime = 1 * time.Second
-	is.Equal(expected, output.String())
-
-	// same test, but without build time
-	expected = `
+`,
+		},
+		{
+			name:      "without_build_time",
+			buildTime: 0,
+			expected: `
 Scope ID: scope-id-123
 Scope name: scope-child
 
@@ -321,9 +371,20 @@ Dependencies:
 
 Dependents:
 * SERVICE-F from scope scope-child
-`
-	output.ServiceBuildTime = 0
-	is.Equal(expected, output.String())
+`,
+		},
+	}
+
+	// not parallel: each row copies output before it is reassigned below
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
+
+			explained := output
+			explained.ServiceBuildTime = tt.buildTime
+			is.Equal(tt.expected, explained.String())
+		})
+	}
 
 	// service not found
 	output, ok = ExplainNamedService(scope, "not_found")
@@ -426,7 +487,6 @@ func TestExplainNamedService_FromOtherScope(t *testing.T) {
 func TestExplainInjector(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, 100*time.Millisecond)
-	is := assert.New(t)
 
 	// prepare env
 	i := New()
@@ -458,8 +518,15 @@ func TestExplainInjector(t *testing.T) {
 	_, _ = InvokeNamed[*lazyTestHeathcheckerOK](scope2a, "SERVICE-LAZY-HEALTH")
 	_, _ = InvokeNamed[*lazyTestShutdownerOK](scope2b, "SERVICE-LAZY-SHUTDOWN")
 
-	// from root POV
-	expected := `Scope ID: scope-id-root
+	tests := []struct {
+		name     string
+		injector Injector
+		expected string
+	}{
+		{
+			name:     "root",
+			injector: i,
+			expected: `Scope ID: scope-id-root
 Scope name: [root]
 
 DAG:
@@ -493,12 +560,12 @@ DAG:
            |
             \_ scope-1b (ID: scope-id-1b)
                 * 😴 SERVICE-F
-`
-	output := ExplainInjector(i)
-	is.Equal(expected, output.String())
-
-	// from scope0 POV
-	expected = `Scope ID: scope-id-0
+`,
+		},
+		{
+			name:     "scope0",
+			injector: scope0,
+			expected: `Scope ID: scope-id-0
 Scope name: scope-0
 
 DAG:
@@ -532,12 +599,12 @@ DAG:
            |
             \_ scope-1b (ID: scope-id-1b)
                 * 😴 SERVICE-F
-`
-	output = ExplainInjector(scope0)
-	is.Equal(expected, output.String())
-
-	// from scope1a POV
-	expected = `Scope ID: scope-id-1a
+`,
+		},
+		{
+			name:     "scope1a",
+			injector: scope1a,
+			expected: `Scope ID: scope-id-1a
 Scope name: scope-1a
 
 DAG:
@@ -567,12 +634,12 @@ DAG:
                 |
                  \_ scope-2b (ID: scope-id-2b)
                      * 😴 SERVICE-LAZY-SHUTDOWN 🙅
-`
-	output = ExplainInjector(scope1a)
-	is.Equal(expected, output.String())
-
-	// from scope1b POV
-	expected = `Scope ID: scope-id-1b
+`,
+		},
+		{
+			name:     "scope1b",
+			injector: scope1b,
+			expected: `Scope ID: scope-id-1b
 Scope name: scope-1b
 
 DAG:
@@ -588,12 +655,12 @@ DAG:
            |
             \_ scope-1b (ID: scope-id-1b)
                 * 😴 SERVICE-F
-`
-	output = ExplainInjector(scope1b)
-	is.Equal(expected, output.String())
-
-	// from scope2a POV
-	expected = `Scope ID: scope-id-2a
+`,
+		},
+		{
+			name:     "scope2a",
+			injector: scope2a,
+			expected: `Scope ID: scope-id-2a
 Scope name: scope-2a
 
 DAG:
@@ -619,12 +686,12 @@ DAG:
                      * 🔗 SERVICE-ALIAS-HEALTH 🫀
                      * 😴 SERVICE-LAZY-HEALTH 🫀
                      * 🏭 SERVICE-TRANSIENT-SIMPLE
-`
-	output = ExplainInjector(scope2a)
-	is.Equal(expected, output.String())
-
-	// from scope2b POV
-	expected = `Scope ID: scope-id-2b
+`,
+		},
+		{
+			name:     "scope2b",
+			injector: scope2b,
+			expected: `Scope ID: scope-id-2b
 Scope name: scope-2b
 
 DAG:
@@ -648,9 +715,18 @@ DAG:
                 |
                  \_ scope-2b (ID: scope-id-2b)
                      * 😴 SERVICE-LAZY-SHUTDOWN 🙅
-`
-	output = ExplainInjector(scope2b)
-	is.Equal(expected, output.String())
+`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
+
+			output := ExplainInjector(tt.injector)
+			is.Equal(tt.expected, output.String())
+		})
+	}
 }
 
 func TestExplainInjector_repeatedServices(t *testing.T) {
@@ -743,14 +819,101 @@ DAG:
 func TestExplainInjector_String(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, 100*time.Millisecond)
-	is := assert.New(t)
 
-	// Test with all fields populated
-	output := ExplainInjectorOutput{
-		ScopeID:   "scope-123",
-		ScopeName: "test-scope",
-		DAG: []ExplainInjectorScopeOutput{
-			{
+	tests := []struct {
+		name     string
+		output   ExplainInjectorOutput
+		expected string
+	}{
+		{
+			name: "all_fields",
+			output: ExplainInjectorOutput{
+				ScopeID:   "scope-123",
+				ScopeName: "test-scope",
+				DAG: []ExplainInjectorScopeOutput{
+					{
+						ScopeID:   "scope-123",
+						ScopeName: "test-scope",
+						Services: []ExplainInjectorServiceOutput{
+							{
+								ServiceName:      "service1",
+								ServiceType:      ServiceTypeLazy,
+								ServiceTypeIcon:  "😴",
+								ServiceBuildTime: 1 * time.Second,
+								IsHealthchecker:  true,
+								IsShutdowner:     false,
+							},
+							{
+								ServiceName:      "service2",
+								ServiceType:      ServiceTypeEager,
+								ServiceTypeIcon:  "🔁",
+								ServiceBuildTime: 0,
+								IsHealthchecker:  false,
+								IsShutdowner:     true,
+							},
+						},
+						Children: []ExplainInjectorScopeOutput{
+							{
+								ScopeID:   "child-123",
+								ScopeName: "child-scope",
+								Services:  []ExplainInjectorServiceOutput{},
+								Children:  []ExplainInjectorScopeOutput{},
+							},
+						},
+					},
+				},
+			},
+			expected: `Scope ID: scope-123
+Scope name: test-scope
+
+DAG:
+ |
+  \_ test-scope (ID: scope-123)
+      * 😴 service1 🫀
+      * 🔁 service2 🙅
+      |
+      |
+       \_ child-scope (ID: child-123)
+`,
+		},
+		{
+			name: "minimal_fields",
+			output: ExplainInjectorOutput{
+				ScopeID:   "scope-123",
+				ScopeName: "test-scope",
+				DAG:       []ExplainInjectorScopeOutput{},
+			},
+			expected: `Scope ID: scope-123
+Scope name: test-scope
+
+DAG:
+
+`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			is := assert.New(t)
+
+			is.Equal(tt.expected, tt.output.String())
+		})
+	}
+}
+
+func TestExplainInjectorScope_String(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, 100*time.Millisecond)
+
+	tests := []struct {
+		name     string
+		output   ExplainInjectorScopeOutput
+		expected string
+	}{
+		{
+			name: "all_fields",
+			output: ExplainInjectorScopeOutput{
 				ScopeID:   "scope-123",
 				ScopeName: "test-scope",
 				Services: []ExplainInjectorServiceOutput{
@@ -779,115 +942,72 @@ func TestExplainInjector_String(t *testing.T) {
 						Children:  []ExplainInjectorScopeOutput{},
 					},
 				},
+				IsAncestor: false,
+				IsChildren: true,
 			},
-		},
-	}
-
-	expected := `Scope ID: scope-123
-Scope name: test-scope
-
-DAG:
- |
-  \_ test-scope (ID: scope-123)
-      * 😴 service1 🫀
-      * 🔁 service2 🙅
-      |
-      |
-       \_ child-scope (ID: child-123)
-`
-	is.Equal(expected, output.String())
-
-	// Test with minimal fields
-	output2 := ExplainInjectorOutput{
-		ScopeID:   "scope-123",
-		ScopeName: "test-scope",
-		DAG:       []ExplainInjectorScopeOutput{},
-	}
-
-	expected2 := `Scope ID: scope-123
-Scope name: test-scope
-
-DAG:
-
-`
-	is.Equal(expected2, output2.String())
-}
-
-func TestExplainInjectorScope_String(t *testing.T) {
-	t.Parallel()
-	testWithTimeout(t, 100*time.Millisecond)
-	is := assert.New(t)
-
-	// Test with all fields populated
-	output := ExplainInjectorScopeOutput{
-		ScopeID:   "scope-123",
-		ScopeName: "test-scope",
-		Services: []ExplainInjectorServiceOutput{
-			{
-				ServiceName:      "service1",
-				ServiceType:      ServiceTypeLazy,
-				ServiceTypeIcon:  "😴",
-				ServiceBuildTime: 1 * time.Second,
-				IsHealthchecker:  true,
-				IsShutdowner:     false,
-			},
-			{
-				ServiceName:      "service2",
-				ServiceType:      ServiceTypeEager,
-				ServiceTypeIcon:  "🔁",
-				ServiceBuildTime: 0,
-				IsHealthchecker:  false,
-				IsShutdowner:     true,
-			},
-		},
-		Children: []ExplainInjectorScopeOutput{
-			{
-				ScopeID:   "child-123",
-				ScopeName: "child-scope",
-				Services:  []ExplainInjectorServiceOutput{},
-				Children:  []ExplainInjectorScopeOutput{},
-			},
-		},
-		IsAncestor: false,
-		IsChildren: true,
-	}
-
-	expected := `test-scope (ID: scope-123)
+			expected: `test-scope (ID: scope-123)
  * 😴 service1 🫀
  * 🔁 service2 🙅
  |
  |
-  \_ child-scope (ID: child-123)`
-	is.Equal(expected, output.String())
-
-	// Test with minimal fields
-	output2 := ExplainInjectorScopeOutput{
-		ScopeID:    "scope-123",
-		ScopeName:  "test-scope",
-		Services:   []ExplainInjectorServiceOutput{},
-		Children:   []ExplainInjectorScopeOutput{},
-		IsAncestor: true,
-		IsChildren: false,
+  \_ child-scope (ID: child-123)`,
+		},
+		{
+			name: "minimal_fields",
+			output: ExplainInjectorScopeOutput{
+				ScopeID:    "scope-123",
+				ScopeName:  "test-scope",
+				Services:   []ExplainInjectorServiceOutput{},
+				Children:   []ExplainInjectorScopeOutput{},
+				IsAncestor: true,
+				IsChildren: false,
+			},
+			expected: `test-scope (ID: scope-123)`,
+		},
 	}
 
-	expected2 := `test-scope (ID: scope-123)`
-	is.Equal(expected2, output2.String())
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			is := assert.New(t)
+
+			is.Equal(tt.expected, tt.output.String())
+		})
+	}
 }
 
 func TestExplainInjectorService_String(t *testing.T) {
 	t.Parallel()
 	testWithTimeout(t, 100*time.Millisecond)
-	is := assert.New(t)
 
-	svc := ExplainInjectorServiceOutput{ServiceName: "service-name", ServiceType: ServiceTypeLazy, ServiceTypeIcon: "😴", ServiceBuildTime: 1 * time.Second, IsHealthchecker: true, IsShutdowner: true}
-	expected := ` * 😴 service-name 🫀 🙅`
-	is.Equal(expected, svc.String())
+	tests := []struct {
+		name     string
+		svc      ExplainInjectorServiceOutput
+		expected string
+	}{
+		{
+			name:     "lazy_healthchecker_shutdowner",
+			svc:      ExplainInjectorServiceOutput{ServiceName: "service-name", ServiceType: ServiceTypeLazy, ServiceTypeIcon: "😴", ServiceBuildTime: 1 * time.Second, IsHealthchecker: true, IsShutdowner: true},
+			expected: ` * 😴 service-name 🫀 🙅`,
+		},
+		{
+			name:     "eager_healthchecker",
+			svc:      ExplainInjectorServiceOutput{ServiceName: "service-name", ServiceType: ServiceTypeEager, ServiceTypeIcon: "🔁", IsHealthchecker: true, IsShutdowner: false},
+			expected: ` * 🔁 service-name 🫀`,
+		},
+		{
+			name:     "no_service_type",
+			svc:      ExplainInjectorServiceOutput{ServiceName: "service-name", IsHealthchecker: true, IsShutdowner: true},
+			expected: ` * ❓ service-name`,
+		},
+	}
 
-	svc = ExplainInjectorServiceOutput{ServiceName: "service-name", ServiceType: ServiceTypeEager, ServiceTypeIcon: "🔁", IsHealthchecker: true, IsShutdowner: false}
-	expected = ` * 🔁 service-name 🫀`
-	is.Equal(expected, svc.String())
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			is := assert.New(t)
 
-	svc = ExplainInjectorServiceOutput{ServiceName: "service-name", IsHealthchecker: true, IsShutdowner: true}
-	expected = ` * ❓ service-name`
-	is.Equal(expected, svc.String())
+			is.Equal(tt.expected, tt.svc.String())
+		})
+	}
 }

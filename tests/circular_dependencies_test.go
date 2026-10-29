@@ -57,7 +57,6 @@ func TestCrossScopeCircularDependencies(t *testing.T) {
 
 func TestCircularDependencyDetection(t *testing.T) {
 	testWithTimeout(t, 300*time.Millisecond)
-	is := assert.New(t)
 
 	// Test various circular dependency scenarios
 	testCases := []struct {
@@ -115,6 +114,8 @@ func TestCircularDependencyDetection(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			is := assert.New(t)
+
 			root := doger.New()
 			err := tc.setupFunc(root)
 			is.NoError(err)
@@ -131,84 +132,104 @@ func TestCircularDependencyDetection(t *testing.T) {
 	}
 }
 
+// circularService is a named string service whose provider invokes dependency
+// and returns value.
+type circularService struct {
+	name       string
+	dependency string
+	value      string
+}
+
+// provideCircularServices registers services in order.
+func provideCircularServices(i doger.Injector, services []circularService) {
+	for _, svc := range services {
+		doger.ProvideNamed(i, svc.name, func(inj doger.Injector) (string, error) {
+			_, err := doger.InvokeNamed[string](inj, svc.dependency)
+			return svc.value, err
+		})
+	}
+}
+
 // TestCircularDependency_Simple tests simple circular dependency detection
 func TestCircularDependency_Simple(t *testing.T) {
 	testWithTimeout(t, 100*time.Millisecond)
-	is := assert.New(t)
 
-	// Test case 1: A -> A (self-reference)
-	i := doger.New()
-	doger.ProvideNamed(i, "serviceA", func(inj doger.Injector) (string, error) {
-		_, err := doger.InvokeNamed[string](inj, "serviceA")
-		return "A", err
-	})
+	tests := []struct {
+		name     string
+		services []circularService
+	}{
+		{
+			// Test case 1: A -> A (self-reference)
+			name: "self_reference",
+			services: []circularService{
+				{name: "serviceA", dependency: "serviceA", value: "A"},
+			},
+		},
+		{
+			// Test case 2: A -> B -> A
+			name: "two_service_cycle",
+			services: []circularService{
+				{name: "serviceA", dependency: "serviceB", value: "A"},
+				{name: "serviceB", dependency: "serviceA", value: "B"},
+			},
+		},
+	}
 
-	_, err := doger.InvokeNamed[string](i, "serviceA")
-	is.Error(err)
-	is.Contains(err.Error(), "circular dependency")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
 
-	// Test case 2: A -> B -> A
-	i = doger.New()
-	doger.ProvideNamed(i, "serviceA", func(inj doger.Injector) (string, error) {
-		_, err := doger.InvokeNamed[string](inj, "serviceB")
-		return "A", err
-	})
-	doger.ProvideNamed(i, "serviceB", func(inj doger.Injector) (string, error) {
-		_, err := doger.InvokeNamed[string](inj, "serviceA")
-		return "B", err
-	})
+			i := doger.New()
+			provideCircularServices(i, tt.services)
 
-	_, err = doger.InvokeNamed[string](i, "serviceA")
-	is.Error(err)
-	is.Contains(err.Error(), "circular dependency")
+			_, err := doger.InvokeNamed[string](i, "serviceA")
+			is.Error(err)
+			is.Contains(err.Error(), "circular dependency")
+		})
+	}
 }
 
 // TestCircularDependency_Complex tests complex circular dependency scenarios
 func TestCircularDependency_Complex(t *testing.T) {
 	testWithTimeout(t, 300*time.Millisecond)
-	is := assert.New(t)
 
-	// Test case 1: A -> B -> C -> A (3-service cycle)
-	i := doger.New()
-	doger.ProvideNamed(i, "serviceA", func(inj doger.Injector) (string, error) {
-		_, err := doger.InvokeNamed[string](inj, "serviceB")
-		return "A", err
-	})
-	doger.ProvideNamed(i, "serviceB", func(inj doger.Injector) (string, error) {
-		_, err := doger.InvokeNamed[string](inj, "serviceC")
-		return "B", err
-	})
-	doger.ProvideNamed(i, "serviceC", func(inj doger.Injector) (string, error) {
-		_, err := doger.InvokeNamed[string](inj, "serviceA")
-		return "C", err
-	})
+	tests := []struct {
+		name     string
+		services []circularService
+	}{
+		{
+			// Test case 1: A -> B -> C -> A (3-service cycle)
+			name: "three_service_cycle",
+			services: []circularService{
+				{name: "serviceA", dependency: "serviceB", value: "A"},
+				{name: "serviceB", dependency: "serviceC", value: "B"},
+				{name: "serviceC", dependency: "serviceA", value: "C"},
+			},
+		},
+		{
+			// Test case 2: A -> B -> C -> D -> A (4-service cycle)
+			name: "four_service_cycle",
+			services: []circularService{
+				{name: "serviceA", dependency: "serviceB", value: "A"},
+				{name: "serviceB", dependency: "serviceC", value: "B"},
+				{name: "serviceC", dependency: "serviceD", value: "C"},
+				{name: "serviceD", dependency: "serviceA", value: "D"},
+			},
+		},
+	}
 
-	_, err := doger.InvokeNamed[string](i, "serviceA")
-	is.Error(err)
-	is.Contains(err.Error(), "circular dependency")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
 
-	// Test case 2: A -> B -> C -> D -> A (4-service cycle)
-	i = doger.New()
-	doger.ProvideNamed(i, "serviceA", func(inj doger.Injector) (string, error) {
-		_, err := doger.InvokeNamed[string](inj, "serviceB")
-		return "A", err
-	})
-	doger.ProvideNamed(i, "serviceB", func(inj doger.Injector) (string, error) {
-		_, err := doger.InvokeNamed[string](inj, "serviceC")
-		return "B", err
-	})
-	doger.ProvideNamed(i, "serviceC", func(inj doger.Injector) (string, error) {
-		_, err := doger.InvokeNamed[string](inj, "serviceD")
-		return "C", err
-	})
-	doger.ProvideNamed(i, "serviceD", func(inj doger.Injector) (string, error) {
-		_, err := doger.InvokeNamed[string](inj, "serviceA")
-		return "D", err
-	})
+			i := doger.New()
+			provideCircularServices(i, tt.services)
 
-	_, err = doger.InvokeNamed[string](i, "serviceA")
-	is.Error(err)
-	is.Contains(err.Error(), "circular dependency")
+			_, err := doger.InvokeNamed[string](i, "serviceA")
+			is.Error(err)
+			is.Contains(err.Error(), "circular dependency")
+		})
+	}
 }
 
 // TestCircularDependency_GenericType tests circular dependencies with generic type resolution
@@ -487,30 +508,33 @@ func TestCircularDependency_InterfaceResolution(t *testing.T) {
 // TestCircularDependency_EdgeCases tests edge cases in circular dependency detection
 func TestCircularDependency_EdgeCases(t *testing.T) {
 	testWithTimeout(t, 100*time.Millisecond)
-	is := assert.New(t)
 
-	// Test case 1: Empty service name (should not cause issues)
-	i := doger.New()
-	doger.ProvideNamed(i, "", func(inj doger.Injector) (string, error) {
-		_, err := doger.InvokeNamed[string](inj, "")
-		return "empty", err
-	})
+	tests := []struct {
+		name    string
+		service string
+		value   string
+	}{
+		// Test case 1: Empty service name (should not cause issues)
+		{name: "empty_service_name", service: "", value: "empty"},
+		// Test case 2: Very long service names
+		{name: "very_long_service_name", service: "very_long_service_name_that_is_quite_long_and_should_be_handled_properly", value: "long"},
+	}
 
-	_, err := doger.InvokeNamed[string](i, "")
-	is.Error(err)
-	is.Contains(err.Error(), "circular dependency")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
 
-	// Test case 2: Very long service names
-	longName := "very_long_service_name_that_is_quite_long_and_should_be_handled_properly"
-	i = doger.New()
-	doger.ProvideNamed(i, longName, func(inj doger.Injector) (string, error) {
-		_, err := doger.InvokeNamed[string](inj, longName)
-		return "long", err
-	})
+			i := doger.New()
+			doger.ProvideNamed(i, tt.service, func(inj doger.Injector) (string, error) {
+				_, err := doger.InvokeNamed[string](inj, tt.service)
+				return tt.value, err
+			})
 
-	_, err = doger.InvokeNamed[string](i, longName)
-	is.Error(err)
-	is.Contains(err.Error(), "circular dependency")
+			_, err := doger.InvokeNamed[string](i, tt.service)
+			is.Error(err)
+			is.Contains(err.Error(), "circular dependency")
+		})
+	}
 }
 
 // TestCircularDependency_Recovery tests that circular dependency errors don't leave the container in a bad state

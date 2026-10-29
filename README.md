@@ -46,7 +46,8 @@ Upstream's short name `do` is the sum of `DI` and `Go`. `doger` keeps it as its 
   - Implicit (provide struct, invoke interface)
   - Explicit (provide struct, bind interface, invoke interface)
 - **🔁 Service lifecycle**
-  - Health check
+  - Health check, cached health reports, readiness and liveness gated by the container phase
+  - Optional scheduled health rounds (see [Scheduled health checks](#-scheduled-health-checks))
   - Graceful unload (shutdown)
   - Dependency-aware parallel shutdown
   - Lifecycle hooks
@@ -74,6 +75,21 @@ go get github.com/kartaladev/doger@latest
 This library is v0 and follows SemVer: until v1.0.0, a minor release may contain breaking changes.
 
 Besides the Go std lib, this library depends only on [`samber/go-type-to-string`](https://github.com/samber/go-type-to-string) and [`jonboulle/clockwork`](https://github.com/jonboulle/clockwork).
+
+### 🩺 Scheduled health checks
+
+`HealthReport()` serves health to many readers at the cost of one: results are cached (`HealthReportCacheTTL`, 1s by default) and each check in flight is shared. To keep them fresh in the background, set a `HealthScheduler`. The [`scheduler/gocron`](./scheduler/gocron) module provides one built on [go-co-op/gocron](https://github.com/go-co-op/gocron), in its own module so the root module gains no dependency:
+
+```sh
+go get github.com/kartaladev/doger/scheduler/gocron@latest
+```
+
+```go
+scheduler, err := dogergocron.New() // a round at once, then every 30s
+injector := doger.NewWithOpts(&doger.InjectorOpts{HealthScheduler: scheduler})
+```
+
+See its [README](./scheduler/gocron/README.md) for the overrides and caveats.
 
 ### 🔥 Migration from samber/do
 

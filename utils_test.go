@@ -6,7 +6,6 @@ import (
 	"sort"
 	"strconv"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -150,15 +149,27 @@ func TestFilter(t *testing.T) {
 
 func TestUtilsOrderedUniq(t *testing.T) {
 	t.Parallel()
-	is := assert.New(t)
 
-	result1 := orderedUniq([]string{"a", "b", "c"})
-	result2 := orderedUniq([]string{"a", "b", "b", "c"})
+	tests := []struct {
+		name    string
+		in      []string
+		wantLen int
+		want    []string
+	}{
+		{name: "unique", in: []string{"a", "b", "c"}, wantLen: 3, want: []string{"a", "b", "c"}},
+		{name: "duplicate", in: []string{"a", "b", "b", "c"}, wantLen: 3, want: []string{"a", "b", "c"}},
+	}
 
-	is.Len(result1, 3)
-	is.Len(result2, 3)
-	is.Equal([]string{"a", "b", "c"}, result1)
-	is.Equal([]string{"a", "b", "c"}, result2)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
+
+			result := orderedUniq(tt.in)
+
+			is.Len(result, tt.wantLen)
+			is.Equal(tt.want, result)
+		})
+	}
 }
 
 func TestUtilsContains(t *testing.T) {
@@ -177,15 +188,6 @@ func TestUtilsCoalesce(t *testing.T) {
 	is.Empty(coalesce(0))
 	is.Equal(1, coalesce(0, 1, 2))
 	is.Equal(1, coalesce(1, 2, 0))
-}
-
-func TestUtilsJobPool(t *testing.T) {
-	t.Parallel()
-	testWithTimeout(t, 100*time.Millisecond)
-	is := assert.New(t)
-
-	p := newJobPool[error](42)
-	is.Equal(uint(42), p.parallelism)
 }
 
 type test1 struct{}

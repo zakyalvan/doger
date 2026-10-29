@@ -51,12 +51,13 @@ jobs:
       run: go mod tidy
 
     # consumers ignore the adapters' local replace directives, so each adapter
-    # must require the root module at the version being released
-    - name: Pin HTTP adapters to the released root version
+    # (HTTP and scheduler) must require the root module at the version being
+    # released
+    - name: Pin adapters to the released root version
       env:
         SEMVER: ${{ inputs.semver }}
       run: |
-          for dir in http/*/; do
+          for dir in http/*/ scheduler/*/; do
             [ -f "${dir}go.mod" ] || continue
             (cd "$dir" && go mod edit -require="github.com/kartaladev/doger@${SEMVER}")
           done
@@ -68,7 +69,8 @@ jobs:
     - name: Write new go.sum into logs
       run: cat go.sum
 
-    # the root module is tagged <semver>, each HTTP adapter http/<x>/<semver>
+    # the root module is tagged <semver>, each adapter http/<x>/<semver> or
+    # scheduler/<x>/<semver>
     - name: Create tags
       env:
         SEMVER: ${{ inputs.semver }}
@@ -80,7 +82,7 @@ jobs:
           git add .
           git commit --allow-empty -m "bump ${SEMVER}"
           tags=("$SEMVER")
-          for dir in http/*/; do
+          for dir in http/*/ scheduler/*/; do
             [ -f "${dir}go.mod" ] || continue
             tags+=("${dir%/}/${SEMVER}")
           done

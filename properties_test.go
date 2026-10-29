@@ -50,16 +50,25 @@ func TestEnvPropertySource_Distinct(t *testing.T) {
 	t.Setenv("DOGER_REDIS___CACHE_ADDR", "instance")
 	source := EnvPropertySource("DOGER_")
 
-	dot, dotOK := source.Lookup("redis.cache.addr")
-	dash, dashOK := source.Lookup("redis.cache-addr")
-	instance, instanceOK := source.Lookup("redis/cache.addr")
+	tests := []struct {
+		name  string
+		key   string
+		value string
+	}{
+		{name: "dot", key: "redis.cache.addr", value: "dot"},
+		{name: "dash", key: "redis.cache-addr", value: "dash"},
+		{name: "instance", key: "redis/cache.addr", value: "instance"},
+	}
 
-	require.True(t, dotOK)
-	require.True(t, dashOK)
-	require.True(t, instanceOK)
-	assert.Equal(t, "dot", dot)
-	assert.Equal(t, "dash", dash)
-	assert.Equal(t, "instance", instance)
+	// all three variables are set at once: each key reads only its own
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			value, ok := source.Lookup(tt.key)
+
+			require.True(t, ok)
+			assert.Equal(t, tt.value, value)
+		})
+	}
 }
 
 // TestEnvPropertySource_Unset is not parallel: it changes environment
