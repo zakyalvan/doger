@@ -40,11 +40,12 @@ Examples:
   | http/fiber                    | github.com/kartaladev/doger/http/fiber                    |
   | http/gin                      | github.com/kartaladev/doger/http/gin                      |
   | http/std                      | github.com/kartaladev/doger/http/std                      |
+  | scheduler/gocron              | github.com/kartaladev/doger/scheduler/gocron              |
 ```
 
 <!-- cases: N/A 2 overrides: no option -->
 <!-- cases: N/A 3 zero values: an empty workspace is not a supported layout -->
-<!-- cases: 4 boundaries: covered by the 26 rows, which are every workspace entry; the test fails if the workspace lists a directory that has no row -->
+<!-- cases: 4 boundaries: covered by the 27 rows, which are every workspace entry once `./config` is added (the existing test already holds a scheduler/gocron row; this delta adds it to the spec, where it was missing); the test fails if the workspace lists a directory that has no row -->
 <!-- cases: N/A 5 invalid input: no input -->
 <!-- cases: N/A 6 duplicate: Go tooling rejects duplicate module paths in a workspace -->
 <!-- cases: N/A 7 lifecycle: static property of the build -->
