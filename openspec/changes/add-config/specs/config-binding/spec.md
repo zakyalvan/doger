@@ -21,45 +21,86 @@ Then the result is ServiceConfig{Name: "demo", Version: "9.9.9"} and the error i
 
 <!-- cases: 1 default: env-only default source; the config.Files variant of spike 4 is in config-files -->
 <!-- cases: N/A 2 overrides: source choice is specified in extension-properties -->
-<!-- cases: N/A 3-9: covered by the requirements below -->
+<!-- cases: N/A 3-9: each is covered by a later requirement of this spec (presence, errors, lifecycle, concurrency, panics) -->
 <!-- cases: 10 compatibility: fixes spike 4 of golang-lib/config -->
 
 ### Requirement: Field keys are canonical kebab names
-The binder SHALL derive each field's key segment by splitting the Go field name at case, acronym and digit-to-letter boundaries into lowercase kebab form, and SHALL pass `<prefix>.<segment>` to the source; an empty prefix SHALL produce the bare segment.
+The binder SHALL split a Go field name before byte i when s[i] is upper and s[i-1] lower; when s[i] is upper, s[i-1] a digit and s[i+1] lower; or when s[i] is upper, s[i-1] upper, s[i+1] lower and the upper run before i is 2+ letters, unless s[i+1] is "s" ending the name or followed by a non-lower byte. `_` also splits; empty parts drop; letter-to-digit never splits; parts are lowercased and joined with `-`.
 
 #### Scenario: The source receives canonical keys
 ```gherkin
-Given a property source that records every key passed to Lookup and Keys and holds nothing
-And a target struct whose only field is named <field>
+Given root's property source is a Lookup-only source that records every key passed to Lookup and holds nothing
+And a target struct whose only field is a string named <field>
 When the consumer calls doger.ResolveConfig(root, "<prefix>", target)
 Then the source received "<key>"
 
 Examples:
-  | field       | prefix | key                 |
-  | Port        | server | server.port         |
-  | ReadTimeout | server | server.read-timeout |
-  | IssuerURI   | server | server.issuer-uri   |
-  | TLSCert     | server | server.tls-cert     |
-  | OAuth2Token | server | server.oauth2-token |
-  | IPv6Addr    | server | server.ipv6-addr    |
-  | AllowedURLs | server | server.allowed-urls |
-  | IDs         | server | server.ids          |
-  | S3Bucket    | server | server.s3-bucket    |
-  | HTTPServer  | server | server.http-server  |
-  | ID          | server | server.id           |
-  | Port        |        | port                |
+  | field         | prefix | key                    |
+  | Port          | server | server.port            |
+  | ReadTimeout   | server | server.read-timeout    |
+  | IssuerURI     | server | server.issuer-uri      |
+  | TLSCert       | server | server.tls-cert        |
+  | OAuth2Token   | server | server.oauth2-token    |
+  | IPv6Addr      | server | server.ipv6-addr       |
+  | AllowedURLs   | server | server.allowed-urls    |
+  | IDs           | server | server.ids             |
+  | S3Bucket      | server | server.s3-bucket       |
+  | HTTPServer    | server | server.http-server     |
+  | ID            | server | server.id              |
+  | API_Key       | server | server.api-key         |
+  | ABTest        | server | server.ab-test         |
+  | Use2FA        | server | server.use2fa          |
+  | HTTPServerURL | server | server.http-server-url |
+  | ARN           | server | server.arn             |
+  | PDFs          | server | server.pdfs            |
+  | Base64Data    | server | server.base64-data     |
+  | X509Cert      | server | server.x509-cert       |
+  | HTTP2Server   | server | server.http2-server    |
+  | SHA256Sum     | server | server.sha256-sum      |
+  | UTF8String    | server | server.utf8-string     |
+  | K8sNamespace  | server | server.k8s-namespace   |
+  | Use2FAToken   | server | server.use2fa-token    |
+  | XAxis         | server | server.xaxis           |
+  | ATest         | server | server.atest           |
+  | Foo__Bar      | server | server.foo-bar         |
+  | Port          |        | port                   |
 ```
 
 <!-- cases: 1 default: no tags needed -->
-<!-- cases: 2 overrides: covered by "A tag overrides a field's key" -->
-<!-- cases: 3 zero values: empty prefix row -->
-<!-- cases: 4 boundaries: one-letter-free acronyms at start, middle and end; digit inside a word; plural acronym -->
-<!-- cases: N/A 5 errors: naming cannot fail; conflicts have their own requirement -->
-<!-- cases: N/A 6-9: pure naming -->
+<!-- cases: 2 overrides: a tag replaces the derived segment, see "A tag overrides a field's key" -->
+<!-- cases: 3 zero values: empty prefix row; double underscore drops the empty part -->
+<!-- cases: 4 boundaries: acronym at start, middle and end; plural acronym; digit inside and after an acronym; one-letter upper run (XAxis, ATest) -->
+<!-- cases: 5 errors: covered by "A non-ASCII field name needs a tag" -->
+<!-- cases: N/A 6 duplicate: conflicts have their own requirement -->
+<!-- cases: N/A 7-9: naming is a pure function of the field name -->
 <!-- cases: N/A 10 compatibility: new API -->
 
-### Requirement: Keys are matched in uniform form
-The binder SHALL compare the keys a source's `Keys` returns with the field's key in uniform form (lowercase, `-` and `_` removed per segment, `[...]` contents untouched), so a source that reports dash-free keys SHALL still fill lists, maps and pointers whose names have several words.
+### Requirement: A non-ASCII field name needs a tag
+An exported, untagged, bound field whose name holds a non-ASCII letter SHALL fail the bind with an error matching `ErrInvalidConfigTarget` that names the struct type and the field, before any source is consulted; a tagged or skipped field with such a name SHALL bind or be skipped normally.
+
+#### Scenario: Non-ASCII names
+```gherkin
+Given a doger.MapSource holding "shop.size" = "XL"
+And type ShopConfig struct { <field> }
+When the consumer calls doger.ResolveConfig(root, "shop", ShopConfig{})
+Then the error is <error>
+
+Examples:
+  | field                         | error                                                                                   |
+  | Größe string                  | matching ErrInvalidConfigTarget with message "DI: config: invalid target: app.ShopConfig.Größe: field name is not ASCII; add a cfg tag" |
+  | Größe string `cfg:"size"`     | nil, and the result's Größe is "XL"                                                      |
+  | Größe string `cfg:"-"`        | nil                                                                                     |
+```
+
+<!-- cases: N/A 1 default, 2 overrides: a tag is the override, tagged row -->
+<!-- cases: N/A 3 zero values: an empty name cannot occur in Go -->
+<!-- cases: 4 boundaries: untagged, tagged, skipped -->
+<!-- cases: 5 errors: sentinel and pinned text -->
+<!-- cases: N/A 6-9: checked before any lookup -->
+<!-- cases: N/A 10 compatibility: new API -->
+
+### Requirement: Keys are compared in uniform form
+The binder SHALL compare keys in uniform form: per segment lowercase with `-` and `_` removed; `[k]` with k in `[a-z0-9]+` equal to `.k`; an all-digit `.n` equal to `[n]`; any other bracket content verbatim; the instance segment after `/` never folded; and a prefix matching only whole segments, so `hosts` never matches `hostsx`.
 
 #### Scenario: Multi-word lists, maps and pointers bind from env
 ```gherkin
@@ -70,54 +111,130 @@ When the consumer calls doger.ResolveConfig(doger.New(), "server", ServerConfig{
 Then the result is ServerConfig{AllowedHosts: ["a", "b"], ExtraLabels: {"team": "core"}, ClientTLS: &TLSConfig{Enabled: true}}
 ```
 
-<!-- cases: 1 default: env-only source -->
-<!-- cases: N/A 2 overrides: matching is not configurable -->
-<!-- cases: N/A 3 zero values: an empty Keys result binds nothing -->
-<!-- cases: 4 boundaries: list, map and pointer, each with a two-word name -->
-<!-- cases: N/A 5-9: as for every bind -->
+#### Scenario: Equal spellings in uniform form
+```gherkin
+Given a doger.MapSource holding <held>
+And type ServerConfig struct { Hosts []string; Labels map[string]string }
+When the consumer calls doger.ResolveConfig(root, "server", ServerConfig{})
+Then the result is <result>
+
+Examples:
+  | held                                                       | result                                          |
+  | "server.hosts.0" = "a", "server.hosts.1" = "b"             | ServerConfig{Hosts: ["a", "b"]}                 |
+  | "server.labels[team]" = "core"                             | ServerConfig{Labels: {"team": "core"}}          |
+  | "server.hostsx[0]" = "x", "server.hosts[0]" = "a"          | ServerConfig{Hosts: ["a"]}                      |
+  | "server.hostsx[0]" = "x"                                   | ServerConfig{}                                  |
+```
+
+#### Scenario: An instance segment is never folded
+```gherkin
+Given a doger.MapSource holding "redis/0.addr" = "q:6379" and "redis[0].addr" = "wrong"
+When the consumer calls doger.ResolveConfig(root, "redis/0", RedisConfig{})
+Then the result's Addr is "q:6379"
+```
+
+<!-- cases: 1 default: env and map sources -->
+<!-- cases: N/A 2 overrides: comparison is not configurable -->
+<!-- cases: 3 zero values: no key under the prefix binds nothing (hostsx-only row) -->
+<!-- cases: 4 boundaries: dotted versus bracketed index and map key; a longer segment sharing a prefix; an all-digit instance -->
+<!-- cases: N/A 5 errors: comparison cannot fail -->
+<!-- cases: 6 duplicate: equal uniform keys are resolved by "Keys are looked up as the source returns them" -->
+<!-- cases: N/A 7-9: pure comparison -->
+<!-- cases: N/A 10 compatibility: new API -->
+
+### Requirement: Keys are looked up as the source returns them
+When the source implements `PropertyKeys`, the binder SHALL find each field's keys with `Keys(<struct key>)` and `Lookup` each one exactly as returned; otherwise it SHALL `Lookup` the canonical key. When one source returns several keys with one uniform form, the binder SHALL use the one equal to the canonical spelling, otherwise the byte-wise smallest.
+
+#### Scenario: A map source round-trips its own spelling
+```gherkin
+Given a doger.MapSource holding "server.allowedhosts[0]" = "a", "server.readtimeout" = "5s" and "server.ClientTLS.Enabled" = "true"
+And type ServerConfig struct { AllowedHosts []string; ReadTimeout time.Duration; ClientTLS *TLSConfig }
+When the consumer calls doger.ResolveConfig(root, "server", ServerConfig{})
+Then the result is ServerConfig{AllowedHosts: ["a"], ReadTimeout: 5s, ClientTLS: &TLSConfig{Enabled: true}}
+```
+
+#### Scenario: Several spellings of one key in one source
+```gherkin
+Given a doger.MapSource holding <held>
+And type AConfig struct { ReadTimeout time.Duration }
+When the consumer calls doger.ResolveConfig(root, "a", AConfig{})
+Then the result's ReadTimeout is <value>
+
+Examples:
+  | held                                                   | value |
+  | "a.read-timeout" = "1s", "a.readtimeout" = "2s"        | 1s    |
+  | "a.read_timeout" = "3s", "a.readtimeout" = "2s"        | 3s    |
+  | "a.readTimeout" = "4s", "a.readtimeout" = "2s"         | 4s    |
+```
+
+<!-- cases: 1 default: MapSource in the canonical spelling is covered everywhere else -->
+<!-- cases: N/A 2 overrides: a Lookup-only source is the opt-out, see "Lists, maps and pointers need a source that lists its keys" -->
+<!-- cases: N/A 3 zero values: no key binds nothing -->
+<!-- cases: 4 boundaries: canonical present; no canonical, byte-wise order decides ("_" 0x5F before "t"; "T" 0x54 before "t") -->
+<!-- cases: N/A 5 errors: lookup cannot fail; conversion has its own requirement -->
+<!-- cases: 6 duplicate: the subject; the choice never depends on map iteration order -->
+<!-- cases: N/A 7-9: pure lookup -->
 <!-- cases: N/A 10 compatibility: new API -->
 
 ### Requirement: A tag overrides a field's key
-A struct tag under `InjectorOpts.ConfigTagKey` (default `cfg`) SHALL replace the field's derived key segment, `cfg:"-"` SHALL skip the field, an empty tag SHALL behave as no tag, and unexported fields SHALL be skipped.
+A struct tag under `InjectorOpts.ConfigTagKey` (default `cfg`) SHALL replace the field's derived key segment, `cfg:"-"` SHALL skip the field, an empty tag SHALL behave as no tag, and unexported fields SHALL be skipped; a tagged embedded struct SHALL bind as a named field under its tag.
 
 #### Scenario: Tags rename or skip fields
 ```gherkin
-Given a doger.MapSource holding "server.tls-cert-file" = "/etc/tls/cert.pem", "server.tls-cert" = "wrong", "server.secret" = "x" and "server.plain" = "p"
-And type ServerConfig struct { TLSCert string `cfg:"tls-cert-file"`; Secret string `cfg:"-"`; Plain string `cfg:""`; hidden string }
+Given a doger.MapSource holding "server.tls-cert-file" = "/etc/tls/cert.pem", "server.tls-cert" = "wrong", "server.secret" = "x", "server.plain" = "p" and "server.base.timeout" = "5s"
+And type ServerConfig struct { TLSCert string `cfg:"tls-cert-file"`; Secret string `cfg:"-"`; Plain string `cfg:""`; hidden string; Common `cfg:"base"` } where Common is struct { Timeout time.Duration }
 When the consumer calls doger.ResolveConfig(root, "server", ServerConfig{})
-Then the result is ServerConfig{TLSCert: "/etc/tls/cert.pem", Plain: "p"}
+Then the result is ServerConfig{TLSCert: "/etc/tls/cert.pem", Plain: "p", Common: Common{Timeout: 5s}}
 ```
 
 #### Scenario: The tag key can be changed
 ```gherkin
-Given root := doger.MustNewWithOpts(&doger.InjectorOpts{PropertySource: doger.MapSource{"server.cert": "/c.pem"}, ConfigTagKey: "<tagKey>"})
+Given root := doger.MustNewWithOpts(&doger.InjectorOpts{PropertySource: doger.MapSource{"server.cert": "/c.pem", "server.wrong": "/w.pem"}, ConfigTagKey: "<tagKey>"})
 And type ServerConfig struct { TLSCert string `cfg:"wrong" conf:"cert"` }
 When the consumer calls doger.ResolveConfig(root, "server", ServerConfig{})
 Then the result's TLSCert is "<value>"
 
 Examples:
   | tagKey | value  |
-  |        |        |
+  |        | /w.pem |
+  | cfg    | /w.pem |
   | conf   | /c.pem |
 ```
 
+#### Scenario: Two containers bind one type with different tag keys
+```gherkin
+Given rootA created with ConfigTagKey "" and rootB with ConfigTagKey "conf", both with PropertySource doger.MapSource{"server.cert": "/c.pem", "server.wrong": "/w.pem"}
+And type ServerConfig struct { TLSCert string `cfg:"wrong" conf:"cert"` }
+And doger.ResolveConfig(<first>, "server", ServerConfig{}) has returned
+When the consumer calls doger.ResolveConfig(<second>, "server", ServerConfig{})
+Then the second result's TLSCert is "<value>"
+
+Examples:
+  | first | second | value  |
+  | rootA | rootB  | /c.pem |
+  | rootB | rootA  | /w.pem |
+```
+
 <!-- cases: 1 default: cfg tag key, empty ConfigTagKey row -->
-<!-- cases: 2 overrides: rename, skip, another tag key -->
+<!-- cases: 2 overrides: rename, skip, tagged embedded struct, another tag key -->
 <!-- cases: 3 zero values: cfg:"" and ConfigTagKey "" rows -->
-<!-- cases: N/A 4 boundaries: one tag per field -->
+<!-- cases: 4 boundaries: one type bound with two tag keys in either order in one process -->
 <!-- cases: 5 errors: covered by "An invalid tag fails the bind" -->
-<!-- cases: N/A 6-9: pure naming -->
+<!-- cases: N/A 6 duplicate: one tag per field per key -->
+<!-- cases: N/A 7 lifecycle: the tag key is fixed per container -->
+<!-- cases: 8 concurrency: the per-type plan is cached by type and tag key, so concurrent containers never share a wrong plan -->
+<!-- cases: N/A 9 panics: tag parsing never panics -->
 <!-- cases: 10 compatibility: golang-lib/config cfg tags keep working when they hold kebab segments -->
 
 ### Requirement: An invalid tag fails the bind
-A tag value that is not one valid key segment (`[a-z0-9]+(-[a-z0-9]+)*`), including one that holds `,`, SHALL fail the bind with an error matching `ErrInvalidConfigTarget` that names the struct type and the field, before any source is consulted.
+A tag value that is not one valid key segment (`[a-z0-9]+(-[a-z0-9]+)*`), that is all digits, or that holds `,` SHALL fail the bind with an error matching `ErrInvalidConfigTarget` that names the struct type and the field, before any source is consulted.
 
 #### Scenario: Invalid tags
 ```gherkin
 Given type LogConfig struct { A string `cfg:"<tag>"` }
 When the consumer calls doger.ResolveConfig(root, "log", LogConfig{})
 Then errors.Is(err, doger.ErrInvalidConfigTarget) is true
-And the error message is "DI: config: invalid target: LogConfig.A: tag \"<tag>\" is not a key segment"
+And the error message is "DI: config: invalid target: app.LogConfig.A: tag \"<tag>\" is not a key segment"
 
 Examples:
   | tag        |
@@ -126,38 +243,78 @@ Examples:
   | Bad Name   |
   | file,omit  |
   | -file      |
+  | 8080       |
+```
+
+#### Scenario: A foreign tag key with options
+```gherkin
+Given root created with ConfigTagKey "json"
+And type LogConfig struct { File string `json:"file,omitempty"` }
+When the consumer calls doger.ResolveConfig(root, "log", LogConfig{})
+Then errors.Is(err, doger.ErrInvalidConfigTarget) is true
+And the error message is "DI: config: invalid target: app.LogConfig.File: tag \"file,omitempty\" is not a key segment"
 ```
 
 <!-- cases: N/A 1 default, 2 overrides: error path -->
 <!-- cases: 3 zero values: an empty tag is no tag, see "A tag overrides a field's key" -->
-<!-- cases: 4 boundaries: uppercase, dotted, space, comma, leading dash -->
+<!-- cases: 4 boundaries: uppercase, dotted, space, comma, leading dash, all digits (which would fold into an index) -->
 <!-- cases: 5 errors: sentinel matchable with errors.Is; text pinned -->
 <!-- cases: N/A 6-9: checked before any lookup -->
-<!-- cases: N/A 10 compatibility: new API -->
+<!-- cases: N/A 10 compatibility: new API; "," is reserved for future tag options -->
 
 ### Requirement: Two fields with one uniform key fail the bind
-A struct with two bound fields whose keys are equal in uniform form SHALL fail the bind with an error matching `ErrConfigNameConflict` that names the struct type, both fields and the shared key, before any source is consulted.
+A struct with two bound fields whose keys are equal in uniform form, including a promoted field equal to an outer field or to another promoted field, SHALL fail the bind with an error matching `ErrInvalidConfigTarget` that names the struct type, both fields and the shared key, before any source is consulted.
 
 #### Scenario: Conflicting names
 ```gherkin
 Given type <type>
 When the consumer calls doger.ResolveConfig(root, "log", LogConfig{})
-Then errors.Is(err, doger.ErrConfigNameConflict) is true
+Then errors.Is(err, doger.ErrInvalidConfigTarget) is true
 And the error message is "<message>"
 
 Examples:
-  | type                                                      | message                                                                       |
-  | LogConfig struct { LogFile string; Logfile string }       | DI: config: fields LogFile and Logfile of LogConfig share the key "logfile"   |
-  | LogConfig struct { A string `cfg:"path"`; Path string }  | DI: config: fields A and Path of LogConfig share the key "path"               |
-  | LogConfig struct { Common; Path string } with Common { Path string } | DI: config: fields Common.Path and Path of LogConfig share the key "path" |
+  | type                                                                         | message                                                                                          |
+  | LogConfig struct { LogFile string; Logfile string }                          | DI: config: invalid target: fields LogFile and Logfile of app.LogConfig share the key "logfile"   |
+  | LogConfig struct { A string `cfg:"path"`; Path string }                     | DI: config: invalid target: fields A and Path of app.LogConfig share the key "path"               |
+  | LogConfig struct { Common; Path string } with Common { Path string }         | DI: config: invalid target: fields Common.Path and Path of app.LogConfig share the key "path"     |
+  | LogConfig struct { A; B } with A { Path string } and B { Path string }       | DI: config: invalid target: fields A.Path and B.Path of app.LogConfig share the key "path"        |
 ```
 
 <!-- cases: N/A 1 default, 2 overrides: error path only -->
 <!-- cases: N/A 3 zero values: a struct with no fields has nothing to conflict -->
-<!-- cases: 4 boundaries: derived versus tagged versus promoted names -->
+<!-- cases: 4 boundaries: derived versus tagged versus promoted names; two embedded structs at one depth -->
 <!-- cases: 5 errors: sentinel matchable with errors.Is; text pinned -->
-<!-- cases: 6 duplicate: the subject -->
+<!-- cases: 6 duplicate: the subject; unlike encoding/json, a shallower field does not shadow, because a silent shadow would bind the wrong field -->
 <!-- cases: N/A 7-9: checked before any lookup -->
+<!-- cases: N/A 10 compatibility: new API -->
+
+### Requirement: Unsupported field types are rejected up front
+A bound field whose type is a channel, function, complex number, `uintptr`, `unsafe.Pointer`, array, interface, or a map with a non-string key kind, and which the scalar rules do not convert, SHALL fail the bind with an error matching `ErrInvalidConfigTarget` naming the struct type, the field and its type, before any source is consulted.
+
+#### Scenario: Unsupported kinds
+```gherkin
+Given a doger.MapSource holding nothing
+And type ServerConfig struct { F <type> }
+When the consumer calls doger.ResolveConfig(root, "server", ServerConfig{})
+Then errors.Is(err, doger.ErrInvalidConfigTarget) is true
+And the error message is "DI: config: invalid target: app.ServerConfig.F: type <type> cannot be bound"
+
+Examples:
+  | type             |
+  | chan int         |
+  | func()           |
+  | complex128       |
+  | uintptr          |
+  | [2]string        |
+  | any              |
+  | map[int]string   |
+```
+
+<!-- cases: N/A 1 default, 2 overrides: error path; skip the field with cfg:"-" or give the type an UnmarshalText -->
+<!-- cases: 3 zero values: rejected even when no key exists, so a typo in a type never waits for a key to appear -->
+<!-- cases: 4 boundaries: every unsupported kind once -->
+<!-- cases: 5 errors: sentinel and pinned text -->
+<!-- cases: N/A 6-9: checked before any lookup -->
 <!-- cases: N/A 10 compatibility: new API -->
 
 ### Requirement: Presence decides, not the value
@@ -182,13 +339,13 @@ Examples:
 <!-- cases: 1 default: nothing row -->
 <!-- cases: N/A 2 overrides: defaults are the override mechanism -->
 <!-- cases: 3 zero values: 0, false, "" rows -->
-<!-- cases: 4 boundaries: absent versus present-empty; unknown key -->
-<!-- cases: N/A 5 errors: covered by conversion requirements -->
+<!-- cases: 4 boundaries: absent versus present-empty; unknown key ignored -->
+<!-- cases: N/A 5 errors: covered by the conversion requirements -->
 <!-- cases: N/A 6-9: pure binding -->
 <!-- cases: N/A 10 compatibility: new API -->
 
 ### Requirement: Nested and embedded structs bind field by field
-A struct-typed field SHALL bind recursively under its own key, keeping the defaults of sibling fields; an exported or unexported non-pointer embedded struct SHALL bind its promoted exported fields under the parent's key, and an embedded pointer SHALL be treated as a pointer field.
+A struct-typed field SHALL bind recursively under its own key, keeping sibling defaults. An untagged embedded struct, exported or not, SHALL bind its promoted exported fields under the parent's key. An untagged exported embedded pointer SHALL do the same, allocated only when one of its promoted keys exists; an unexported embedded pointer SHALL fail with `ErrInvalidConfigTarget`.
 
 #### Scenario: One nested key keeps its siblings' defaults
 ```gherkin
@@ -200,52 +357,71 @@ Then the result is RedisConfig{Addr: "localhost:6379", TLS: TLSConfig{Enabled: t
 
 #### Scenario: Embedded structs bind under the parent's key
 ```gherkin
-Given a doger.MapSource holding "server.timeout" = "5s"
-And type <common> struct { Timeout time.Duration } embedded in type ServerConfig struct { <common>; Port int }
+Given a doger.MapSource holding <held>
+And type ServerConfig struct { <embedded>; Port int } where Common and common are struct { Timeout time.Duration }
 When the consumer calls doger.ResolveConfig(root, "server", ServerConfig{})
-Then the result's Timeout is 5s
+Then the result's embedded value is <value> and the error is <error>
 
 Examples:
-  | common |
-  | Common |
-  | common |
+  | held                       | embedded | value                       | error                                                                                       |
+  | "server.timeout" = "5s"    | Common   | Common{Timeout: 5s}         | nil                                                                                         |
+  | "server.timeout" = "5s"    | common   | common{Timeout: 5s}         | nil                                                                                         |
+  | "server.timeout" = "5s"    | *Common  | &Common{Timeout: 5s}        | nil                                                                                         |
+  | nothing                    | *Common  | nil                         | nil                                                                                         |
+  | nothing                    | *common  | none                        | matching ErrInvalidConfigTarget with message "DI: config: invalid target: app.ServerConfig.common: unexported embedded pointer cannot be set" |
 ```
 
 <!-- cases: 1 default: untouched nested defaults -->
-<!-- cases: N/A 2 overrides -->
-<!-- cases: 3 zero values: an empty nested struct stays empty -->
-<!-- cases: 4 boundaries: exported and unexported embedded types; embedded pointer is covered by the pointer requirement -->
-<!-- cases: N/A 5-9: as for scalars -->
+<!-- cases: 2 overrides: a tag makes an embedded struct a named field, see "A tag overrides a field's key" -->
+<!-- cases: 3 zero values: an embedded nil pointer stays nil without keys -->
+<!-- cases: 4 boundaries: exported and unexported, value and pointer embedding -->
+<!-- cases: 5 errors: unexported embedded pointer, which reflection cannot set -->
+<!-- cases: N/A 6 duplicate: promoted-name conflicts are "Two fields with one uniform key fail the bind" -->
+<!-- cases: N/A 7-9: pure binding -->
 <!-- cases: N/A 10 compatibility: new API -->
 
 ### Requirement: Recursive types are rejected
-A target type that reaches itself through any field, pointer, slice, array or map element SHALL fail the bind with an error matching `ErrInvalidConfigTarget` that names the type and the field path, before any source is consulted.
+A cycle among the types of bound fields, through any struct, pointer, slice or map element and at any depth below the target, SHALL fail the bind with an error matching `ErrInvalidConfigTarget` naming the recursive type and the field path, before any source is consulted; skipped and unexported fields and types converted as scalars SHALL NOT count.
 
 #### Scenario: Recursive targets
 ```gherkin
-Given type <type>
-When the consumer calls doger.ResolveConfig(root, "x", Node{})
+Given type <types>
+When the consumer calls doger.ResolveConfig(root, "x", <target>)
 Then errors.Is(err, doger.ErrInvalidConfigTarget) is true
-And the error message contains "recursive type Node at <path>"
+And the error message is "DI: config: invalid target: recursive type app.Node at <path>"
 
 Examples:
-  | type                                          | path        |
-  | Node struct { Next *Node }                    | Next        |
-  | Node struct { Kids []Node }                   | Kids        |
-  | Node struct { ByName map[string]*Node }       | ByName      |
-  | Node struct { Inner struct { Back *Node } }   | Inner.Back  |
+  | types                                                         | target          | path          |
+  | Node struct { Next *Node }                                    | Node{}          | Next          |
+  | Node struct { Kids []Node }                                   | Node{}          | Kids          |
+  | Node struct { ByName map[string]*Node }                       | Node{}          | ByName        |
+  | Node struct { Inner struct { Back *Node } }                   | Node{}          | Inner.Back    |
+  | Node struct { Next *Node } and ServerConfig struct { Tree *Node } | ServerConfig{} | Tree.Next   |
 ```
 
-<!-- cases: N/A 1 default, 2 overrides: error path -->
-<!-- cases: N/A 3 zero values -->
-<!-- cases: 4 boundaries: direct, through slice, map and nested anonymous struct -->
-<!-- cases: 5 errors: sentinel; never a stack overflow -->
-<!-- cases: N/A 6-8 -->
-<!-- cases: 9 panics: an unbounded recursion would be a fatal error, so it is rejected up front -->
+#### Scenario: Back-pointers that are not bound
+```gherkin
+Given type <types>
+When the consumer calls doger.ResolveConfig(root, "x", Node{})
+Then the error is nil
+
+Examples:
+  | types                                                                     |
+  | Node struct { Name string; parent *Node }                                 |
+  | Node struct { Name string; Parent *Node `cfg:"-"` }                       |
+  | Node struct { Name string; Next *Tree } where *Tree implements encoding.TextUnmarshaler and Tree struct { Next *Tree } |
+```
+
+<!-- cases: N/A 1 default, 2 overrides: skipping or a scalar type are the ways out, second scenario -->
+<!-- cases: N/A 3 zero values: an empty struct has no cycle -->
+<!-- cases: 4 boundaries: direct, through slice, map, anonymous struct, and a recursive type nested below a non-recursive target -->
+<!-- cases: 5 errors: sentinel and pinned text; never a stack overflow -->
+<!-- cases: N/A 6-8: checked before any lookup -->
+<!-- cases: 9 panics: an unbounded recursion would be a fatal error that cannot be recovered, so it is rejected up front -->
 <!-- cases: N/A 10 compatibility: new API -->
 
 ### Requirement: Lists come whole from indexed keys
-A slice field SHALL bind from indexed keys `<key>[i]` found through `Keys`, with exactly one key for every index from 0 to the highest, replacing the default slice; each element SHALL start from its zero value. A gap, a non-numeric index or an index above 10000 SHALL fail with `ErrInvalidConfigValue` before any allocation.
+A slice field SHALL bind from indexed keys `<key>[i]`, needing at least one key for every index 0 to the highest after uniform matching, and replace the default slice; each element SHALL start from its zero value. A gap, a non-numeric or non-canonical index, or an index above 10000 SHALL fail with `*ConfigBindError` matching `ErrConfigConversion` before any allocation.
 
 #### Scenario: Indexed list sources
 ```gherkin
@@ -255,14 +431,15 @@ When the consumer calls doger.ResolveConfig(root, "server", defaults)
 Then the result's Hosts is <hosts> and the error is <error>
 
 Examples:
-  | held                                                 | hosts               | error                  |
-  | nothing                                              | ["d1", "d2", "d3"]  | nil                    |
-  | "server.hosts[0]" = "a"                              | ["a"]               | nil                    |
-  | "server.hosts[0]" = "a", "server.hosts[1]" = "b"     | ["a", "b"]          | nil                    |
-  | "server.hosts[0]" = "a", "server.hosts[2]" = "c"     | zero result         | ErrInvalidConfigValue  |
-  | "server.hosts[x]" = "a"                              | zero result         | ErrInvalidConfigValue  |
-  | "server.hosts[10000]" = "a" and indices 0 to 9999    | 10001 elements      | nil                    |
-  | "server.hosts[10001]" = "a"                          | zero result         | ErrInvalidConfigValue  |
+  | held                                                 | hosts               | error                                                                               |
+  | nothing                                              | ["d1", "d2", "d3"]  | nil                                                                                 |
+  | "server.hosts[0]" = "a"                              | ["a"]               | nil                                                                                 |
+  | "server.hosts[0]" = "a", "server.hosts[1]" = "b"     | ["a", "b"]          | nil                                                                                 |
+  | "server.hosts[10000]" = "a" and indices 0 to 9999    | 10001 elements      | nil                                                                                 |
+  | "server.hosts[0]" = "a", "server.hosts[2]" = "c"     | none                | "DI: config: invalid value for server.hosts ([]string): missing index 1"            |
+  | "server.hosts[x]" = "a"                              | none                | "DI: config: invalid value for server.hosts ([]string): index \"x\" is not a number" |
+  | "server.hosts[01]" = "a"                             | none                | "DI: config: invalid value for server.hosts ([]string): index \"01\" is not canonical" |
+  | "server.hosts[10001]" = "a"                          | none                | "DI: config: invalid value for server.hosts ([]string): index 10001 is over 10000"   |
 ```
 
 #### Scenario: A list of structs starts each element from zero
@@ -273,18 +450,26 @@ When the consumer calls doger.ResolveConfig(root, "app", defaults)
 Then the result's Upstreams is [{Name: "a", Port: 80}, {Name: "b", Port: 0}]
 ```
 
+#### Scenario: A list of lists
+```gherkin
+Given a doger.MapSource holding "app.matrix[0][0]" = "1", "app.matrix[0][1]" = "2" and "app.matrix[1][0]" = "3"
+And type AppConfig struct { Matrix [][]int }
+When the consumer calls doger.ResolveConfig(root, "app", AppConfig{})
+Then the result's Matrix is [[1, 2], [3]]
+```
+
 <!-- cases: 1 default: nothing row keeps the default list -->
-<!-- cases: N/A 2 overrides: see "A single value is split on commas" -->
+<!-- cases: 2 overrides: a comma value, see "A single value is split on commas"; a TextUnmarshaler slice type -->
 <!-- cases: N/A 3 zero values: an empty list comes from the comma rule -->
-<!-- cases: 4 boundaries: 0, 1, many elements; index at and one past 10000 -->
-<!-- cases: 5 errors: gap, non-numeric and too-large rows match ErrInvalidConfigValue -->
-<!-- cases: N/A 6 duplicate: one key per index after uniform matching -->
+<!-- cases: 4 boundaries: 0, 1, many elements; index at and one past 10000; leading zero; nested list -->
+<!-- cases: 5 errors: gap, non-numeric, non-canonical and too-large rows; errors.As gives Key "server.hosts" and Type []string -->
+<!-- cases: 6 duplicate: several keys for one index (upstreams[0].name and [0].port, or two spellings) count as one index -->
 <!-- cases: N/A 7-8: pure binding -->
 <!-- cases: 9 panics: a huge index never allocates -->
 <!-- cases: N/A 10 compatibility: new API -->
 
 ### Requirement: A single value is split on commas
-A slice field whose key has no indexed keys but a value under `<key>` SHALL bind by splitting that value on `,` and trimming ASCII spaces around each element, keeping empty elements; an empty value SHALL give an empty, non-nil slice, and indexed keys SHALL win over a value in the same source. A named slice type implementing `encoding.TextUnmarshaler` SHALL bind as a scalar instead.
+A slice field with no indexed keys but a value at `<key>`, from any layer, SHALL bind by splitting on `,` and trimming U+0020 spaces around each element, keeping empty elements; an empty value SHALL give an empty, non-nil slice; indexed keys SHALL win over a value in one source. A named slice type implementing `encoding.TextUnmarshaler` SHALL bind as a scalar.
 
 #### Scenario: Comma values
 ```gherkin
@@ -298,22 +483,23 @@ Examples:
   | "server.hosts" = "a, b,c"                         | ServerConfig{Hosts: ["a", "b", "c"]}        |
   | "server.hosts" = "a,,b"                           | ServerConfig{Hosts: ["a", "", "b"]}         |
   | "server.hosts" = "a,b,"                           | ServerConfig{Hosts: ["a", "b", ""]}         |
+  | "server.hosts" = "\ta"                            | ServerConfig{Hosts: ["\ta"]}                |
   | "server.hosts" = ""                               | ServerConfig{Hosts: []}                     |
   | "server.hosts" = "x,y", "server.hosts[0]" = "a"   | ServerConfig{Hosts: ["a"]}                  |
   | "server.peers" = "p1,x;p2"                        | ServerConfig{Peers: ["p1,x", "p2"]}         |
 ```
 
 <!-- cases: 1 default: plain comma row -->
-<!-- cases: 2 overrides: a TextUnmarshaler slice type opts out of comma splitting -->
+<!-- cases: 2 overrides: a TextUnmarshaler slice type opts out of comma splitting; it is the documented escape for values holding commas -->
 <!-- cases: 3 zero values: empty value, empty elements -->
-<!-- cases: 4 boundaries: leading, inner and trailing empty elements -->
-<!-- cases: N/A 5 errors: element conversion errors as for scalars -->
-<!-- cases: 6 duplicate: indexed keys win over a value in one source; across layers, see config-files -->
+<!-- cases: 4 boundaries: leading, inner and trailing empty elements; only U+0020 is trimmed, a tab is kept -->
+<!-- cases: N/A 5 errors: element conversion errors follow the scalar rules -->
+<!-- cases: 6 duplicate: indexed keys win over a value in one source; across layers, a value in a higher layer masks lower indices (config-files) -->
 <!-- cases: N/A 7-9: pure binding -->
-<!-- cases: N/A 10 compatibility: new API -->
+<!-- cases: 10 compatibility: values from YAML or TOML are split too, so "hosts: a,b" in a file is a two-element list, as documented -->
 
 ### Requirement: Maps merge by key
-A map field with a `string`-kinded key SHALL keep its default entries and set one entry per key found under the field's key, written nested as `<key>.<name>` or bracketed as `<key>[<name>]`; a bracketed name SHALL be kept verbatim and SHALL win over the nested form, and a nil default map SHALL stay nil when no entry exists.
+A map field with a `string`-kinded key SHALL keep its default entries and set one entry per name found under the field's key, nested or bracketed; a name in brackets SHALL be kept verbatim; a map of structs SHALL merge each entry field by field; a value exactly at the map's key and keys deeper than the value type SHALL be ignored; a nil default map SHALL stay nil when no entry exists.
 
 #### Scenario: Map entries merge over defaults
 ```gherkin
@@ -327,8 +513,10 @@ Examples:
   | nothing                                                                | nil                                  | nil                                                  |
   | "server.labels.team" = "core"                                          | {"team": "default", "env": "prod"}   | {"team": "core", "env": "prod"}                      |
   | "server.labels[App.Kartala/Tier]" = "web"                              | nil                                  | {"App.Kartala/Tier": "web"}                          |
-  | "server.labels.team" = "a", "server.labels[team]" = "b"                | nil                                  | {"team": "b"}                                        |
+  | "server.labels.team" = "a", "server.labels[team]" = "b"                | nil                                  | {"team": "a"}                                        |
+  | "server.labels.404" = "nf"                                             | nil                                  | {"404": "nf"}                                        |
   | "server.labels.team.sub" = "x"                                         | nil                                  | nil                                                  |
+  | "server.labels" = "x"                                                  | nil                                  | nil                                                  |
 ```
 
 #### Scenario: A map of structs merges entries field by field
@@ -339,25 +527,25 @@ When the consumer calls doger.ResolveConfig(root, "db", defaults)
 Then the result's Replicas is {"east": {Addr: "e:5432", Port: 1}, "west": {Addr: "w:5432", Port: 0}}
 ```
 
-#### Scenario: Non-string map keys are rejected
+#### Scenario: A map of lists
 ```gherkin
-Given type ServerConfig struct { Weights map[int]string }
-When the consumer calls doger.ResolveConfig(root, "server", ServerConfig{})
-Then errors.Is(err, doger.ErrInvalidConfigTarget) is true
-And the error message contains "ServerConfig.Weights: map key type int is not a string kind"
+Given a doger.MapSource holding "acl.groups.admin[0]" = "ann", "acl.groups.admin[1]" = "bob" and "acl.groups.ops" = "carl,dee"
+And type ACLConfig struct { Groups map[string][]string }
+When the consumer calls doger.ResolveConfig(root, "acl", ACLConfig{})
+Then the result's Groups is {"admin": ["ann", "bob"], "ops": ["carl", "dee"]}
 ```
 
 <!-- cases: 1 default: default entries kept -->
-<!-- cases: 2 overrides: a source entry replaces the scalar default entry; struct entries merge -->
+<!-- cases: 2 overrides: a source entry replaces a scalar default entry; struct entries merge -->
 <!-- cases: 3 zero values: nil default map stays nil, or is allocated on the first entry -->
-<!-- cases: 4 boundaries: nested versus bracketed names; keys deeper than the value type are ignored -->
-<!-- cases: 5 errors: non-string key kind -->
-<!-- cases: 6 duplicate: same name nested and bracketed, bracketed wins -->
+<!-- cases: 4 boundaries: nested versus bracketed names; all-digit names; keys deeper than the value type; a value at the map key itself -->
+<!-- cases: N/A 5 errors: non-string key kinds are rejected up front, see "Unsupported field types are rejected up front" -->
+<!-- cases: 6 duplicate: the same name nested and bracketed is one key in uniform form; the canonical (nested) spelling wins, per "Keys are looked up as the source returns them" -->
 <!-- cases: N/A 7-9: pure binding -->
-<!-- cases: N/A 10 compatibility: new API -->
+<!-- cases: 10 compatibility: entry names from env arrive lowercase and dash-free (team-a from a file, teama from env), as in Spring; documented -->
 
-### Requirement: Pointer fields are allocated only when a key exists under them
-A pointer field SHALL stay as it is in the defaults when no key exists at or under its key, and otherwise SHALL bind into a copy of its default pointee, or a newly allocated zero value when the default is nil.
+### Requirement: Pointer fields are copied only on write
+A pointer field SHALL keep the default's pointer itself when no key exists at or under its key. Otherwise the result SHALL hold a new pointee: a copy of the default pointee overlaid with the bound keys, or a new zero value when the default is nil. The default pointee SHALL never be written. A pointer to a scalar SHALL be allocated when its key exists.
 
 #### Scenario: Pointer allocation
 ```gherkin
@@ -367,45 +555,78 @@ When the consumer calls doger.ResolveConfig(root, "server", defaults)
 Then the result's TLS is <tls>
 
 Examples:
-  | held                           | default                         | tls                                            |
-  | nothing                        | nil                             | nil                                            |
-  | "server.tls.enabled" = "true"  | nil                             | &TLSConfig{Enabled: true}                      |
-  | "server.tls.enabled" = "true"  | &TLSConfig{MinVersion: "1.2"}   | &TLSConfig{Enabled: true, MinVersion: "1.2"}   |
-  | nothing                        | &TLSConfig{MinVersion: "1.2"}   | &TLSConfig{MinVersion: "1.2"}                  |
+  | held                           | default                         | tls                                                                 |
+  | nothing                        | nil                             | nil                                                                 |
+  | "server.tls.enabled" = "true"  | nil                             | &TLSConfig{Enabled: true}                                           |
+  | "server.tls.enabled" = "true"  | &TLSConfig{MinVersion: "1.2"}   | &TLSConfig{Enabled: true, MinVersion: "1.2"}, a different pointer   |
+  | nothing                        | &TLSConfig{MinVersion: "1.2"}   | the default pointer itself, so result.TLS == defaults.TLS           |
+```
+
+#### Scenario: Pointers to scalars
+```gherkin
+Given a doger.MapSource holding <held>
+And type ServerConfig struct { Debug *bool; Port *int }
+When the consumer calls doger.ResolveConfig(root, "server", ServerConfig{})
+Then the result is <result>
+
+Examples:
+  | held                       | result                                 |
+  | nothing                    | ServerConfig{Debug: nil, Port: nil}    |
+  | "server.debug" = "false"   | ServerConfig{Debug: &false, Port: nil} |
+  | "server.port" = "0"        | ServerConfig{Debug: nil, Port: &0}     |
 ```
 
 <!-- cases: 1 default: nil stays nil -->
-<!-- cases: 2 overrides: default pointee kept and overlaid -->
-<!-- cases: 3 zero values: nil default -->
-<!-- cases: 4 boundaries: no key versus one key under the pointer -->
-<!-- cases: N/A 5-9: pure binding -->
+<!-- cases: 2 overrides: a default pointee is copied and overlaid -->
+<!-- cases: 3 zero values: nil default; a pointer to a present zero value -->
+<!-- cases: 4 boundaries: no key versus one key under the pointer; pointer identity kept when untouched -->
+<!-- cases: N/A 5 errors: conversion follows the scalar rules -->
+<!-- cases: N/A 6-9: pure binding -->
 <!-- cases: N/A 10 compatibility: new API -->
 
 ### Requirement: Lists, maps and pointers need a source that lists its keys
-When the container's property source does not implement `PropertyKeys`, a bind whose target has a slice, map or pointer field that needs `Keys` SHALL fail with an error matching `ErrInvalidConfigTarget` naming that field's key; scalar and nested struct fields SHALL bind through `Lookup` alone.
+When the property source does not implement `PropertyKeys`, a bind whose target has a slice, map or pointer-to-struct field, excluding types the scalar rules convert, SHALL fail with an error matching `ErrInvalidConfigTarget` naming that field's key; scalar, pointer-to-scalar and nested struct fields SHALL bind through `Lookup` alone.
 
 #### Scenario: A Lookup-only source
 ```gherkin
-Given root := doger.MustNewWithOpts(&doger.InjectorOpts{PropertySource: lookupOnly}) where lookupOnly implements only Lookup and holds "server.port" = "9090"
-When the consumer calls doger.ResolveConfig(root, "server", <target>)
-Then the result is <result> and the error is <error>
+Given root := doger.MustNewWithOpts(&doger.InjectorOpts{PropertySource: lookupOnly}) where lookupOnly implements only Lookup and holds "server.port" = "9090", "server.ip" = "10.0.0.1", "server.base" = "https://kartala.id" and "server.peers" = "a;b"
+And type ServerConfig struct { Port int; <field> }
+When the consumer calls doger.ResolveConfig(root, "server", ServerConfig{})
+Then the error is <error>
 
 Examples:
-  | target                                          | result                      | error                                                                            |
-  | ServerConfig{} with Port int                    | ServerConfig{Port: 9090}    | nil                                                                              |
-  | ServerConfig{} with Port int and Hosts []string | zero result                 | matches ErrInvalidConfigTarget and contains "server.hosts needs a source that lists its keys" |
+  | field                 | error                                                                                                     |
+  | IP net.IP             | nil, and IP is 10.0.0.1                                                                                   |
+  | Base *url.URL         | nil, and Base's Host is "kartala.id"                                                                      |
+  | Peers PeerList        | nil, and Peers is ["a", "b"]                                                                              |
+  | Count *int            | nil, and Count is nil                                                                                     |
+  | Hosts []string        | matching ErrInvalidConfigTarget with message "DI: config: invalid target: server.hosts needs a source that lists its keys" |
+  | TLS *TLSConfig        | matching ErrInvalidConfigTarget with message "DI: config: invalid target: server.tls needs a source that lists its keys"   |
 ```
 
-<!-- cases: 1 default: scalar row -->
+#### Scenario: BindProperties over a Lookup-only source
+```gherkin
+Given root created with PropertySource lookupOnly holding "redis.addr" = "c:6379"
+And an extension "redis" whose Extend records doger.BindProperties(x.Properties(), &cfg) for cfg of type <type>
+When the consumer calls doger.Extend(root, redisExt)
+Then the recorded error is <error>
+
+Examples:
+  | type                                     | error                                       |
+  | struct { Addr string }                   | nil, and cfg.Addr is "c:6379"               |
+  | struct { Addr string; Hosts []string }   | matching ErrInvalidConfigTarget naming "hosts" |
+```
+
+<!-- cases: 1 default: scalar rows -->
 <!-- cases: 2 overrides: implement PropertyKeys or wrap the values in doger.MapSource -->
-<!-- cases: N/A 3 zero values -->
-<!-- cases: 4 boundaries: scalar-only versus one list field -->
-<!-- cases: 5 errors: sentinel and text -->
-<!-- cases: N/A 6-9 -->
+<!-- cases: 3 zero values: a pointer to a scalar with no key stays nil -->
+<!-- cases: 4 boundaries: scalar-converted slice and pointer types bind; plain list and pointer-to-struct fail -->
+<!-- cases: 5 errors: sentinel and text; the same rule through BindProperties, so a list never comes back silently empty -->
+<!-- cases: N/A 6-9: checked per bind -->
 <!-- cases: 10 compatibility: PropertySource implementations without Keys keep working for scalars -->
 
 ### Requirement: Scalars are converted in a fixed order
-The binder SHALL convert a raw value, untrimmed, by the first matching rule: `time.Duration` with `time.ParseDuration`; `url.URL` and `*url.URL` with `url.Parse`; a type whose pointer implements `encoding.TextUnmarshaler`; then by kind with `strconv` (base 10, the field's bit size; `ParseBool` spellings); then the slice, map, pointer and struct rules.
+The binder SHALL convert a raw value, untrimmed, by the first matching rule: exactly `time.Duration` via `time.ParseDuration`; `url.URL` or `*url.URL` via `url.Parse`; a type whose pointer implements `encoding.TextUnmarshaler`; `[]byte` as the raw bytes; by kind with `strconv` (integers base 10 at the field's bit size, floats `ParseFloat`, bools `ParseBool`); then the structural rules.
 
 #### Scenario: Conversions
 ```gherkin
@@ -415,45 +636,51 @@ When the consumer calls doger.ResolveConfig(root, "x", target)
 Then the result's V is <value> and the error is nil
 
 Examples:
-  | type          | raw                   | value                                   |
-  | string        | " hello "             | " hello "                               |
-  | int           | -42                   | -42                                     |
-  | int8          | 127                   | 127                                     |
-  | uint16        | 65535                 | 65535                                   |
-  | float32       | 1.5                   | 1.5                                     |
-  | bool          | true                  | true                                    |
-  | bool          | 1                     | true                                    |
-  | bool          | F                     | false                                   |
-  | time.Duration | 1m30s                 | 90s                                     |
-  | time.Duration | 0                     | 0                                       |
-  | url.URL       | https://kartala.id/a  | a url.URL with Host "kartala.id"        |
-  | *url.URL      | https://kartala.id/a  | a *url.URL with Host "kartala.id"       |
-  | net.IP        | 10.0.0.1              | net.ParseIP("10.0.0.1")                 |
-  | netip.Addr    | 10.0.0.1              | netip.MustParseAddr("10.0.0.1")         |
-  | time.Time     | 2026-10-30T10:00:00Z  | time.Date(2026, 10, 30, 10, 0, 0, 0, time.UTC) |
-  | slog.Level    | warn                  | slog.LevelWarn                          |
-  | Port (uint16) | 8080                  | Port(8080)                              |
+  | type                    | raw                   | value                                          |
+  | string                  | " hello "             | " hello "                                      |
+  | int                     | -42                   | -42                                            |
+  | int8                    | 127                   | 127                                            |
+  | uint16                  | 65535                 | 65535                                          |
+  | float32                 | 1.5                   | 1.5                                            |
+  | float64                 | NaN                   | math.NaN()                                     |
+  | float64                 | Inf                   | math.Inf(1)                                    |
+  | float64                 | 0x1p4                 | 16                                             |
+  | bool                    | true                  | true                                           |
+  | bool                    | 1                     | true                                           |
+  | bool                    | F                     | false                                          |
+  | time.Duration           | 1m30s                 | 90s                                            |
+  | time.Duration           | 0                     | 0                                              |
+  | Timeout (int64)         | 5                     | Timeout(5)                                     |
+  | url.URL                 | https://kartala.id/a  | a url.URL with Host "kartala.id"               |
+  | *url.URL                | https://kartala.id/a  | a *url.URL with Host "kartala.id"              |
+  | net.IP                  | 10.0.0.1              | net.ParseIP("10.0.0.1")                        |
+  | netip.Addr              | 10.0.0.1              | netip.MustParseAddr("10.0.0.1")                |
+  | time.Time               | 2026-10-30T10:00:00Z  | an instant Equal to time.Date(2026, 10, 30, 10, 0, 0, 0, time.UTC) |
+  | slog.Level              | warn                  | slog.LevelWarn                                 |
+  | Port (uint16)           | 8080                  | Port(8080)                                     |
+  | []byte                  | a,b                   | []byte("a,b")                                  |
 ```
 
 <!-- cases: 1 default: the basic kinds -->
-<!-- cases: 2 overrides: TextUnmarshaler rows let a type define its own parsing, before the kind and slice rules (net.IP, slog.Level) -->
+<!-- cases: 2 overrides: a TextUnmarshaler lets a type define its own parsing, before the kind and slice rules (net.IP, slog.Level) -->
 <!-- cases: 3 zero values: "0" duration; whitespace is kept for strings -->
-<!-- cases: 4 boundaries: int8 max, uint16 max, bool spellings -->
+<!-- cases: 4 boundaries: int8 and uint16 max, bool spellings, float specials, a named type of int64 that is not time.Duration converts by kind -->
 <!-- cases: 5 errors: covered by "Conversion failures name the key and type only" -->
 <!-- cases: N/A 6-9: pure conversion -->
-<!-- cases: N/A 10 compatibility: new API -->
+<!-- cases: 10 compatibility: the binder sees strings; file formats render scalars differently (YAML keeps 0x1F literally, TOML renders it 31), as specified in config-files, so one value may convert in one format and not another -->
 
 ### Requirement: Conversion failures name the key and type only
-A value that does not convert, or a key held for a field of an unsupported type, SHALL fail the bind with a `*ConfigBindError` matching `ErrInvalidConfigValue` whose `Key` is the full key and `Type` the target type, with message `DI: config: invalid value for <key> (<type>)`, never wrapping the parser's error.
+A value that does not convert SHALL fail the bind with a `*ConfigBindError` matching `ErrConfigConversion` whose `Key` is the full key and `Type` the target type, with message `DI: config: invalid value for <key> (<type>)` naming the type by `reflect.Type.String()`, never wrapping the parser's error.
 
 #### Scenario: Conversion errors
 ```gherkin
 Given a doger.MapSource holding "server.<key>" = "<raw>"
-And type ServerConfig struct { Port int; Timeout time.Duration; Debug bool; Small int8; Count uint; Ratio float32; Ch chan int }
+And type ServerConfig struct { Port int; Timeout time.Duration; Debug bool; Small int8; Count uint; Ratio float32 }
 When the consumer calls doger.ResolveConfig(root, "server", ServerConfig{})
 Then errors.As(err, &bindErr) is true with bindErr.Key "server.<key>" and bindErr.Type.String() "<type>"
-And errors.Is(err, doger.ErrInvalidConfigValue) is true
+And errors.Is(err, doger.ErrConfigConversion) is true
 And the error message is "DI: config: invalid value for server.<key> (<type>)"
+And fmt.Sprintf("%#v", err) does not contain "<raw>"
 
 Examples:
   | key     | raw         | type          |
@@ -466,44 +693,45 @@ Examples:
   | small   | 128         | int8          |
   | count   | -1          | uint          |
   | ratio   | 1e40        | float32       |
-  | ch      | s3cret      | chan int      |
 ```
 
 <!-- cases: N/A 1 default, 2 overrides: error path -->
 <!-- cases: 3 zero values: an untrimmed space fails for numbers -->
-<!-- cases: 4 boundaries: int8 one past max, negative uint, float32 overflow, bare duration, other bases -->
-<!-- cases: 5 errors: the subject; errors.Is and errors.As; message holds no value -->
+<!-- cases: 4 boundaries: int8 one past max, negative uint, float32 overflow, bare duration, other integer bases -->
+<!-- cases: 5 errors: the subject; errors.Is and errors.As; the message and %#v hold no value -->
 <!-- cases: N/A 6-8: pure conversion -->
 <!-- cases: 9 panics: covered by "A panic while binding is an error" -->
 <!-- cases: N/A 10 compatibility: new API -->
 
 ### Requirement: A panic while binding is an error
-A panic raised during a bind by a type's `UnmarshalText` or by the source's `Lookup` or `Keys` SHALL be recovered and returned as an error matching `ErrInvalidConfigValue` that names the key being bound and the panic value's Go type only.
+A panic raised during a bind by a type's `UnmarshalText` or by the source's `Lookup` or `Keys` SHALL be recovered and returned as a `*ConfigBindError` matching `ErrConfigConversion` that names the key being bound and the panic value's type only, never the panic value.
 
 #### Scenario: Panics in user code
 ```gherkin
-Given <panicking> panics with "bad s3cret" while binding "server.level"
+Given <panicking> panics with <value> while binding "server.level"
 And type ServerConfig struct { Level Level } where *Level implements encoding.TextUnmarshaler
 When the consumer calls doger.ResolveConfig(root, "server", ServerConfig{})
-Then errors.Is(err, doger.ErrInvalidConfigValue) is true
-And the error message is "DI: config: invalid value for server.level (main.Level): panic with string"
+Then errors.Is(err, doger.ErrConfigConversion) is true
+And the error message is "DI: config: invalid value for server.level (app.Level): panic of type <type>"
 
 Examples:
-  | panicking                  |
-  | Level.UnmarshalText        |
-  | the source's Lookup        |
+  | panicking             | value              | type                    |
+  | Level.UnmarshalText   | "bad s3cret"       | string                  |
+  | the source's Lookup   | "bad s3cret"       | string                  |
+  | the source's Keys     | "bad s3cret"       | string                  |
+  | Level.UnmarshalText   | nil                | *runtime.PanicNilError  |
 ```
 
 <!-- cases: N/A 1 default, 2 overrides: failure path -->
-<!-- cases: N/A 3 zero values: panic(nil) is reported with the type *runtime.PanicNilError -->
-<!-- cases: N/A 4 boundaries -->
-<!-- cases: 5 errors: matchable sentinel; the value never appears -->
+<!-- cases: 3 zero values: panic(nil) row -->
+<!-- cases: N/A 4 boundaries: each panicking user hook once -->
+<!-- cases: 5 errors: matchable sentinel; errors.As gives Key and Type; the value never appears -->
 <!-- cases: N/A 6-8 -->
-<!-- cases: 9 panics: the subject -->
+<!-- cases: 9 panics: the subject; these panics are returned as errors, not routed to HookContainerPanic, because the caller receives them synchronously -->
 <!-- cases: N/A 10 compatibility: new API -->
 
 ### Requirement: The caller's defaults are never changed
-The binder SHALL bind into a deep copy of the defaults it receives, so the caller's struct and the slices, maps and pointees reachable from it SHALL be unchanged after any bind, successful or not.
+The binder SHALL never write through memory reachable from the defaults it receives, so the caller's struct and the slices, maps and pointees reachable from it SHALL be unchanged after any bind, successful or not.
 
 #### Scenario: Defaults survive binding
 ```gherkin
@@ -519,107 +747,121 @@ Examples:
 ```
 
 <!-- cases: 1 default: successful bind row -->
-<!-- cases: N/A 2 overrides -->
+<!-- cases: N/A 2 overrides: there is nothing to configure -->
 <!-- cases: N/A 3 zero values: nil slices and maps have nothing to alias -->
 <!-- cases: 4 boundaries: success and failure rows -->
 <!-- cases: 5 errors: failure row -->
-<!-- cases: N/A 6-9 -->
+<!-- cases: N/A 6-9: pure binding -->
 <!-- cases: N/A 10 compatibility: new API -->
 
-### Requirement: Targets and prefixes are checked
-`BindConfig`, `BindConfigNamed` and `ResolveConfig` SHALL require `T` to be a struct type and `prefix` to be empty or a valid property key, and SHALL fail with an error matching `ErrInvalidConfigTarget` otherwise; a typed-nil injector SHALL fail the same way, while a nil injector SHALL mean `DefaultRootScope`.
+### Requirement: The type to bind must be a struct
+`BindConfig`, `BindConfigNamed` and `ResolveConfig` SHALL require `T` to be a struct type that the scalar rules do not convert, and SHALL fail with an error matching `ErrInvalidConfigTarget` otherwise, registering nothing.
 
 #### Scenario: Invalid type parameters
 ```gherkin
 When the consumer calls <call>
 Then errors.Is(err, doger.ErrInvalidConfigTarget) is true
-And the error message contains "<reason>"
+And the error message is "DI: config: invalid target: <reason>"
 
 Examples:
-  | call                                                               | reason                          |
-  | doger.BindConfig[*ServerConfig](root, "server")                    | *main.ServerConfig is not a struct |
-  | doger.BindConfig[int](root, "server")                              | int is not a struct             |
-  | doger.BindConfig[map[string]string](root, "server")                | map[string]string is not a struct |
-  | doger.BindConfig[io.Reader](root, "server")                        | io.Reader is not a struct       |
-  | doger.ResolveConfig(root, "server", (*ServerConfig)(nil))          | *main.ServerConfig is not a struct |
+  | call                                                                 | reason                                   |
+  | doger.BindConfig(root, "server", &ServerConfig{})                    | *app.ServerConfig is not a struct        |
+  | doger.BindConfig(root, "server", 0)                                  | int is not a struct                      |
+  | doger.BindConfig(root, "server", map[string]string{})                | map[string]string is not a struct        |
+  | doger.BindConfig[io.Reader](root, "server", nil)                     | io.Reader is not a struct                |
+  | doger.ResolveConfig(root, "server", (*ServerConfig)(nil))            | *app.ServerConfig is not a struct        |
+  | doger.BindConfig(root, "server", time.Time{})                        | time.Time binds as a scalar              |
+  | doger.ResolveConfig(root, "server", url.URL{})                       | url.URL binds as a scalar                |
 ```
 
-#### Scenario: Invalid prefixes
+<!-- cases: N/A 1 default, 2 overrides: error path -->
+<!-- cases: 3 zero values: a typed-nil pointer row -->
+<!-- cases: 4 boundaries: pointer, basic, map and interface types; struct types converted as scalars -->
+<!-- cases: 5 errors: sentinel and pinned text -->
+<!-- cases: N/A 6-9: checked before any lookup -->
+<!-- cases: N/A 10 compatibility: new API -->
+
+### Requirement: Prefixes follow the key grammar
+A prefix SHALL be empty, or a name with an optional `/instance`, each followed by any number of `.segment`, `[index]` or `[key]` parts as in extension-properties; any other prefix SHALL fail with an error matching `ErrInvalidConfigTarget` naming the prefix, registering nothing.
+
+#### Scenario: Valid and invalid prefixes
 ```gherkin
 When the consumer calls doger.ResolveConfig(root, "<prefix>", ServerConfig{})
 Then errors.Is(err, doger.ErrInvalidConfigTarget) is <invalid>
 
 Examples:
-  | prefix        | invalid |
-  |               | false   |
-  | server        | false   |
-  | db.primary    | false   |
-  | redis/queue   | false   |
-  | hosts[0]      | false   |
-  | Server        | true    |
-  | server.       | true    |
-  | .server       | true    |
-  | a..b          | true    |
+  | prefix         | invalid |
+  |                | false   |
+  | server         | false   |
+  | db.primary     | false   |
+  | redis/queue    | false   |
+  | redis/queue.tls| false   |
+  | hosts[0]       | false   |
+  | Server         | true    |
+  | server.        | true    |
+  | .server        | true    |
+  | a..b           | true    |
+  | redis/         | true    |
+  | /queue         | true    |
 ```
+
+<!-- cases: 1 default: empty prefix binds top-level keys -->
+<!-- cases: N/A 2 overrides: the grammar is fixed -->
+<!-- cases: 3 zero values: empty prefix row -->
+<!-- cases: 4 boundaries: single segment, instance, index, trailing and leading separators -->
+<!-- cases: 5 errors: sentinel -->
+<!-- cases: N/A 6-9: checked before any lookup -->
+<!-- cases: N/A 10 compatibility: new API -->
+
+### Requirement: A typed-nil injector is rejected
+A typed-nil injector passed to `BindConfig`, `BindConfigNamed` or `ResolveConfig` SHALL fail with an error matching `ErrInvalidConfigTarget`, while a nil injector SHALL mean `DefaultRootScope`.
 
 #### Scenario: A typed-nil injector
 ```gherkin
 Given var scope *doger.Scope
 When the consumer calls doger.ResolveConfig(scope, "server", ServerConfig{})
 Then errors.Is(err, doger.ErrInvalidConfigTarget) is true
-And the error message contains "nil *doger.Scope injector"
+And the error message is "DI: config: invalid target: nil *doger.Scope injector"
 ```
 
 <!-- cases: N/A 1 default, 2 overrides: error path -->
-<!-- cases: 3 zero values: empty prefix valid, typed-nil injector -->
-<!-- cases: 4 boundaries: pointer, interface, map and basic types; valid and invalid prefix shapes -->
-<!-- cases: 5 errors: sentinel and reason -->
-<!-- cases: N/A 6-9: checked before any lookup -->
+<!-- cases: 3 zero values: typed nil here; untyped nil is "A nil injector binds into DefaultRootScope" -->
+<!-- cases: N/A 4-9: checked before any lookup -->
 <!-- cases: N/A 10 compatibility: new API -->
 
 ### Requirement: BindConfig binds, validates and registers a section
-`BindConfig[T](i, prefix, opts...)` SHALL bind `T` under `prefix` from `i`'s container, starting from the last non-nil `ConfigDefaults` option, validate it (config-validation), and register in `i`'s scope `T` and `ConfigValue[T]` as one step; on any error it SHALL register neither. A nil `i` SHALL mean `DefaultRootScope`.
+`BindConfig[T](i, prefix, defaults)` SHALL bind `T` under `prefix` from `i`'s container over a copy of `defaults`, validate it (config-validation), and register `T` and `ConfigValue[T]` in `i`'s scope, both or neither. A nil `i` SHALL mean `DefaultRootScope`.
 
 #### Scenario: A bound section is invocable
 ```gherkin
 Given root := doger.MustNewWithOpts(&doger.InjectorOpts{PropertySource: doger.MapSource{"server.port": "9090"}})
-When the consumer calls doger.BindConfig(root, "server", doger.ConfigDefaults(ServerConfig{Host: "0.0.0.0", Port: 8080}))
+When the consumer calls doger.BindConfig(root, "server", ServerConfig{Host: "0.0.0.0", Port: 8080})
 Then the error is nil
 And doger.MustInvoke[ServerConfig](root) is ServerConfig{Host: "0.0.0.0", Port: 9090}
 And doger.MustInvoke[doger.ConfigValue[ServerConfig]](root).Get() is ServerConfig{Host: "0.0.0.0", Port: 9090}
 ```
 
-#### Scenario: Default options
-```gherkin
-Given root's property source holds nothing under "server"
-When the consumer calls doger.BindConfig(root, "server", <opts>)
-Then doger.MustInvoke[ServerConfig](root) is <value>
-
-Examples:
-  | opts                                                                                 | value                    |
-  | no options (written doger.BindConfig[ServerConfig](root, "server"))                  | ServerConfig{}           |
-  | doger.ConfigDefaults(ServerConfig{Port: 1}), doger.ConfigDefaults(ServerConfig{Port: 2}) | ServerConfig{Port: 2} |
-  | doger.ConfigDefaults(ServerConfig{Port: 1}), nil                                     | ServerConfig{Port: 1}    |
-```
-
 #### Scenario: A failed bind registers nothing
 ```gherkin
-Given root's property source holds "server.port" = "<raw>"
-And type ServerConfig struct { Port int `validate:"min=1,max=65535"` }
-When the consumer calls doger.BindConfig[ServerConfig](root, "server")
-Then errors.Is(err, <sentinel>) is true
+Given root's property source holds "server.port" = "abc"
+When the consumer calls doger.BindConfig(root, "server", ServerConfig{})
+Then errors.Is(err, doger.ErrConfigConversion) is true
 And doger.Invoke[ServerConfig](root) and doger.Invoke[doger.ConfigValue[ServerConfig]](root) both return errors matching doger.ErrServiceNotFound
+```
 
-Examples:
-  | raw   | sentinel                    |
-  | abc   | doger.ErrInvalidConfigValue |
-  | 99999 | doger.ErrInvalidConfig      |
+#### Scenario: A failing second registration is rolled back
+```gherkin
+Given root with a HookAfterRegistration that panics with "hook boom" when the service name is doger.NameOf[doger.ConfigValue[ServerConfig]]()
+And root's property source holds "server.port" = "9090"
+When the consumer calls doger.BindConfig(root, "server", ServerConfig{})
+Then the call panics with "hook boom"
+And doger.Invoke[ServerConfig](root) and doger.Invoke[doger.ConfigValue[ServerConfig]](root) both return errors matching doger.ErrServiceNotFound
 ```
 
 #### Scenario: A nil injector binds into DefaultRootScope
 ```gherkin
 Given DefaultRootScope is swapped for a fresh root whose property source holds "nilinj.port" = "7070", restored at test cleanup, in a test that is not parallel
-When the consumer calls doger.BindConfig[NilInjConfig](nil, "nilinj")
+When the consumer calls doger.BindConfig(nil, "nilinj", NilInjConfig{})
 Then doger.MustInvoke[NilInjConfig](doger.DefaultRootScope).Port is 7070
 ```
 
@@ -627,30 +869,30 @@ Then doger.MustInvoke[NilInjConfig](doger.DefaultRootScope).Port is 7070
 ```gherkin
 Given root's property source holds "jobs.workers" = "4"
 And child := root.Scope("jobs")
-When the consumer calls doger.BindConfig[JobsConfig](child, "jobs")
+When the consumer calls doger.BindConfig(child, "jobs", JobsConfig{})
 Then doger.MustInvoke[JobsConfig](child).Workers is 4
 And doger.Invoke[JobsConfig](root) returns an error matching doger.ErrServiceNotFound
 ```
 
-<!-- cases: 1 default: no options row -->
-<!-- cases: 2 overrides: ConfigDefaults; last one wins; a nil option is ignored -->
-<!-- cases: 3 zero values: nil injector row; nil option row -->
-<!-- cases: 4 boundaries: root and child scope; one and two options -->
-<!-- cases: 5 errors: conversion and validation rows, nothing registered -->
+<!-- cases: 1 default: zero-value defaults behave as BindConfig(i, p, T{}) -->
+<!-- cases: 2 overrides: the defaults argument -->
+<!-- cases: 3 zero values: nil injector row -->
+<!-- cases: 4 boundaries: root and child scope -->
+<!-- cases: 5 errors: conversion row registers nothing; validation failures are config-validation's rows -->
 <!-- cases: 6 duplicate: covered by "Binding a name twice fails" -->
-<!-- cases: 7 lifecycle: covered by "Binding follows the container's phase" -->
-<!-- cases: 8 concurrency: covered by "Concurrent binding and reads" -->
-<!-- cases: N/A 9 panics: validator and binder panics have their own requirements -->
+<!-- cases: 7 lifecycle: covered by "Only BindConfig follows the shutdown phase" -->
+<!-- cases: 8 concurrency: covered by "Concurrent binding and reads"; a bind racing a reload is in config-reload -->
+<!-- cases: 9 panics: a registration hook's panic propagates after the first registration is removed; binder and validator panics are errors -->
 <!-- cases: N/A 10 compatibility: new API -->
 
 ### Requirement: BindConfigNamed binds one type under several names
-`BindConfigNamed[T](i, name, prefix, opts...)` SHALL behave as `BindConfig` but register `T` under `name` and `ConfigValue[T]` under `ConfigValueName(name)`, which SHALL be `name + ".value"`; an empty name SHALL fail with `ErrInvalidConfigTarget`.
+`BindConfigNamed[T](i, name, prefix, defaults)` SHALL behave as `BindConfig` but register `T` under `name` and `ConfigValue[T]` under `ConfigValueName(name)`, which SHALL be `name + ".value"`; an empty name SHALL fail with `ErrInvalidConfigTarget`, registering nothing.
 
 #### Scenario: Two databases of one type
 ```gherkin
 Given root's property source holds "db.primary.url" = "pg://p" and "db.replica.url" = "pg://r"
-And doger.BindConfigNamed[DBConfig](root, "replica-db", "db.replica") returned nil
-When the consumer calls doger.BindConfigNamed[DBConfig](root, "primary-db", "db.primary")
+And doger.BindConfigNamed(root, "replica-db", "db.replica", DBConfig{}) returned nil
+When the consumer calls doger.BindConfigNamed(root, "primary-db", "db.primary", DBConfig{})
 Then doger.MustInvokeNamed[DBConfig](root, "primary-db").URL is "pg://p"
 And doger.MustInvokeNamed[DBConfig](root, "replica-db").URL is "pg://r"
 And doger.MustInvokeNamed[doger.ConfigValue[DBConfig]](root, doger.ConfigValueName("primary-db")).Get().URL is "pg://p"
@@ -658,10 +900,10 @@ And doger.MustInvokeNamed[doger.ConfigValue[DBConfig]](root, doger.ConfigValueNa
 
 #### Scenario: An empty name is rejected
 ```gherkin
-When the consumer calls doger.BindConfigNamed[ServerConfig](root, "", "server")
+When the consumer calls doger.BindConfigNamed(root, "", "server", ServerConfig{})
 Then errors.Is(err, doger.ErrInvalidConfigTarget) is true
-And the error message contains "empty service name"
-And nothing is registered
+And the error message is "DI: config: invalid target: empty service name"
+And doger.Invoke[doger.ConfigValue[ServerConfig]](root) returns an error matching doger.ErrServiceNotFound
 ```
 
 <!-- cases: 1 default: as BindConfig -->
@@ -671,10 +913,10 @@ And nothing is registered
 <!-- cases: 5 errors: invalid target -->
 <!-- cases: 6 duplicate: covered by "Binding a name twice fails" -->
 <!-- cases: N/A 7-9: as BindConfig -->
-<!-- cases: N/A 10 compatibility: new API -->
+<!-- cases: N/A 10 compatibility: new API; the name precedes the prefix, as godoc states, because both are strings -->
 
 ### Requirement: Binding a name twice fails
-`BindConfig` or `BindConfigNamed` SHALL fail with an error matching `ErrConfigAlreadyBound` naming the service, without panicking, when the target scope already holds a non-default registration under `T`'s name or the handle's name, keeping it; an `AsDefault` registration SHALL be replaced, and a parent scope's registration SHALL be shadowed.
+`BindConfig` or `BindConfigNamed` SHALL fail with an error matching `ErrConfigAlreadyBound` naming the service, without panicking and keeping the existing registration, when the target scope holds a registration under `T`'s or the handle's name that is not an unresolved `AsDefault` registration; an unresolved `AsDefault` one SHALL be replaced.
 
 #### Scenario: Duplicate bindings
 ```gherkin
@@ -685,68 +927,80 @@ And the error message is "DI: config: \"<named>\" is already bound"
 And neither <second>'s value nor handle is registered
 
 Examples:
-  | first                                                                      | second                                                | named                            |
-  | doger.BindConfig[ServerConfig](root, "server")                             | doger.BindConfig[ServerConfig](root, "other")         | main.ServerConfig                |
-  | doger.ProvideValue(root, ServerConfig{Port: 1})                            | doger.BindConfig[ServerConfig](root, "server")        | main.ServerConfig                |
-  | doger.ProvideNamedValue(root, "a.value", 1)                                | doger.BindConfigNamed[ServerConfig](root, "a", "x")   | a.value                          |
-  | doger.BindConfigNamed[ServerConfig](root, "a", "x")                        | doger.BindConfigNamed[ServerConfig](root, "a", "y")   | a                                |
+  | first                                                                                 | second                                                      | named                                                     |
+  | doger.BindConfig(root, "server", ServerConfig{})                                      | doger.BindConfig(root, "other", ServerConfig{})             | the value of doger.NameOf[ServerConfig]()                 |
+  | doger.ProvideValue(root, ServerConfig{Port: 1})                                       | doger.BindConfig(root, "server", ServerConfig{})            | the value of doger.NameOf[ServerConfig]()                 |
+  | doger.ProvideValue(root, ServerConfig{Port: 1}, doger.AsDefault()) and an Invoke of it | doger.BindConfig(root, "server", ServerConfig{})           | the value of doger.NameOf[ServerConfig]()                 |
+  | doger.ProvideNamedValue(root, "a.value", 1)                                           | doger.BindConfigNamed(root, "a", "x", ServerConfig{})       | a.value                                                   |
+  | doger.BindConfigNamed(root, "a", "x", ServerConfig{})                                 | doger.BindConfigNamed(root, "a", "y", ServerConfig{})       | a                                                         |
 ```
 
-#### Scenario: Defaults and parent registrations give way
+#### Scenario: Unresolved defaults and parent registrations give way
 ```gherkin
 Given <existing>
 And root's property source holds "server.port" = "9090"
-When the consumer calls doger.BindConfig[ServerConfig](<scope>, "server")
+When the consumer calls doger.BindConfig(<scope>, "server", ServerConfig{})
 Then the error is nil
 And doger.MustInvoke[ServerConfig](<scope>).Port is 9090
 
 Examples:
-  | existing                                                                 | scope |
-  | doger.ProvideValue(root, ServerConfig{Port: 1}, doger.AsDefault())       | root  |
-  | doger.ProvideValue(root, ServerConfig{Port: 1}) and child := root.Scope("c") | child |
+  | existing                                                                       | scope |
+  | doger.ProvideValue(root, ServerConfig{Port: 1}, doger.AsDefault()), never invoked | root  |
+  | doger.ProvideValue(root, ServerConfig{Port: 1}) and child := root.Scope("c")   | child |
 ```
 
 <!-- cases: N/A 1 default, 2 overrides: error path and replacement rules -->
 <!-- cases: N/A 3 zero values: empty name has its own requirement -->
-<!-- cases: 4 boundaries: T's name taken, handle's name taken, same name different prefix -->
-<!-- cases: 5 errors: sentinel matchable with errors.Is; text pinned -->
-<!-- cases: 6 duplicate: the subject; AsDefault replaced, parent shadowed -->
-<!-- cases: N/A 7 lifecycle: same rule in every phase that allows binding -->
+<!-- cases: 4 boundaries: T's name taken, handle's name taken, same name different prefix, resolved versus unresolved default -->
+<!-- cases: 5 errors: sentinel matchable with errors.Is; text pinned with the service name from NameOf -->
+<!-- cases: 6 duplicate: the subject; a resolved default is a duplicate, as in default-registrations; a parent registration is shadowed -->
+<!-- cases: N/A 7 lifecycle: the same rule in every phase that allows binding -->
 <!-- cases: 8 concurrency: covered by "Concurrent binding and reads" -->
 <!-- cases: 9 panics: binding never panics on a duplicate, unlike Provide -->
 <!-- cases: N/A 10 compatibility: new API -->
 
-### Requirement: Binding follows the container's phase
-`BindConfig`, `BindConfigNamed` and `ResolveConfig` SHALL work before `Start` and after it, and SHALL fail with an error matching `ErrStartAfterShutdown`, registering nothing, once the container has begun shutting down.
+### Requirement: Only BindConfig follows the shutdown phase
+`BindConfig` and `BindConfigNamed` SHALL fail with an error matching `ErrStartAfterShutdown`, registering nothing, once the target scope's container, or the child scope itself, has begun shutting down; `ResolveConfig` and `BindProperties` SHALL work in every phase, reading the last committed configuration.
 
 #### Scenario: Binding in each phase
 ```gherkin
 Given root's property source holds "server.port" = "9090"
 And root is <phase>
-When the consumer calls doger.BindConfig[ServerConfig](root, "server")
+When the consumer calls doger.BindConfig(<scope>, "server", ServerConfig{})
 Then the error is <error>
 
 Examples:
-  | phase                           | error                                 |
-  | idle (never started)            | nil                                   |
-  | started with root.Start()       | nil                                   |
-  | shut down with root.Shutdown()  | an error matching ErrStartAfterShutdown |
+  | phase                                                     | scope            | error                                   |
+  | idle (never started)                                      | root             | nil                                     |
+  | starting, from a provider that runs during root.Start()   | root             | nil                                     |
+  | started with root.Start()                                 | root             | nil                                     |
+  | failed: root.Start() returned an error                    | root             | nil                                     |
+  | closing, from a Shutdowner running during root.Shutdown() | root             | an error matching ErrStartAfterShutdown |
+  | shut down with root.Shutdown()                            | root             | an error matching ErrStartAfterShutdown |
+  | started, with child := root.Scope("c") shut down          | child            | an error matching ErrStartAfterShutdown |
 ```
 
-#### Scenario: Resolving after shutdown
+#### Scenario: Resolving in every phase
 ```gherkin
-Given root has been shut down
+Given root's property source holds "server.port" = "9090"
+And root is <phase>
 When the consumer calls doger.ResolveConfig(root, "server", ServerConfig{Port: 1})
-Then the result is ServerConfig{} and errors.Is(err, doger.ErrStartAfterShutdown) is true
+Then the result is ServerConfig{Port: 9090} and the error is nil
+
+Examples:
+  | phase                                                     |
+  | idle (never started)                                      |
+  | closing, from a Shutdowner running during root.Shutdown() |
+  | shut down with root.Shutdown()                            |
 ```
 
-<!-- cases: N/A 1 default, 2 overrides -->
-<!-- cases: N/A 3 zero values -->
-<!-- cases: 4 boundaries: before start, after start, after shutdown -->
+<!-- cases: N/A 1 default, 2 overrides: phases are not configurable -->
+<!-- cases: N/A 3 zero values: no input beyond the phase -->
+<!-- cases: 4 boundaries: every phase, and a child scope shut down on its own -->
 <!-- cases: 5 errors: ErrStartAfterShutdown -->
-<!-- cases: N/A 6 duplicate -->
-<!-- cases: 7 lifecycle: the subject -->
-<!-- cases: N/A 8-9 -->
+<!-- cases: N/A 6 duplicate: as "Binding a name twice fails" -->
+<!-- cases: 7 lifecycle: the subject; a service reading its drain timeout with ResolveConfig during shutdown works -->
+<!-- cases: N/A 8-9: as for every bind -->
 <!-- cases: N/A 10 compatibility: new API -->
 
 ### Requirement: A bind is a property read
@@ -759,10 +1013,10 @@ When the consumer registers a lazy service under the name doger.NameOf[doger.Pro
 Then the registration panics with "DI: service `github.com/kartaladev/doger.PropertySource` has already been declared"
 ```
 
-<!-- cases: N/A 1-6: the decision rules are in extension-properties -->
+<!-- cases: N/A 1-6: the decision rules, including a failing source provider leaving every property unset, are in extension-properties -->
 <!-- cases: 7 lifecycle: the bind decides the source -->
 <!-- cases: N/A 8 concurrency: as in extension-properties -->
-<!-- cases: 9 panics: the late registration panics as a duplicate -->
+<!-- cases: 9 panics: a panic while deciding the source reaches the caller, as in extension-properties; only Lookup, Keys and UnmarshalText panics during the bind itself are recovered -->
 <!-- cases: N/A 10 compatibility: new API -->
 
 ### Requirement: ResolveConfig binds onto the consumer's defaults
@@ -781,14 +1035,14 @@ And doger.Invoke[ClientConfig](root) returns an error matching doger.ErrServiceN
 ```gherkin
 Given root's property source holds "payments.client.retries" = "many"
 When the consumer calls doger.ResolveConfig(root, "payments.client", ClientConfig{Retries: 2})
-Then the result is ClientConfig{} and errors.Is(err, doger.ErrInvalidConfigValue) is true
+Then the result is ClientConfig{} and errors.Is(err, doger.ErrConfigConversion) is true
 ```
 
 #### Scenario: Resolving inside a provider uses the provider's container
 ```gherkin
 Given root created with PropertySource doger.MapSource{"payments.client.retries": "5"}
 And a lazy "*Client" whose provider calls doger.ResolveConfig(i, "payments.client", ClientConfig{Retries: 2})
-And clone, err := root.CloneWithOpts(&doger.InjectorOpts{PropertySource: doger.MapSource{"payments.client.retries": "7"}})
+And clone, err := root.CloneWithOpts(&doger.InjectorOpts{PropertySource: doger.MapSource{"payments.client.retries": "7"}}) returned a nil err
 When the consumer invokes "*Client" from <container>
 Then the client's Retries is <retries>
 
@@ -804,13 +1058,13 @@ Examples:
 <!-- cases: 4 boundaries: original and cloned container -->
 <!-- cases: 5 errors: zero value plus error -->
 <!-- cases: 6 duplicate: resolving twice registers nothing, so it never conflicts -->
-<!-- cases: 7 lifecycle: clone row; shutdown in "Binding follows the container's phase" -->
-<!-- cases: 8 concurrency: covered by "Concurrent binding and reads" -->
+<!-- cases: 7 lifecycle: clone row; phases in "Only BindConfig follows the shutdown phase" -->
+<!-- cases: 8 concurrency: covered by "Concurrent binding and reads"; ResolveConfig reads one committed view and takes no lock -->
 <!-- cases: N/A 9 panics: binder and validator panics have their own requirements -->
 <!-- cases: N/A 10 compatibility: new API -->
 
 ### Requirement: A config handle shares its current value
-`ConfigValue[T]` SHALL be a handle whose copies share one current value; `Get` SHALL return it, `StaticConfig(v)` SHALL return a handle whose `Get` always returns `v`, and the zero handle's `Get` SHALL return the zero `T`.
+`ConfigValue[T]` SHALL be a handle whose copies share one current value; `Get` SHALL return it, and callers SHALL treat it as read-only since its maps and slices are shared with other readers. `StaticConfig(v)` SHALL return a handle whose `Get` always returns `v`; the zero handle's `Get` SHALL return the zero `T`.
 
 #### Scenario: Handle values
 ```gherkin
@@ -819,11 +1073,11 @@ When the consumer calls Get()
 Then the result is <value>
 
 Examples:
-  | handle                                                                                      | value                         |
-  | doger.MustInvoke[doger.ConfigValue[LimitsConfig]](root) after binding "limits.per-minute" = "10" | LimitsConfig{PerMinute: 10} |
-  | a copy h2 := h of that handle                                                               | LimitsConfig{PerMinute: 10}   |
-  | doger.StaticConfig(LimitsConfig{PerMinute: 3})                                              | LimitsConfig{PerMinute: 3}    |
-  | var h doger.ConfigValue[LimitsConfig]                                                       | LimitsConfig{}                |
+  | handle                                                                                            | value                         |
+  | doger.MustInvoke[doger.ConfigValue[LimitsConfig]](root) after binding "limits.per-minute" = "10"  | LimitsConfig{PerMinute: 10}   |
+  | a copy h2 := h of that handle                                                                     | LimitsConfig{PerMinute: 10}   |
+  | doger.StaticConfig(LimitsConfig{PerMinute: 3})                                                    | LimitsConfig{PerMinute: 3}    |
+  | var h doger.ConfigValue[LimitsConfig]                                                             | LimitsConfig{}                |
 ```
 
 #### Scenario: OnChange on a handle that never changes
@@ -843,14 +1097,14 @@ Examples:
 <!-- cases: 3 zero values: zero handle rows -->
 <!-- cases: 4 boundaries: original and copy -->
 <!-- cases: N/A 5 errors: Get cannot fail -->
-<!-- cases: N/A 6 duplicate -->
-<!-- cases: 7 lifecycle: reload updates and notifications are specified in config-reload -->
+<!-- cases: N/A 6 duplicate: a handle is a value, not a registration -->
+<!-- cases: 7 lifecycle: reload updates, notifications and stop semantics under reload are specified in config-reload -->
 <!-- cases: 8 concurrency: covered by "Concurrent binding and reads" -->
 <!-- cases: 9 panics: Get, OnChange and stop never panic, also on a zero handle; stop is idempotent -->
 <!-- cases: N/A 10 compatibility: new API -->
 
 ### Requirement: BindProperties binds an extension's view
-`BindProperties(props, target)` SHALL bind into the struct `target` points to from a `Properties` view, with keys relative to the view, keeping the struct's current values as defaults and leaving `*target` unchanged on any error; it SHALL NOT validate. A target that is not a non-nil pointer to a struct SHALL fail with `ErrInvalidConfigTarget`.
+`BindProperties(props, target)` SHALL bind into the struct `target` points to from a `Properties` view, with keys relative to the view and the view's container's `ConfigTagKey`, keeping the struct's current values as defaults and leaving `*target` unchanged on any error; it SHALL NOT validate. A target that is not a non-nil pointer to a struct SHALL fail with `ErrInvalidConfigTarget`.
 
 #### Scenario: An extension binds over its defaults
 ```gherkin
@@ -870,7 +1124,7 @@ Examples:
 Given root's property source holds "redis.addr" = "cache:6379" and "redis.pool-size" = "lots"
 And an extension "redis" whose Extend runs cfg := Config{Addr: "localhost:6379", PoolSize: 10} and records doger.BindProperties(x.Properties(), &cfg)
 When the consumer calls doger.Extend(root, redisExt)
-Then the recorded error matches doger.ErrInvalidConfigValue
+Then the recorded error matches doger.ErrConfigConversion
 And cfg is still Config{Addr: "localhost:6379", PoolSize: 10}
 ```
 
@@ -888,13 +1142,20 @@ Examples:
   | &someInt           |
 ```
 
+#### Scenario: The zero view binds nothing
+```gherkin
+Given cfg := Config{Addr: "localhost:6379"}
+When the consumer calls doger.BindProperties(doger.Properties{}, &cfg)
+Then the error is nil and cfg is still Config{Addr: "localhost:6379"}
+```
+
 <!-- cases: 1 default: no instance row -->
 <!-- cases: 2 overrides: instance row -->
-<!-- cases: 3 zero values: nil and typed-nil rows -->
+<!-- cases: 3 zero values: nil and typed-nil targets; the zero Properties view -->
 <!-- cases: 4 boundaries: with and without an instance key -->
 <!-- cases: 5 errors: invalid target; conversion error with the target unchanged -->
 <!-- cases: N/A 6 duplicate: nothing is registered -->
-<!-- cases: N/A 7 lifecycle: as for Properties() -->
+<!-- cases: 7 lifecycle: works in every phase, see "Only BindConfig follows the shutdown phase" -->
 <!-- cases: N/A 8 concurrency: as in extension-properties "Concurrent lookups" -->
 <!-- cases: 9 panics: as in "A panic while binding is an error" -->
 <!-- cases: N/A 10 compatibility: new API -->
@@ -910,9 +1171,9 @@ Then the result is ServerConfig{Port: 9090, Hosts: ["a"]}
 ```
 
 <!-- cases: 1 default: the subject -->
-<!-- cases: N/A 2 overrides -->
-<!-- cases: N/A 3 zero values: a nil MapSource holds nothing; Keys semantics are in extension-properties -->
-<!-- cases: N/A 4-9: as for every source; mutating the map while in use is documented as unsupported -->
+<!-- cases: N/A 2 overrides: a MapSource is itself the override for tests -->
+<!-- cases: 3 zero values: a nil MapSource holds nothing; Keys semantics are in extension-properties -->
+<!-- cases: N/A 4-9: as for every source; writing to the map while it is in use is a fatal runtime error, as documented in godoc -->
 <!-- cases: N/A 10 compatibility: new API -->
 
 ### Requirement: Concurrent binding and reads
@@ -921,13 +1182,14 @@ Concurrent calls to `BindConfig`, `BindConfigNamed`, `ResolveConfig` and `Config
 #### Scenario: Concurrent use under -race
 ```gherkin
 Given root's property source holds "server.port" = "9090", "limits.per-minute" = "10" and "jobs.workers" = "4"
-And doger.BindConfig[LimitsConfig](root, "limits") returned nil
-When 60 goroutines start together: 50 calling doger.ResolveConfig(root, "server", ServerConfig{}) and the LimitsConfig handle's Get(), and 10 calling doger.BindConfig[JobsConfig](root, "jobs")
+And doger.BindConfig(root, "limits", LimitsConfig{}) returned nil
+When 60 goroutines start together: 50 calling doger.ResolveConfig(root, "server", ServerConfig{}) and the LimitsConfig handle's Get(), and 10 calling doger.BindConfig(root, "jobs", JobsConfig{})
 Then every ResolveConfig returns ServerConfig{Port: 9090} and every Get returns LimitsConfig{PerMinute: 10}
 And exactly 1 BindConfig returns nil and 9 return an error matching doger.ErrConfigAlreadyBound
 And both JobsConfig and its handle resolve, and the race detector reports nothing
 ```
 
-<!-- cases: N/A 1-7: concurrency only -->
-<!-- cases: 8 concurrency: the subject; runs under -race -->
-<!-- cases: N/A 9 panics, 10 compatibility -->
+<!-- cases: N/A 1-7: concurrency only; the other items are covered by the requirements above -->
+<!-- cases: 8 concurrency: the subject; runs under -race; the per-type plan cache is shared safely -->
+<!-- cases: N/A 9 panics: no input panics here -->
+<!-- cases: N/A 10 compatibility: new API -->
