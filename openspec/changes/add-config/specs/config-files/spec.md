@@ -2,18 +2,18 @@
 
 ## Purpose
 
-The `github.com/kartaladev/doger/config` module's `config.Files` source: it finds config files, layers them with `.env`, process env and added sources into one immutable snapshot, and answers `Lookup` and `Keys` for the container. It does this without viper, without writing the process environment by default, and without ever putting a value in an error.
+The `github.com/kartaladev/doger/config` module's `*config.Source`, built with `config.New(opts ...config.Option)`: it finds config files, layers them with `.env`, process env and added sources into one immutable snapshot, and answers `Lookup` and `Keys` for the container. It does this without viper, without writing the process environment by default, and without ever putting a value in an error.
 
 ## ADDED Requirements
 
 ### Requirement: Zero-config file discovery
-`config.Files()` with no options SHALL search `.` and then `./config` for a base file named `config` with the extension `.yaml`, `.yml`, `.toml` or `.json`. Every file found SHALL load, and `./config` SHALL win over `.` key by key. Finding no file at all SHALL NOT be an error.
+`config.New()` with no options SHALL search `.` and then `./config` for a base file named `config` with the extension `.yaml`, `.yml`, `.toml` or `.json`, matching directory entries by their exact lowercase name. Every file found SHALL load, and `./config` SHALL win over `.` key by key. Finding no file at all, or a `./config` that is a regular file, SHALL NOT be an error.
 
 #### Scenario: Base files found in the working directory and ./config
 ```gherkin
 Given a temp working directory (t.Chdir, test not parallel) containing <files>
 And no APP_* variable (clearEnvPrefix(t, "APP_")) and no .env
-When the consumer calls config.Files().Load(ctx)
+When the consumer calls config.New().Load(ctx)
 Then Load returns <error>
 And Lookup("server.port") returns <result>
 
@@ -27,20 +27,22 @@ Examples:
   | config.yaml with server.port: 8080 and config/config.yaml with server.port: 8181 | nil   | ("8181", true) |
   | an empty config.yaml                                                             | nil   | ("", false)    |
   | nothing                                                                          | nil   | ("", false)    |
+  | Config.yaml with server.port: 8080 (upper-case C)                                | nil   | ("", false)    |
+  | config.yaml with server.port: 8080 and a regular file named config               | nil   | ("8080", true) |
 ```
 
 #### Scenario: Both directories merge key by key
 ```gherkin
 Given a temp working directory (t.Chdir, clearEnvPrefix(t, "APP_")) with config.yaml holding server.host: "a" and server.port: 8080
 And config/config.yaml holding server.port: 8181
-When the consumer calls config.Files().Load(ctx)
+When the consumer calls config.New().Load(ctx)
 Then Lookup("server.host") returns ("a", true) and Lookup("server.port") returns ("8181", true)
 ```
 
 <!-- cases: 1 default: the whole requirement -->
 <!-- cases: 2 overrides: explicit paths are "Explicit paths skip discovery" -->
 <!-- cases: 3 zero values: an empty file and no file at all -->
-<!-- cases: 4 boundaries: one directory, both directories -->
+<!-- cases: 4 boundaries: one directory, both directories; an upper-case name is not discovered even on a case-insensitive file system (entries are listed and compared exactly); ./config as a regular file counts as absent -->
 <!-- cases: 5 errors: ambiguous formats are "One format per base name" -->
 <!-- cases: 6 duplicate: a key in both directories (./config wins) -->
 <!-- cases: N/A 7 lifecycle: discovery runs in Load, covered by "Paths are resolved at the first Load" -->
@@ -59,7 +61,7 @@ Given a temp working directory (t.Chdir, clearEnvPrefix(t, "APP_")) with APP_PRO
   | config/config.yaml      | a: base-cfg,  b: base-cfg,  hosts: [4]       |
   | config.prod.yaml        | a: prod-dot                                  |
   | config/config.prod.yaml | c: prod-cfg                                  |
-When the consumer calls config.Files().Load(ctx)
+When the consumer calls config.New().Load(ctx)
 Then Lookup("<key>") returns <result>
 
 Examples:
@@ -81,7 +83,7 @@ Examples:
 <!-- cases: N/A 10 compatibility: new module -->
 
 ### Requirement: One format per base name
-Within one directory, two files with the same base name and different extensions, `.yaml` and `.yml` included, SHALL fail `Load` with an error matching `config.ErrAmbiguousFormat` that names both files. `config.Format(f)` with a `config.FileFormat` (`config.YAML`, `config.TOML`, `config.JSON`) SHALL restrict discovery to that format; `Format("")` SHALL mean "by extension".
+Within one directory, two files with the same base name and different extensions, `.yaml` and `.yml` included, SHALL fail `Load` with a `*config.AmbiguousFormatError` whose `Files` lists both paths and which matches `config.ErrAmbiguousFormat`. `config.Format(f)` with a `config.FileFormat` (`config.YAML`, `config.TOML`, `config.JSON`, or an extension registered with `config.Decoder`) SHALL restrict discovery to that format; `Format("")` SHALL mean "by extension".
 
 #### Scenario: Two formats for one base name
 ```gherkin
@@ -91,25 +93,25 @@ Then Load returns <result>
 
 Examples:
   | files                     | source                                   | result                                                                          |
-  | config.yaml, config.toml  | config.Files()                           | an error matching config.ErrAmbiguousFormat naming config.yaml and config.toml |
-  | config.yaml, config.yml   | config.Files()                           | an error matching config.ErrAmbiguousFormat naming config.yaml and config.yml  |
-  | config.yaml, config.toml  | config.Files(config.Format(config.TOML)) | nil, and only config.toml was read                                            |
-  | config.yaml, config.toml  | config.Files(config.Format(config.YAML)) | nil, and only config.yaml was read                                            |
-  | config.yaml, config.yml   | config.Files(config.Format(config.YAML)) | an error matching config.ErrAmbiguousFormat                                   |
-  | config.yaml, config.toml  | config.Files(config.Format(""))          | an error matching config.ErrAmbiguousFormat                                   |
+  | config.yaml, config.toml  | config.New()                           | a *config.AmbiguousFormatError with Files ["config.yaml", "config.toml"], matching config.ErrAmbiguousFormat |
+  | config.yaml, config.yml   | config.New()                           | a *config.AmbiguousFormatError with Files ["config.yaml", "config.yml"], matching config.ErrAmbiguousFormat  |
+  | config.yaml, config.toml  | config.New(config.Format(config.TOML)) | nil, and only config.toml was read                                            |
+  | config.yaml, config.toml  | config.New(config.Format(config.YAML)) | nil, and only config.yaml was read                                            |
+  | config.yaml, config.yml   | config.New(config.Format(config.YAML)) | an error matching config.ErrAmbiguousFormat                                   |
+  | config.yaml, config.toml  | config.New(config.Format(""))          | an error matching config.ErrAmbiguousFormat                                   |
 ```
 
 <!-- cases: 1 default: the first two rows -->
 <!-- cases: 2 overrides: Format rows -->
 <!-- cases: 3 zero values: Format("") row; an unknown FileFormat is "Options are checked when Load runs" -->
 <!-- cases: 4 boundaries: .yaml with .yml under Format(YAML) is still two files -->
-<!-- cases: 5 errors: ErrAmbiguousFormat matchable with errors.Is -->
+<!-- cases: 5 errors: errors.As reaches *config.AmbiguousFormatError; errors.Is matches ErrAmbiguousFormat -->
 <!-- cases: N/A 6 duplicate: the duplicate is the subject -->
 <!-- cases: N/A 7 lifecycle, 8 concurrency, 9 panics: Load only -->
 <!-- cases: N/A 10 compatibility: new module -->
 
 ### Requirement: Profile overlay
-The profile SHALL come from `config.Profile(p)`, else from the process variable named by `config.ProfileEnv(name)` (default `APP_PROFILE`), never from `.env`; that variable SHALL NOT become a config key. `config.<profile>.<ext>` SHALL load over the base files. `Profile("")` SHALL mean no profile. A set profile with no file in any directory SHALL fail `Load` matching `config.ErrProfileNotFound`. A profile file with no base file SHALL load alone.
+The profile SHALL come from `config.Profile(p)`, else from the process variable named by `config.ProfileEnv(name)` (default `APP_PROFILE`), never from `.env`; that variable SHALL NOT become a config key. `config.<profile>.<ext>` SHALL load over the base files. `Profile("")` SHALL mean no profile. A set profile with no file in any directory SHALL fail `Load` with a `*config.ProfileError` matching `config.ErrProfileNotFound`. A profile file with no base file SHALL load alone.
 
 #### Scenario: Profile selection
 ```gherkin
@@ -120,20 +122,20 @@ Then Load returns <error> and Lookup("server.port") returns <result>
 
 Examples:
   | env               | source                                    | error                                    | result         |
-  | nothing set       | config.Files()                            | nil                                      | ("8080", true) |
-  | APP_PROFILE=prod  | config.Files()                            | nil                                      | ("9090", true) |
-  | APP_PROFILE=prod  | config.Files(config.Profile(""))          | nil                                      | ("8080", true) |
-  | APP_PROFILE=prod  | config.Files(config.Profile("dev"))       | config.ErrProfileNotFound naming "dev"   | ("", false)    |
-  | nothing set       | config.Files(config.Profile("prod"))      | nil                                      | ("9090", true) |
-  | MY_ENV=prod       | config.Files(config.ProfileEnv("MY_ENV")) | nil                                      | ("9090", true) |
-  | APP_PROFILE=stage | config.Files()                            | config.ErrProfileNotFound naming "stage" | ("", false)    |
-  | APP_PROFILE=      | config.Files()                            | nil                                      | ("8080", true) |
+  | nothing set       | config.New()                            | nil                                      | ("8080", true) |
+  | APP_PROFILE=prod  | config.New()                            | nil                                      | ("9090", true) |
+  | APP_PROFILE=prod  | config.New(config.Profile(""))          | nil                                      | ("8080", true) |
+  | APP_PROFILE=prod  | config.New(config.Profile("dev"))       | a *config.ProfileError with Profile "dev", matching config.ErrProfileNotFound | ("", false)    |
+  | nothing set       | config.New(config.Profile("prod"))      | nil                                      | ("9090", true) |
+  | MY_ENV=prod       | config.New(config.ProfileEnv("MY_ENV")) | nil                                      | ("9090", true) |
+  | APP_PROFILE=stage | config.New()                            | a *config.ProfileError with Profile "stage", matching config.ErrProfileNotFound | ("", false)    |
+  | APP_PROFILE=      | config.New()                            | nil                                      | ("8080", true) |
 ```
 
 #### Scenario: Profile files in one directory or without a base
 ```gherkin
 Given a temp working directory (t.Chdir, clearEnvPrefix(t, "APP_")) holding <files>
-When the consumer calls config.Files(config.Profile("prod")).Load(ctx)
+When the consumer calls config.New(config.Profile("prod")).Load(ctx)
 Then Lookup("server.port") returns <result>
 
 Examples:
@@ -145,7 +147,7 @@ Examples:
 #### Scenario: The profile variable is never a config key and never read from .env
 ```gherkin
 Given a temp working directory (t.Chdir, clearEnvPrefix(t, "APP_")) with config.yaml (server.port: 8080), config.prod.yaml (server.port: 9090) and <setup>
-When the consumer calls config.Files().Load(ctx)
+When the consumer calls config.New().Load(ctx)
 Then Lookup("server.port") returns <port>, Lookup("profile") returns ("", false) and Keys("") contains no "profile"
 
 Examples:
@@ -169,7 +171,7 @@ A profile name SHALL match `^[a-z0-9][a-z0-9_-]*$`; any other name SHALL fail `L
 #### Scenario: Profile names
 ```gherkin
 Given a temp working directory (t.Chdir, clearEnvPrefix(t, "APP_")) with config.yaml and config.<name>.yaml for every valid name below
-When the consumer calls config.Files(config.Profile("<name>")).Load(ctx)
+When the consumer calls config.New(config.Profile("<name>")).Load(ctx)
 Then Load returns <error>
 
 Examples:
@@ -197,7 +199,7 @@ Files SHALL be opened by path with symlinks followed, inside or outside their di
 #### Scenario: Symlinked config files
 ```gherkin
 Given a temp directory d holding config.yaml as <link>, where every target holds server.port: 8080 (test skipped on Windows)
-When the consumer calls config.Files(config.Dir("d")).Load(ctx)
+When the consumer calls config.New(config.Dir("d")).Load(ctx)
 Then Load returns nil and Lookup("server.port") returns ("8080", true)
 
 Examples:
@@ -215,7 +217,7 @@ Examples:
 <!-- cases: N/A 10 compatibility: new module -->
 
 ### Requirement: Explicit paths skip discovery
-`config.Dir(paths...)` SHALL replace the searched directories, all loading and the later winning; a directory that does not exist SHALL fail `Load` matching `fs.ErrNotExist`. `config.File(paths...)` SHALL load exactly those files, the later winning; a missing file SHALL fail `Load` matching `fs.ErrNotExist`. `config.Name(base)` SHALL change the base name used by discovery.
+`config.Dir(paths...)` SHALL replace the searched directories, all loading and the later winning; a directory that does not exist SHALL fail `Load` matching `fs.ErrNotExist`. `config.File(paths...)` SHALL load exactly those files, the later winning; a missing file SHALL fail `Load` matching `fs.ErrNotExist`. Such an error SHALL be a `*config.FileError` whose `File` is the path as given. `config.Name(base)` SHALL change the base name used by discovery.
 
 #### Scenario: Directories, files and base name
 ```gherkin
@@ -225,15 +227,15 @@ Then Load returns <error> and Lookup("server.port") returns <result>
 
 Examples:
   | source                                              | error                                                    | result      |
-  | config.Files(config.Dir("a"))                       | nil                                                      | ("1", true) |
-  | config.Files(config.Dir("a", "b"))                  | nil                                                      | ("2", true) |
-  | config.Files(config.Dir("b", "a"))                  | nil                                                      | ("1", true) |
-  | config.Files(config.Dir("a", "a"))                  | nil                                                      | ("1", true) |
-  | config.Files(config.Dir("empty"))                   | nil                                                      | ("", false) |
-  | config.Files(config.Dir("nope"))                    | an error matching fs.ErrNotExist naming "nope"           | ("", false) |
-  | config.Files(config.File("c/app.toml"))             | nil                                                      | ("3", true) |
-  | config.Files(config.File("c/missing.yaml"))         | an error matching fs.ErrNotExist naming "c/missing.yaml" | ("", false) |
-  | config.Files(config.Dir("d"), config.Name("myapp")) | nil                                                      | ("4", true) |
+  | config.New(config.Dir("a"))                       | nil                                                      | ("1", true) |
+  | config.New(config.Dir("a", "b"))                  | nil                                                      | ("2", true) |
+  | config.New(config.Dir("b", "a"))                  | nil                                                      | ("1", true) |
+  | config.New(config.Dir("a", "a"))                  | nil                                                      | ("1", true) |
+  | config.New(config.Dir("empty"))                   | nil                                                      | ("", false) |
+  | config.New(config.Dir("nope"))                    | a *config.FileError with File "nope", matching fs.ErrNotExist | ("", false) |
+  | config.New(config.File("c/app.toml"))             | nil                                                      | ("3", true) |
+  | config.New(config.File("c/missing.yaml"))         | a *config.FileError with File "c/missing.yaml", matching fs.ErrNotExist | ("", false) |
+  | config.New(config.Dir("d"), config.Name("myapp")) | nil                                                      | ("4", true) |
 ```
 
 <!-- cases: N/A 1 default: discovery is the previous requirements -->
@@ -246,7 +248,7 @@ Examples:
 <!-- cases: N/A 10 compatibility: new module -->
 
 ### Requirement: Explicit files ignore the profile and force a format
-With `config.File(...)`, discovery and the profile overlay SHALL be off, so an inherited `APP_PROFILE` is ignored without error. `config.Dir` and `config.Name` keep the profile overlay. `config.Dir` together with `config.File` SHALL fail `Load` matching `config.ErrInvalidOption`. `config.Format(f)` with `config.File` SHALL parse every listed file as `f`, whatever its extension.
+With `config.File(...)`, discovery and the profile overlay SHALL be off, so an inherited `APP_PROFILE` is ignored without error. `config.Dir` and `config.Name` keep the profile overlay. `config.File` together with `config.Dir`, `config.Profile` or `config.ProfileEnv` SHALL fail `Load` matching `config.ErrInvalidOption`. `config.Format(f)` with `config.File` SHALL parse every listed file as `f`, whatever its extension.
 
 #### Scenario: File, Dir, Format and the profile together
 ```gherkin
@@ -256,18 +258,20 @@ Then Load returns <error> and Lookup("server.port") returns <result>
 
 Examples:
   | source                                                         | error                                     | result         |
-  | config.Files(config.File("config.yaml"))                       | nil                                       | ("8080", true) |
-  | config.Files(config.Dir("."))                                  | nil                                       | ("9090", true) |
-  | config.Files(config.Dir("."), config.File("config.yaml"))      | an error matching config.ErrInvalidOption | ("", false)    |
-  | config.Files(config.File("app.conf"), config.Format(config.YAML)) | nil                                    | ("7070", true) |
-  | config.Files(config.File("app.conf"))                          | an error naming "app.conf" (no decoder)   | ("", false)    |
+  | config.New(config.File("config.yaml"))                       | nil                                       | ("8080", true) |
+  | config.New(config.Dir("."))                                  | nil                                       | ("9090", true) |
+  | config.New(config.Dir("."), config.File("config.yaml"))      | an error matching config.ErrInvalidOption | ("", false)    |
+  | config.New(config.Profile("prod"), config.File("config.yaml")) | an error matching config.ErrInvalidOption | ("", false)  |
+  | config.New(config.ProfileEnv("MY_ENV"), config.File("config.yaml")) | an error matching config.ErrInvalidOption | ("", false) |
+  | config.New(config.File("app.conf"), config.Format(config.YAML)) | nil                                    | ("7070", true) |
+  | config.New(config.File("app.conf"))                          | a *config.FileError with File "app.conf", matching config.ErrUnknownFormat | ("", false) |
 ```
 
 <!-- cases: N/A 1 default: discovery is the default -->
 <!-- cases: 2 overrides: every row -->
 <!-- cases: N/A 3 zero values: covered by "Options are checked when Load runs" -->
 <!-- cases: 4 boundaries: File with and without Format -->
-<!-- cases: 5 errors: Dir with File; an unknown extension without Format -->
+<!-- cases: 5 errors: File with Dir, Profile or ProfileEnv (an explicit profile with explicit files is a mistake, unlike an inherited APP_PROFILE); an unknown extension without Format is ErrUnknownFormat -->
 <!-- cases: N/A 6 duplicate, 7 lifecycle, 8 concurrency, 9 panics: Load only -->
 <!-- cases: N/A 10 compatibility: new module -->
 
@@ -277,7 +281,7 @@ Relative directories and files, the discovery directories `.` and `./config`, an
 #### Scenario: A later working-directory change is not followed
 ```gherkin
 Given temp directories x/ with config.yaml (server.port: 1) and y/ with config.yaml (server.port: 2)
-And src := config.Files() loaded once after t.Chdir("x") (test not parallel)
+And src := config.New() loaded once after t.Chdir("x") (test not parallel)
 And the test then calls t.Chdir("y")
 When the consumer calls src.Load(ctx) again
 Then Lookup("server.port") returns ("1", true)
@@ -293,73 +297,84 @@ Then Lookup("server.port") returns ("1", true)
 <!-- cases: N/A 10 compatibility: new module -->
 
 ### Requirement: Formats are chosen by extension
-Files SHALL be parsed by extension, compared case-insensitively: YAML for `.yaml` and `.yml`, TOML for `.toml`, JSON for `.json`. `config.Codec(ext, d)`, with `ext` starting with `.` and `d` a `config.Decoder`, SHALL add or replace the decoder for exactly that extension (the last call wins) and SHALL join discovery and the one-format check. A file whose extension has no decoder SHALL fail `Load` naming the file.
+Files SHALL be parsed by extension, compared case-insensitively: YAML for `.yaml` and `.yml`, TOML for `.toml`, JSON for `.json`. `config.Decoder(ext, fn)`, with `fn` a `config.DecodeFunc` and `ext` case-insensitive with an optional leading `.`, SHALL add or replace the decoder for exactly that extension (the last call wins) and SHALL join discovery and the one-format check. A file whose extension has no decoder SHALL fail `Load` with a `*config.FileError` matching `config.ErrUnknownFormat`.
 
 #### Scenario: Built-in and custom decoders
 ```gherkin
 Given a temp working directory (t.Chdir, clearEnvPrefix(t, "APP_")) holding <file> with server.port: 8080 in that file's format
-When the consumer calls config.Files(<options>).Load(ctx)
+When the consumer calls config.New(<options>).Load(ctx)
 Then Load returns <error> and Lookup("server.port") returns <result>
 
 Examples:
-  | file        | options                                                                      | error                                                       | result               |
-  | app.yaml    | config.File("app.yaml")                                                      | nil                                                         | ("8080", true)       |
-  | app.YML     | config.File("app.YML")                                                       | nil                                                         | ("8080", true)       |
-  | app.json    | config.File("app.json")                                                      | nil                                                         | ("8080", true)       |
-  | app.hcl     | config.File("app.hcl")                                                       | an error naming "app.hcl"                                   | ("", false)          |
-  | app.hcl     | config.File("app.hcl"), config.Codec(".hcl", hclDecoder)                     | nil                                                         | ("8080", true)       |
-  | app.hcl     | config.File("app.hcl"), config.Codec(".hcl", failing), config.Codec(".hcl", hclDecoder) | nil                                              | ("8080", true)       |
-  | app.yaml    | config.File("app.yaml"), config.Codec(".yaml", upperDecoder)                 | nil                                                         | ("8080-upper", true) |
-  | app.yml     | config.File("app.yml"), config.Codec(".yaml", upperDecoder)                  | nil                                                         | ("8080", true)       |
-  | app.hcl     | config.File("app.hcl"), config.Codec(".hcl", failing)                        | a *config.ParseError for "app.hcl", line 0, "syntax error"  | ("", false)          |
-  | config.hcl  | config.Codec(".hcl", hclDecoder)                                             | nil                                                         | ("8080", true)       |
+  | file        | options                                                                           | error                                                                        | result               |
+  | app.yaml    | config.File("app.yaml")                                                           | nil                                                                          | ("8080", true)       |
+  | app.YML     | config.File("app.YML")                                                            | nil                                                                          | ("8080", true)       |
+  | app.json    | config.File("app.json")                                                           | nil                                                                          | ("8080", true)       |
+  | app.hcl     | config.File("app.hcl")                                                            | a *config.FileError with File "app.hcl", text "app.hcl: unknown format", matching config.ErrUnknownFormat | ("", false) |
+  | app.hcl     | config.File("app.hcl"), config.Decoder(".hcl", hclDecode)                         | nil                                                                          | ("8080", true)       |
+  | app.hcl     | config.File("app.hcl"), config.Decoder("HCL", hclDecode)                          | nil                                                                          | ("8080", true)       |
+  | app.hcl     | config.File("app.hcl"), config.Decoder(".hcl", failing), config.Decoder("hcl", hclDecode) | nil                                                                  | ("8080", true)       |
+  | app.yaml    | config.File("app.yaml"), config.Decoder(".yaml", upperDecode)                     | nil                                                                          | ("8080-upper", true) |
+  | app.yml     | config.File("app.yml"), config.Decoder(".yaml", upperDecode)                      | nil                                                                          | ("8080", true)       |
+  | app.hcl     | config.File("app.hcl"), config.Decoder(".hcl", failing)                           | a *config.ParseError with File "app.hcl", Line 0, Category config.ParseCategorySyntax | ("", false)  |
+  | app.hcl     | config.File("app.hcl"), config.Decoder(".hcl", failingAtLine7)                    | a *config.ParseError with File "app.hcl", Line 7, Category config.ParseCategorySyntax | ("", false)  |
+  | config.hcl  | config.Decoder(".hcl", hclDecode)                                                 | nil                                                                          | ("8080", true)       |
+  | config.hcl  | config.Decoder(".hcl", hclDecode), config.Format("hcl")                           | nil                                                                          | ("8080", true)       |
 ```
 
+`failing` returns errors.New("hcl: bad token near s3cret"); `failingAtLine7` returns &config.ParseError{Line: 7, Category: config.ParseCategorySyntax}. Neither error text holds "s3cret".
+
 <!-- cases: 1 default: built-in rows -->
-<!-- cases: 2 overrides: Codec add, replace, discovery rows -->
-<!-- cases: 3 zero values: Codec with a nil decoder or an ext without "." is "Options are checked when Load runs" -->
-<!-- cases: 4 boundaries: upper-case extension; .yaml codec does not cover .yml -->
-<!-- cases: 5 errors: unknown extension; a decoder error becomes a *config.ParseError whose text never holds the decoder's message -->
-<!-- cases: 6 duplicate: the last Codec for one extension wins -->
+<!-- cases: 2 overrides: Decoder add, replace, discovery and Format-by-registered-name rows -->
+<!-- cases: 3 zero values: Decoder with a nil func, "" or "." is "Options are checked when Load runs" -->
+<!-- cases: 4 boundaries: upper-case extension; ext with and without "."; a .yaml decoder does not cover .yml -->
+<!-- cases: 5 errors: unknown extension is a *FileError matching ErrUnknownFormat; a decoder's own error becomes a *config.ParseError at line 0 whose text never holds the decoder's message; a decoder's own *config.ParseError keeps its line and category, and the module fills in File -->
+<!-- cases: 6 duplicate: the last Decoder for one extension wins, whatever the spelling of ext -->
 <!-- cases: N/A 7 lifecycle, 8 concurrency: Load only -->
-<!-- cases: N/A 9 panics: a panicking decoder is recovered by the root as ErrConfigLoadFailed (config-sources) -->
+<!-- cases: 9 panics: a panicking DecodeFunc is "Panics in user code become errors" -->
 <!-- cases: N/A 10 compatibility: new module -->
 
 ### Requirement: Decoder values are rendered by Go type
-`config.Decoder` is `interface{ Decode(data []byte) (map[string]any, error) }`. Its result SHALL flatten like a file: nested `map[string]any` and `[]any`, `nil` absent. Scalars SHALL render as: integers in decimal, `float64` with `strconv.FormatFloat(f, 'g', -1, 64)`, `bool` as `true`/`false`, `string` as is, `time.Time` in RFC 3339, `json.Number` literally. A `map[any]any` SHALL fail with category "not a mapping"; any other type with "unsupported value".
+A `config.DecodeFunc` result SHALL flatten like a file. Accepted are `map[string]any`, `map[string]string`, `[]any`, `[]string`, `[]map[string]any`, every int, uint and float width, `bool`, `string`, `time.Time` and `json.Number`; `nil` is absent. Integers render in decimal, floats with `strconv.FormatFloat(f, 'g', -1, bits)`, `time.Time` as `time.RFC3339Nano`, `json.Number` literally. A `map[any]any` SHALL fail "not a mapping"; any other type "unsupported value".
 
 #### Scenario: Rendering a decoder's values
 ```gherkin
-Given a decoder for ".x" whose Decode returns map[string]any{"v": <value>}
+Given a DecodeFunc for ".x" that returns map[string]any{"v": <value>}
 And a temp directory holding a.x
-When the consumer calls config.Files(config.File("a.x"), config.Codec(".x", decoder)).Load(ctx)
-Then Load returns <error> and Lookup("v") returns <result>
+When the consumer calls config.New(config.File("a.x"), config.Decoder(".x", decode)).Load(ctx)
+Then Load returns <error> and Lookup("<key>") returns <result>
 
 Examples:
-  | value                                         | error                                             | result                          |
-  | int64(-42)                                    | nil                                               | ("-42", true)                   |
-  | uint64(18446744073709551615)                  | nil                                               | ("18446744073709551615", true)  |
-  | 0.5                                           | nil                                               | ("0.5", true)                   |
-  | true                                          | nil                                               | ("true", true)                  |
-  | time.Date(1979, 5, 27, 7, 32, 0, 0, time.UTC) | nil                                               | ("1979-05-27T07:32:00Z", true)  |
-  | json.Number("1e3")                            | nil                                               | ("1e3", true)                   |
-  | nil                                           | nil                                               | ("", false)                     |
-  | map[any]any{"k": 1}                           | a *config.ParseError for "a.x", "not a mapping"   | ("", false)                     |
-  | struct{}{}                                    | a *config.ParseError for "a.x", "unsupported value" | ("", false)                   |
+  | value                                                 | key  | error                                                                 | result                                  |
+  | int64(-42)                                            | v    | nil                                                                   | ("-42", true)                           |
+  | int8(-8)                                              | v    | nil                                                                   | ("-8", true)                            |
+  | uint64(18446744073709551615)                          | v    | nil                                                                   | ("18446744073709551615", true)          |
+  | 0.5                                                   | v    | nil                                                                   | ("0.5", true)                           |
+  | float32(0.1)                                          | v    | nil                                                                   | ("0.1", true)                           |
+  | true                                                  | v    | nil                                                                   | ("true", true)                          |
+  | time.Date(1979, 5, 27, 7, 32, 0, 0, time.UTC)         | v    | nil                                                                   | ("1979-05-27T07:32:00Z", true)          |
+  | time.Date(1979, 5, 27, 7, 32, 0, 999999000, time.UTC) | v    | nil                                                                   | ("1979-05-27T07:32:00.999999Z", true)   |
+  | json.Number("1e3")                                    | v    | nil                                                                   | ("1e3", true)                           |
+  | []string{"a", "b"}                                    | v[1] | nil                                                                   | ("b", true)                             |
+  | map[string]string{"k": "x"}                           | v.k  | nil                                                                   | ("x", true)                             |
+  | []map[string]any{{"k": 1}}                            | v[0].k | nil                                                                 | ("1", true)                             |
+  | nil                                                   | v    | nil                                                                   | ("", false)                             |
+  | map[any]any{"k": 1}                                   | v    | a *config.ParseError for "a.x", Category config.ParseCategoryNotMapping | ("", false)                           |
+  | struct{}{}                                            | v    | a *config.ParseError for "a.x", Category config.ParseCategoryUnsupportedValue | ("", false)                     |
 ```
 
-<!-- cases: 1 default: every built-in Go type -->
+<!-- cases: 1 default: every accepted Go type -->
 <!-- cases: N/A 2 overrides: rendering is fixed so binding is format-independent -->
 <!-- cases: 3 zero values: nil is absent -->
-<!-- cases: 4 boundaries: max uint64, negative int -->
+<!-- cases: 4 boundaries: max uint64, negative int, a narrow int and float32 (bits 32, so 0.1 stays "0.1"), fractional seconds -->
 <!-- cases: 5 errors: map[any]any and unsupported types -->
 <!-- cases: N/A 6 duplicate: a Go map has unique keys -->
 <!-- cases: N/A 7 lifecycle, 8 concurrency: Load only -->
-<!-- cases: N/A 9 panics: see "Formats are chosen by extension" -->
+<!-- cases: N/A 9 panics: see "Panics in user code become errors" -->
 <!-- cases: N/A 10 compatibility: new module -->
 
 ### Requirement: File keys become canonical keys
-A whole key written as `"[...]"` SHALL be kept verbatim as a map key, checked before splitting. Other keys SHALL split on `.`; `/` SHALL mark an extension instance and is allowed only in the first segment; each segment SHALL be normalized to lowercase kebab by the field-naming rule (config-binding). Nested maps SHALL flatten to dotted keys, sequences to `[i]` (nested to `[i][j]`), an all-digit key to an index, and `null` SHALL mean absent.
+A whole key `"[...]"` holding printable ASCII other than `[`, `]` and whitespace SHALL be kept verbatim as a map key. Other keys SHALL split on `.`; `/` marks an instance and only in the first segment; each segment SHALL be normalized to lowercase kebab (config-binding), map keys included (`userId` becomes `user-id`), and SHALL then match `[a-z0-9]+(-[a-z0-9]+)*`. Maps SHALL flatten to dotted keys, sequences to `[i]`, an all-digit key to an index, and `null` SHALL mean absent.
 
 #### Scenario: Flattening and normalization
 ```gherkin
@@ -374,6 +389,8 @@ Given config.yaml holding:
       "[team/core]": payments
       "[X-Request-ID]": abc
       "[App.Kartala/Tier]": web
+      "[userId]": u1
+      userId: u2
       tier: web
     gone: null
     empty-list: []
@@ -381,7 +398,7 @@ Given config.yaml holding:
   redis/queue:
     addr: q:6379
 And clearEnvPrefix(t, "APP_")
-When the consumer calls config.Files(config.File("config.yaml")).Load(ctx)
+When the consumer calls config.New(config.File("config.yaml")).Load(ctx)
 Then Lookup("<key>") returns <result>
 
 Examples:
@@ -397,12 +414,16 @@ Examples:
   | server.labels[X-Request-ID]      | ("abc", true)                |
   | server.labels[App.Kartala/Tier]  | ("web", true)                |
   | server.labels.tier               | ("web", true)                |
+  | server.labels[userId]            | ("u1", true)                 |
+  | server.labels.user-id            | ("u2", true)                 |
+  | server.labels.userid             | ("u2", true)                 |
   | server.gone                      | ("", false)                  |
   | server.empty-list[0]             | ("", false)                  |
   | redis/queue.addr                 | ("q:6379", true)             |
 ```
 
-<!-- cases: N/A 1 default, 2 overrides: normalization is not configurable; a tag on the target struct renames a field at binding -->
+<!-- cases: 1 default: map keys from files are kebab-normalized like field keys (documented: bracket a map key to keep it verbatim) -->
+<!-- cases: 2 overrides: a bracketed key keeps its spelling; normalization itself is not configurable, and a tag on the target struct renames a field at binding -->
 <!-- cases: 3 zero values: null, an empty sequence and an empty map produce no keys -->
 <!-- cases: 4 boundaries: index 0, past the end, nested sequence, all-digit key -->
 <!-- cases: 5 errors: keys that cannot be normalized are "Invalid file keys fail the load" -->
@@ -411,41 +432,50 @@ Examples:
 <!-- cases: N/A 10 compatibility: new module -->
 
 ### Requirement: Invalid file keys fail the load
-A file key that cannot become a canonical key SHALL fail `Load` with a `*config.ParseError` of category "invalid key" naming the file and the line: an empty key, a key with whitespace or non-ASCII letters, a leading `-`, a `/` outside the first segment, a null key, or an index suffix outside brackets.
+A file key that cannot become a canonical key SHALL fail `Load` with a `*config.ParseError` of category "invalid key" naming the file and the line: an empty or null key, a non-scalar key, whitespace or non-ASCII, a `/` outside the first segment, an index suffix outside brackets, an empty or invalid bracket, a TOML quoted key holding `.`, or a segment that does not match `[a-z0-9]+(-[a-z0-9]+)*` after normalization.
 
 #### Scenario: Keys that cannot be normalized
 ```gherkin
-Given a temp directory holding a.yaml whose line <line> is <content>
-When the consumer calls config.Files(config.File("a.yaml")).Load(ctx)
-Then Load returns a *config.ParseError with File "a.yaml", Line <line> and Category "invalid key"
+Given a temp directory holding <file> whose line <line> is <content>
+When the consumer calls config.New(config.File("<file>")).Load(ctx)
+Then Load returns a *config.ParseError with File "<file>", Line <line> and Category config.ParseCategoryInvalidKey
 
 Examples:
-  | line | content              |
-  | 1    | "": 1                |
-  | 1    | "bad key": 1         |
-  | 1    | größe: 1             |
-  | 1    | -a: 1                |
-  | 2    | "server:\n  x/y: 1"  |
-  | 1    | ~: 1                 |
-  | 1    | "x[0]": 1            |
+  | file   | line | content                  |
+  | a.yaml | 1    | "": 1                    |
+  | a.yaml | 1    | "bad key": 1             |
+  | a.yaml | 1    | größe: 1                 |
+  | a.yaml | 1    | -a: 1                    |
+  | a.yaml | 1    | a-: 1                    |
+  | a.yaml | 1    | a--b: 1                  |
+  | a.yaml | 1    | a@b: 1                   |
+  | a.yaml | 1    | ___: 1                   |
+  | a.yaml | 2    | "server:\n  x/y: 1"      |
+  | a.yaml | 1    | ~: 1                     |
+  | a.yaml | 1    | "x[0]": 1                |
+  | a.yaml | 1    | "[]": 1                  |
+  | a.yaml | 1    | "[a b]": 1               |
+  | a.yaml | 1    | "[a[b]": 1               |
+  | a.yaml | 1    | ? [a, b]\n: 1            |
+  | a.toml | 1    | "a.b" = 1                |
 ```
 
 <!-- cases: N/A 1 default, 2 overrides: key rules are fixed -->
-<!-- cases: 3 zero values: empty and null keys -->
-<!-- cases: 4 boundaries: "/" in the first segment is an instance (previous requirement) versus a later segment -->
+<!-- cases: 3 zero values: empty and null keys; an empty bracket -->
+<!-- cases: 4 boundaries: "/" in the first segment is an instance (previous requirement) versus a later segment; a TOML quoted "a.b" is one key and is refused, while YAML and JSON "a.b" split like a dotted key; a trailing "-" and "--"; a segment of only "_" normalizes to nothing -->
 <!-- cases: 5 errors: every row; errors.As reaches *config.ParseError -->
 <!-- cases: N/A 6 duplicate: see "Invalid file shapes fail the load" -->
 <!-- cases: N/A 7 lifecycle, 8 concurrency: Load only -->
-<!-- cases: 9 panics: FuzzFiles_YAML seeds include every row -->
+<!-- cases: 9 panics: FuzzFiles_YAML, FuzzFiles_TOML and FuzzFiles_JSON seeds include every row -->
 <!-- cases: N/A 10 compatibility: new module -->
 
 ### Requirement: Invalid file shapes fail the load
-`Load` SHALL fail with a `*config.ParseError` naming the file, the line where known and a `config.ParseCategory` when a file holds: two keys equal in uniform form, or one key twice in any format ("duplicate key"); a second YAML document that is not empty ("multiple documents"); a top level that is a list or scalar ("not a mapping"); aliases that expand past yaml.v3's limits or contain themselves ("excessive aliasing"); or trailing JSON data ("syntax error").
+`Load` SHALL fail with a `*config.ParseError` naming the file, the line where known and a `config.ParseCategory` when a file holds: two keys equal in uniform form, or one key twice in any format ("duplicate key"); a YAML document after the first, unless it is the last and empty ("multiple documents"); a list or scalar top level ("not a mapping"); aliases or `<<` merges that contain themselves or expand past the node budget ("excessive aliasing"); or trailing JSON data ("syntax error").
 
 #### Scenario: Shapes that fail
 ```gherkin
 Given a temp directory holding <file> with <content>
-When the consumer calls config.Files(config.File("<file>")).Load(ctx)
+When the consumer calls config.New(config.File("<file>")).Load(ctx)
 Then Load returns a *config.ParseError with File "<file>", Line <line> and Category "<category>"
 
 Examples:
@@ -457,20 +487,23 @@ Examples:
   | a.json | "{\"port\": 1,\n \"port\": 2}"                | 2    | duplicate key      |
   | a.yaml | "a: 1\n---\nb: 2"                             | 3    | multiple documents |
   | a.yaml | "a: 1\n---\n~"                                | 3    | multiple documents |
+  | a.yaml | "a: 1\n---\n---\n"                             | 3    | multiple documents |
   | a.yaml | "- 1\n- 2"                                    | 1    | not a mapping      |
   | a.json | [1, 2]                                        | 1    | not a mapping      |
   | a.yaml | a "billion laughs" alias bomb of 9 levels      | 0    | excessive aliasing |
   | a.yaml | a: &x [*x]                                    | 0    | excessive aliasing |
+  | a.yaml | a "merge bomb": 9 levels of 10 `<<` merges each | 0    | excessive aliasing |
+  | a.yaml | a: &x {<<: *x}                                | 0    | excessive aliasing |
   | a.json | {"a": 1} {"b": 2}                             | 1    | syntax error       |
 ```
 
 <!-- cases: N/A 1 default, 2 overrides: shape rules are fixed -->
 <!-- cases: 3 zero values: empty documents are "Empty files and documents load as no keys" -->
-<!-- cases: 4 boundaries: line 0 when the parser reports no position; "---" followed by "~" is not empty -->
+<!-- cases: 4 boundaries: line 0 when the parser reports no position; "---" followed by "~" is not empty; only the last document may be an empty "---", so two trailing "---" fail -->
 <!-- cases: 5 errors: every row; errors.As reaches *config.ParseError -->
-<!-- cases: 6 duplicate: exact and uniform-form duplicates in every format; the error names neither value. TOML duplicate lines need github.com/pelletier/go-toml/v2 v2.4.0 or later -->
+<!-- cases: 6 duplicate: exact and uniform-form duplicates in every format; the error names neither value. TOML duplicate lines need github.com/pelletier/go-toml/v2 v2.4.3 or later -->
 <!-- cases: N/A 7 lifecycle, 8 concurrency: Load only -->
-<!-- cases: 9 panics: an alias cycle never overflows the stack; FuzzFiles_YAML seeds include the bomb and the self-alias -->
+<!-- cases: 9 panics: an alias or merge cycle never overflows the stack; the node budget counts alias and merge expansion, so a bomb fails before it allocates; FuzzFiles_YAML seeds include both bombs and both self-references -->
 <!-- cases: N/A 10 compatibility: new module -->
 
 ### Requirement: Empty files and documents load as no keys
@@ -479,7 +512,7 @@ A file that is empty or holds only whitespace or comments, a top-level `null` in
 #### Scenario: Empty content
 ```gherkin
 Given a temp directory holding <file> with <content>
-When the consumer calls config.Files(config.File("<file>")).Load(ctx)
+When the consumer calls config.New(config.File("<file>")).Load(ctx)
 Then Load returns nil and Lookup("a") returns <result>
 
 Examples:
@@ -503,39 +536,64 @@ Examples:
 <!-- cases: N/A 10 compatibility: new module -->
 
 ### Requirement: Hostile files are bounded
-A file SHALL fail `Load` with a `*config.ParseError` when a flattened key would have more than 64 segments ("too deep", with the line where known) or when it yields more than 100,000 keys ("too many keys", line 0). Neither case SHALL exhaust memory or stack.
+A file SHALL fail `Load` with a `*config.ParseError` when a key would have more than 64 segments ("too deep") or the file yields more than `config.MaxKeys(n)` keys, `DefaultMaxKeys` (10,000) by default ("too many keys", line 0). Both caps SHALL be enforced before the content is converted to values, so time and memory grow linearly with file size. Nesting beyond a parser's own limit SHALL fail "syntax error". No input SHALL exhaust the stack.
 
-#### Scenario: Depth and key caps
+#### Scenario: Depth cap per format
 ```gherkin
-Given a temp directory holding <file> generated as <content>
-When the consumer calls config.Files(config.File("<file>")).Load(ctx)
+Given a temp directory holding <file> generated as <content>, under 1 MiB
+When the consumer calls config.New(config.File("<file>")).Load(ctx)
 Then Load returns <result>
 
 Examples:
-  | file   | content                                       | result                                               |
-  | a.toml | one dotted key of 64 segments = 1             | nil                                                  |
-  | a.toml | one dotted key of 65 segments = 1             | a *config.ParseError, Line 1, Category "too deep"    |
-  | a.yaml | 65 nested mappings                            | a *config.ParseError, Category "too deep"            |
-  | a.toml | a table nested 1,000,000 levels (2 MB)        | a *config.ParseError, Category "too deep"            |
-  | a.yaml | 100,000 keys k0..k99999                       | nil                                                  |
-  | a.yaml | 100,001 keys                                  | a *config.ParseError, Line 0, Category "too many keys" |
+  | file   | content                                                   | result                                                         |
+  | a.toml | one dotted key of 64 segments = 1                         | nil                                                            |
+  | a.toml | one dotted key of 65 segments = 1                         | a *config.ParseError, Line 1, Category "too deep"              |
+  | a.toml | inline tables nested to give one key of 65 segments       | a *config.ParseError, Line 1, Category "too deep"              |
+  | a.toml | a = followed by 500,000 "[" (beyond go-toml's limit)      | a *config.ParseError, Category "syntax error"                  |
+  | a.yaml | nested mappings giving one key of 64 segments             | nil                                                            |
+  | a.yaml | nested mappings giving one key of 65 segments             | a *config.ParseError, Category "too deep"                      |
+  | a.yaml | a: followed by 20,000 nested flow sequences (beyond yaml.v3's limit) | a *config.ParseError, Category "syntax error"       |
+  | a.json | nested objects on one line giving one key of 64 segments  | nil                                                            |
+  | a.json | nested objects on one line giving one key of 65 segments  | a *config.ParseError, Line 1, Category "too deep"              |
+  | a.json | {"a": followed by 20,000 "["                              | a *config.ParseError, Line 1, Category "too deep"              |
 ```
 
-<!-- cases: N/A 1 default, 2 overrides: the caps are fixed safety limits; MaxFileSize bounds bytes -->
-<!-- cases: N/A 3 zero values: covered by "Empty files and documents load as no keys" -->
-<!-- cases: 4 boundaries: exactly at and one past each cap -->
-<!-- cases: 5 errors: too deep, too many keys -->
-<!-- cases: N/A 6 duplicate, 7 lifecycle, 8 concurrency: Load only -->
-<!-- cases: 9 panics: a deep table never overflows the stack (flattening is iterative); FuzzFiles_TOML seeds include it -->
+#### Scenario: Key cap
+```gherkin
+Given a temp directory holding <file> generated as <content>
+When the consumer calls config.New(config.File("<file>")<extra>).Load(ctx)
+Then Load returns <result>
+
+Examples:
+  | file   | content                                          | extra                   | result                                                      |
+  | a.yaml | 10,000 keys k0..k9999                            |                         | nil                                                         |
+  | a.yaml | 10,001 keys                                      |                         | a *config.ParseError, Line 0, Category "too many keys"      |
+  | a.yaml | 10,001 keys                                      | , config.MaxKeys(0)     | a *config.ParseError, Line 0, Category "too many keys"      |
+  | a.yaml | 10,001 keys                                      | , config.MaxKeys(20000) | nil                                                         |
+  | a.yaml | 3 keys                                           | , config.MaxKeys(2)     | a *config.ParseError, Line 0, Category "too many keys"      |
+  | a.toml | one inline table holding 10,001 keys             |                         | a *config.ParseError, Line 0, Category "too many keys"      |
+  | a.toml | one array of 10,001 tables of one key each       |                         | a *config.ParseError, Line 0, Category "too many keys"      |
+  | a.json | 10,001 keys                                      |                         | a *config.ParseError, Line 0, Category "too many keys"      |
+  | a.yaml | 1 MiB of distinct keys "kNNNNN: 1"               |                         | a *config.ParseError, Line 0, Category "too many keys"      |
+```
+
+<!-- cases: 1 default: DefaultMaxKeys 10,000 and depth 64 -->
+<!-- cases: 2 overrides: MaxKeys raises and lowers the key cap; the depth of 64 is fixed because it bounds key length and recursion -->
+<!-- cases: 3 zero values: MaxKeys(0) means the default; a negative MaxKeys is "Options are checked when Load runs"; empty content is "Empty files and documents load as no keys" -->
+<!-- cases: 4 boundaries: exactly at and one past each cap in each format; nesting rows per format: JSON is checked while decoding and reports "too deep" at any nesting past 64; TOML (pre-pass) and YAML (node walk) report "too deep" under the parser's own nesting limit and "syntax error" beyond it -->
+<!-- cases: 5 errors: too deep, too many keys, syntax error past a parser limit -->
+<!-- cases: N/A 6 duplicate: duplicates are "Invalid file shapes fail the load" -->
+<!-- cases: N/A 7 lifecycle, 8 concurrency: Load only -->
+<!-- cases: 9 panics: no row overflows the stack; the TOML rows need go-toml v2.4.3 or later (v2.4.2 overflows on a run of "["); FuzzFiles_TOML, FuzzFiles_YAML and FuzzFiles_JSON seed every row; BenchmarkLoad_Hostile shows time linear in size (the 1 MiB distinct-keys row fails in well under a second) -->
 <!-- cases: N/A 10 compatibility: new module -->
 
 ### Requirement: Scalars become strings the same way per format
-Scalars SHALL be stored as strings: YAML as the scalar node's literal text; JSON numbers as their literal text; TOML integers in decimal, floats with `strconv.FormatFloat(f, 'g', -1, 64)`, offset datetimes in RFC 3339, and local dates, times and datetimes in TOML's own text; JSON and TOML booleans as `true` or `false`. YAML keeps `True`, `yes` and `1.0` as written; the binder parses each string.
+Scalars SHALL be stored as strings: YAML as the scalar node's literal text; JSON numbers as their literal text; TOML integers in decimal, floats with `strconv.FormatFloat(f, 'g', -1, 64)`, offset datetimes in RFC 3339 with nanoseconds (`time.RFC3339Nano`), and local dates, times and datetimes in TOML's own text; JSON and TOML booleans as `true` or `false`. YAML keeps `True`, `yes` and `1.0` as written; the binder parses each string.
 
 #### Scenario: Rendering by format
 ```gherkin
 Given a temp directory holding <file> with <content>
-When the consumer calls config.Files(config.File("<file>")).Load(ctx)
+When the consumer calls config.New(config.File("<file>")).Load(ctx)
 Then Lookup("v") returns ("<value>", true)
 
 Examples:
@@ -547,6 +605,7 @@ Examples:
   | a.toml | v = 1.0                     | 1                    |
   | a.toml | v = 0.5                     | 0.5                  |
   | a.toml | v = 1979-05-27T07:32:00Z    | 1979-05-27T07:32:00Z |
+  | a.toml | v = 1979-05-27T00:32:00.999999-07:00 | 1979-05-27T00:32:00.999999-07:00 |
   | a.toml | v = 1979-05-27              | 1979-05-27           |
   | a.toml | v = 07:32:00                | 07:32:00             |
   | a.toml | v = 1979-05-27T07:32:00     | 1979-05-27T07:32:00  |
@@ -560,13 +619,13 @@ Examples:
 
 <!-- cases: N/A 1 default, 2 overrides: rendering is fixed; the binder parses strings, so an int field rejects YAML "1.0" but accepts TOML "1" (documented: TOML hands floats over without their text) -->
 <!-- cases: 3 zero values: an empty string stays "" and present -->
-<!-- cases: 4 boundaries: integer past int64, exponent, hex, local date/time -->
+<!-- cases: 4 boundaries: integer past int64, exponent, hex, local date/time, fractional seconds with an offset -->
 <!-- cases: N/A 5 errors: rendering cannot fail -->
 <!-- cases: N/A 6 duplicate, 7 lifecycle, 8 concurrency, 9 panics: Load only -->
 <!-- cases: N/A 10 compatibility: new module -->
 
 ### Requirement: YAML anchors, aliases and merge keys
-YAML SHALL first be decoded into `any`, keeping yaml.v3's alias limits, and then walked as a node tree for literal text and lines: an alias SHALL take its anchor's value and a `<<` merge key SHALL merge the referenced mappings under the keys written beside it.
+YAML SHALL be parsed into a node tree and walked once, never decoded into Go values first: an alias SHALL take its anchor's value and a `<<` merge key SHALL merge the referenced mappings under the keys written beside it. The walk SHALL count every node an alias or merge expands against its node budget and detect cycles.
 
 #### Scenario: Aliases and merges
 ```gherkin
@@ -577,7 +636,7 @@ Given a.yaml holding:
     <<: *b
     y: 3
   copy: *p
-When the consumer calls config.Files(config.File("a.yaml")).Load(ctx)
+When the consumer calls config.New(config.File("a.yaml")).Load(ctx)
 Then Lookup("<key>") returns <result>
 
 Examples:
@@ -592,7 +651,7 @@ Examples:
 <!-- cases: N/A 2 overrides: fixed -->
 <!-- cases: N/A 3 zero values: an alias of null is absent like null -->
 <!-- cases: 4 boundaries: a key beside a merge wins over the merged one -->
-<!-- cases: N/A 5 errors: alias bombs and cycles are "Invalid file shapes fail the load" -->
+<!-- cases: N/A 5 errors: alias and merge bombs and cycles are "Invalid file shapes fail the load" -->
 <!-- cases: N/A 6 duplicate: merge precedence is the duplicate rule here -->
 <!-- cases: N/A 7 lifecycle, 8 concurrency, 9 panics: Load only -->
 <!-- cases: N/A 10 compatibility: new module -->
@@ -605,7 +664,7 @@ For a key held by several layers, `Lookup` SHALL return the highest layer's valu
 Given config.yaml holding server.port: 8080, config.prod.yaml holding server.port: 9090, APP_PROFILE=prod (t.Chdir, clearEnvPrefix(t, "APP_"), t.Setenv)
 And <dotenv>
 And <env>
-When the consumer calls config.Files().Load(ctx)
+When the consumer calls config.New().Load(ctx)
 Then Lookup("server.port") returns ("<value>", true)
 
 Examples:
@@ -621,7 +680,7 @@ Examples:
 ```gherkin
 Given config.yaml holding <file content> (t.Chdir, clearEnvPrefix(t, "APP_"))
 And <variable> is set (t.Setenv)
-When the consumer calls config.Files().Load(ctx)
+When the consumer calls config.New().Load(ctx)
 Then Lookup("<key>") returns <result>
 
 Examples:
@@ -652,7 +711,7 @@ A list key SHALL take all its entries from the highest layer that holds the key 
 ```gherkin
 Given a temp working directory (t.Chdir, clearEnvPrefix(t, "APP_")) with config.yaml holding server.hosts: [a, b, c]
 And <higher>
-And src := config.Files() after Load(ctx) returned nil
+And src := config.New() after Load(ctx) returned nil
 When the consumer calls src.Keys("server.hosts")
 Then the result is <keys> and src.Lookup("<lookup>") returns <value>
 
@@ -674,7 +733,7 @@ Examples:
 <!-- cases: N/A 10 compatibility: new module -->
 
 ### Requirement: Env prefix
-The env layer SHALL read variables under a prefix, `APP_` by default. `config.EnvPrefix(p)` SHALL turn `-` and `.` into `_`, uppercase the result and append `_` when missing; `""` SHALL turn the prefix off. A prefix still holding characters outside `[A-Z0-9_]` SHALL fail `Load` matching `config.ErrInvalidOption`. `doger.EnvPropertySource` normalizes the same way.
+The env layer SHALL read variables under a prefix, `APP_` by default. `config.EnvPrefix(p)` SHALL require `p` to be non-empty and in `[A-Za-z0-9_.-]`, checked on the raw input, else fail `Load` matching `config.ErrInvalidOption`; it SHALL then turn `-` and `.` into `_`, uppercase and append `_` when missing. Unprefixed names use `config.EnvMapper`; leaving `LayerEnv` out of `LayerOrder` turns env off. `doger.EnvPropertySource` checks a non-empty prefix the same way.
 
 #### Scenario: Prefix forms
 ```gherkin
@@ -683,35 +742,36 @@ When the consumer calls <source>.Load(ctx)
 Then Load returns <error> and Lookup("logger.log-file") returns <result>
 
 Examples:
-  | source                                   | variable              | error                                     | result      |
-  | config.Files()                           | APP_LOGGER_LOGFILE    | nil                                       | ("x", true) |
-  | config.Files(config.EnvPrefix("MYSVC"))  | MYSVC_LOGGER_LOGFILE  | nil                                       | ("x", true) |
-  | config.Files(config.EnvPrefix("MYSVC_")) | MYSVC_LOGGER_LOGFILE  | nil                                       | ("x", true) |
-  | config.Files(config.EnvPrefix("mysvc"))  | MYSVC_LOGGER_LOGFILE  | nil                                       | ("x", true) |
-  | config.Files(config.EnvPrefix("my-svc")) | MY_SVC_LOGGER_LOGFILE | nil                                       | ("x", true) |
-  | config.Files(config.EnvPrefix("my.svc")) | MY_SVC_LOGGER_LOGFILE | nil                                       | ("x", true) |
-  | config.Files(config.EnvPrefix(""))       | LOGGER_LOGFILE        | nil                                       | ("x", true) |
-  | config.Files(config.EnvPrefix("MYSVC"))  | APP_LOGGER_LOGFILE    | nil                                       | ("", false) |
-  | config.Files(config.EnvPrefix("my svc")) | MY_SVC_LOGGER_LOGFILE | an error matching config.ErrInvalidOption | ("", false) |
-  | config.Files(config.EnvPrefix("møsvc"))  | MØSVC_LOGGER_LOGFILE  | an error matching config.ErrInvalidOption | ("", false) |
+  | source                                   | variable              | error                                                              | result      |
+  | config.New()                             | APP_LOGGER_LOGFILE    | nil                                                                | ("x", true) |
+  | config.New(config.EnvPrefix("MYSVC"))    | MYSVC_LOGGER_LOGFILE  | nil                                                                | ("x", true) |
+  | config.New(config.EnvPrefix("MYSVC_"))   | MYSVC_LOGGER_LOGFILE  | nil                                                                | ("x", true) |
+  | config.New(config.EnvPrefix("mysvc"))    | MYSVC_LOGGER_LOGFILE  | nil                                                                | ("x", true) |
+  | config.New(config.EnvPrefix("my-svc"))   | MY_SVC_LOGGER_LOGFILE | nil                                                                | ("x", true) |
+  | config.New(config.EnvPrefix("my.svc"))   | MY_SVC_LOGGER_LOGFILE | nil                                                                | ("x", true) |
+  | config.New(config.EnvPrefix("MYSVC"))    | APP_LOGGER_LOGFILE    | nil                                                                | ("", false) |
+  | config.New(config.EnvPrefix(""))         | LOGGER_LOGFILE        | a *config.OptionError with Option "EnvPrefix", matching config.ErrInvalidOption | ("", false) |
+  | config.New(config.EnvPrefix("my svc"))   | MY_SVC_LOGGER_LOGFILE | a *config.OptionError with Option "EnvPrefix", matching config.ErrInvalidOption | ("", false) |
+  | config.New(config.EnvPrefix("møsvc"))    | MØSVC_LOGGER_LOGFILE  | a *config.OptionError with Option "EnvPrefix", matching config.ErrInvalidOption | ("", false) |
+  | config.New(config.EnvPrefix("ſvc"))      | SVC_LOGGER_LOGFILE    | a *config.OptionError with Option "EnvPrefix", matching config.ErrInvalidOption | ("", false) |
 ```
 
 <!-- cases: 1 default: APP_ row -->
-<!-- cases: 2 overrides: every EnvPrefix row -->
-<!-- cases: 3 zero values: "" turns the prefix off; then every process variable that maps back to a key is a key (documented: PATH and HOME become keys) -->
-<!-- cases: 4 boundaries: with and without trailing "_"; lower-case input; "-" and "." normalized -->
-<!-- cases: 5 errors: prefixes with a space or non-ASCII letter match ErrInvalidOption -->
+<!-- cases: 2 overrides: every valid EnvPrefix row; EnvMapper reads unprefixed names ("A custom env mapper"); LayerOrder without LayerEnv turns env off ("Added layers and their order") -->
+<!-- cases: 3 zero values: EnvPrefix("") is an option error, because an empty prefix would enumerate PATH, HOME and every secret in the environment -->
+<!-- cases: 4 boundaries: with and without trailing "_"; lower-case input; "-" and "." normalized; "ſ" (U+017F) would uppercase to ASCII "S", so the ASCII check runs on the raw input before uppercasing -->
+<!-- cases: 5 errors: empty, a space, a non-ASCII letter and U+017F match ErrInvalidOption through *config.OptionError -->
 <!-- cases: N/A 6 duplicate: the last EnvPrefix wins, as every scalar option -->
 <!-- cases: N/A 7 lifecycle, 8 concurrency, 9 panics: Load only -->
-<!-- cases: N/A 10 compatibility: new module -->
+<!-- cases: N/A 10 compatibility: new module; the root's doger.EnvPropertySource("") keeps its meaning (it looks keys up one by one and never enumerates; its godoc states the difference) -->
 
 ### Requirement: Env names follow Spring's mapping
-A key SHALL map to a variable by uppercasing, `.` to `_`, removing `-`, `/` to `__` and `[i]` to `_i`; a map key `[k]` SHALL map to `_K` only when `k` matches `[a-z0-9]+`, and other map keys are not addressable from env. Variables SHALL map back with `__` as the instance separator and an all-digit segment as an index. The table SHALL be the root's golden file `testdata/envmapping.txt`.
+A key SHALL map to a variable by uppercasing, `.` to `_`, removing `-`, `/` to `__` and `[i]` to `_i`; a map key `[k]` SHALL map to `_K` only when `k` matches `[a-z0-9]+`, and other map keys are not addressable from env. Variables SHALL map back with `__` as the instance separator and an all-digit segment as an index. The mapping SHALL be identical in both modules.
 
 #### Scenario: Key to variable
 ```gherkin
 Given clearEnvPrefix(t, "APP_") and <variable>=v is set (t.Setenv)
-When the consumer calls config.Files().Load(ctx)
+When the consumer calls config.New().Load(ctx)
 Then Lookup("<key>") returns ("v", true)
 
 Examples:
@@ -727,7 +787,7 @@ Examples:
 #### Scenario: Variables mapped back to keys
 ```gherkin
 Given only these variables start with "APP_": <variables> (clearEnvPrefix(t, "APP_"), then t.Setenv)
-And src := config.Files() after Load(ctx) returned nil
+And src := config.New() after Load(ctx) returned nil
 When the consumer calls src.Keys("")
 Then the result is <keys>
 
@@ -739,7 +799,7 @@ Examples:
   | APP__X=1, app_lower=1, APP_A___B=1          | []                                     |
 ```
 
-<!-- cases: 1 default: Spring mapping rows -->
+<!-- cases: 1 default: Spring mapping rows; the table is the golden file testdata/envmapping.txt, copied into config/testdata/envmapping.txt, and a root test asserts the two copies are byte-equal -->
 <!-- cases: 2 overrides: EnvMapper is "A custom env mapper" -->
 <!-- cases: 3 zero values: an empty variable value is ("", true) -->
 <!-- cases: 4 boundaries: index in the middle and at the end; instance separator -->
@@ -750,13 +810,13 @@ Examples:
 <!-- cases: N/A 10 compatibility: new module -->
 
 ### Requirement: A custom env mapper
-`config.EnvMapper(fn)` SHALL replace the mapping: `fn(key)` returns the full variable name, `EnvPrefix` is not applied to it, and the name SHALL be looked up in the process environment captured at `Load`, then in `.env`. A mapped env layer SHALL contribute nothing to `Keys`, so list, map and pointer fields cannot bind from it. A nil mapper SHALL keep the Spring mapping.
+`config.EnvMapper(fn)` SHALL replace the mapping: `fn(key)` returns the full variable name, `EnvPrefix` is not applied to it, and the name SHALL be looked up in the process environment captured at `Load`, then in `.env`. A mapped env layer SHALL contribute nothing to `Keys`; the binder looks a scalar field's key up directly (config-binding), so scalar fields bind from it while list, map and pointer fields cannot. A nil mapper SHALL keep the Spring mapping.
 
 #### Scenario: Mapper with and without a prefix
 ```gherkin
 Given a temp working directory (t.Chdir, clearEnvPrefix(t, "APP_")) with <setup>
 And mapper := func(key string) string returning "SERVER__PORT" for "server.port"
-And src := config.Files(config.EnvPrefix("MYSVC"), config.EnvMapper(mapper)) after Load(ctx) returned nil
+And src := config.New(config.EnvPrefix("MYSVC"), config.EnvMapper(mapper)) after Load(ctx) returned nil
 When the consumer calls src.Lookup("server.port")
 Then the result is <result> and src.Keys("server") returns []
 
@@ -774,13 +834,13 @@ Examples:
 <!-- cases: 4 boundaries: .env only, process only, both -->
 <!-- cases: N/A 5 errors: a mapper cannot fail -->
 <!-- cases: N/A 6 duplicate: the last EnvMapper wins -->
-<!-- cases: 7 lifecycle: the environment is captured at Load; later changes are not seen -->
+<!-- cases: 7 lifecycle: the environment is captured at Load; later changes are not seen; binding a scalar field end to end is "Structs bind end to end through config.New" -->
 <!-- cases: N/A 8 concurrency: the mapper is called concurrently and must be pure (documented) -->
-<!-- cases: N/A 9 panics: a panicking mapper is the caller's bug; the root recovers it during binding (config-binding) -->
+<!-- cases: N/A 9 panics: the mapper runs inside Lookup, not Load, so a panicking mapper reaches the caller; the root recovers it while binding as a key-named error (config-binding) -->
 <!-- cases: N/A 10 compatibility: new module -->
 
 ### Requirement: .env is a layer that never writes the process environment
-`config.Files` SHALL read `./.env` from the working directory when it exists, as a layer between the profile files and process env, under the same prefix and mapping, and SHALL NOT set any process variable. `config.DotEnv(path)` SHALL read another file and `config.DotEnv("")` SHALL skip it; an explicit path that is missing SHALL fail `Load` matching `fs.ErrNotExist`.
+`config.New` SHALL read `./.env` from the working directory when it exists, as a layer between the profile files and process env, under the same prefix and mapping, and SHALL NOT set any process variable. `config.DotEnv(path)` SHALL read another file and `config.DotEnv("")` SHALL skip it; an explicit path that is missing SHALL fail `Load` matching `fs.ErrNotExist`.
 
 #### Scenario: .env handling
 ```gherkin
@@ -791,10 +851,10 @@ Then Load returns <error>, Lookup("spike.secret") returns <result> and os.Lookup
 
 Examples:
   | source                                     | error                                                 | result                |
-  | config.Files()                             | nil                                                   | ("from-dotenv", true) |
-  | config.Files(config.DotEnv("secrets.env")) | nil                                                   | ("from-file", true)   |
-  | config.Files(config.DotEnv(""))            | nil                                                   | ("", false)           |
-  | config.Files(config.DotEnv("missing.env")) | an error matching fs.ErrNotExist naming "missing.env" | ("", false)           |
+  | config.New()                             | nil                                                   | ("from-dotenv", true) |
+  | config.New(config.DotEnv("secrets.env")) | nil                                                   | ("from-file", true)   |
+  | config.New(config.DotEnv(""))            | nil                                                   | ("", false)           |
+  | config.New(config.DotEnv("missing.env")) | an error matching fs.ErrNotExist naming "missing.env" | ("", false)           |
 ```
 
 <!-- cases: 1 default: first row (spike 5 RED test) -->
@@ -811,27 +871,27 @@ Each `.env` line SHALL be blank, a `#` comment, or `[export ]KEY=VALUE`, with sp
 
 #### Scenario: Line forms
 ```gherkin
-Given a temp working directory (t.Chdir) with .env holding the single line <line>
-When the consumer calls config.Files(config.EnvPrefix("")).Load(ctx)
+Given a temp working directory (t.Chdir, clearEnvPrefix(t, "APP_")) with .env holding the single line <line>
+When the consumer calls config.New().Load(ctx)
 Then Load returns <error> and Lookup("k") returns <result>
 
 Examples:
   | line             | error                                                 | result      |
-  | K=v              | nil                                                   | ("v", true) |
-  | export K=v       | nil                                                   | ("v", true) |
-  | K = v            | nil                                                   | ("v", true) |
-  | K=v<CR><LF>      | nil                                                   | ("v", true) |
-  | <BOM>K=v         | nil                                                   | ("v", true) |
+  | APP_K=v              | nil                                                   | ("v", true) |
+  | export APP_K=v       | nil                                                   | ("v", true) |
+  | APP_K = v            | nil                                                   | ("v", true) |
+  | APP_K=v<CR><LF>      | nil                                                   | ("v", true) |
+  | <BOM>APP_K=v         | nil                                                   | ("v", true) |
   | # only a comment | nil                                                   | ("", false) |
-  | K=               | nil                                                   | ("", true)  |
+  | APP_K=               | nil                                                   | ("", true)  |
   | 1K=v             | a *config.ParseError for ".env" line 1 "invalid line" | ("", false) |
   | not a pair s3cret| a *config.ParseError for ".env" line 1 "invalid line" | ("", false) |
 ```
 
 #### Scenario: A later line wins
 ```gherkin
-Given a temp working directory (t.Chdir) with .env holding "K=a" on line 1 and "K=b" on line 2
-When the consumer calls config.Files(config.EnvPrefix("")).Load(ctx)
+Given a temp working directory (t.Chdir, clearEnvPrefix(t, "APP_")) with .env holding "APP_K=a" on line 1 and "APP_K=b" on line 2
+When the consumer calls config.New().Load(ctx)
 Then Lookup("k") returns ("b", true)
 ```
 
@@ -849,22 +909,22 @@ An unquoted value SHALL drop leading and trailing whitespace and end at ` #`. A 
 
 #### Scenario: Value forms
 ```gherkin
-Given a temp working directory (t.Chdir) with .env holding the single line <line>
-When the consumer calls config.Files(config.EnvPrefix("")).Load(ctx)
+Given a temp working directory (t.Chdir, clearEnvPrefix(t, "APP_")) with .env holding the single line <line>
+When the consumer calls config.New().Load(ctx)
 Then Load returns <error> and Lookup("k") returns <result>
 
 Examples:
   | line                 | error                                                 | result                    |
-  | K=v   # note         | nil                                                   | ("v", true)               |
-  | K=v#not-a-comment    | nil                                                   | ("v#not-a-comment", true) |
-  | K=  v                | nil                                                   | ("v", true)               |
-  | K='a $X \n'          | nil                                                   | ("a $X \\n", true)        |
-  | K="a\nb\t\"q\" \\"   | nil                                                   | ("a<LF>b<TAB>\"q\" \\", true) |
-  | K="C:\qx"            | nil                                                   | ("C:\\qx", true)          |
-  | K="v" # note         | nil                                                   | ("v", true)               |
-  | K=${HOME}            | nil                                                   | ("${HOME}", true)         |
-  | K="v" junk           | a *config.ParseError for ".env" line 1 "invalid line" | ("", false)               |
-  | K="unterminated s3cret | a *config.ParseError for ".env" line 1 "invalid line" | ("", false)             |
+  | APP_K=v   # note         | nil                                                   | ("v", true)               |
+  | APP_K=v#not-a-comment    | nil                                                   | ("v#not-a-comment", true) |
+  | APP_K=  v                | nil                                                   | ("v", true)               |
+  | APP_K='a $X \n'          | nil                                                   | ("a $X \\n", true)        |
+  | APP_K="a\nb\t\"q\" \\"   | nil                                                   | ("a<LF>b<TAB>\"q\" \\", true) |
+  | APP_K="C:\qx"            | nil                                                   | ("C:\\qx", true)          |
+  | APP_K="v" # note         | nil                                                   | ("v", true)               |
+  | APP_K=${HOME}            | nil                                                   | ("${HOME}", true)         |
+  | APP_K="v" junk           | a *config.ParseError for ".env" line 1 "invalid line" | ("", false)               |
+  | APP_K="unterminated s3cret | a *config.ParseError for ".env" line 1 "invalid line" | ("", false)             |
 ```
 
 <!-- cases: N/A 1 default, 2 overrides: the syntax is fixed -->
@@ -877,22 +937,24 @@ Examples:
 <!-- cases: N/A 10 compatibility: new module -->
 
 ### Requirement: DotEnvExport sets only unset variables
-`config.DotEnvExport()` SHALL, at the first successful `Load` only and never on a reload, set every `.env` variable that is unset in the process, whether or not it carries the env prefix, and SHALL log one line naming, never valuing, every variable it skipped because it was already set.
+`config.DotEnvExport()` SHALL, at the first successful `Load` only and never on a reload, set every `.env` variable that is unset in the process, whether or not it carries the env prefix, and SHALL log one line naming, never valuing, every variable it skipped because it was already set. That `Load` SHALL capture the process environment before exporting; a later `Load` sees the exported variables as process env.
 
 #### Scenario: Export at the first Load
 ```gherkin
 Given a temp working directory (t.Chdir) with .env holding APP_A=1, APP_B=2 and OTHER=3; APP_B=0 already set; APP_A and OTHER unset (t.Setenv then os.Unsetenv, so cleanup restores all three)
-And src := config.Files(config.DotEnvExport(), config.Logger(rec)) where rec records lines
+And src := config.New(config.DotEnvExport(), config.Logger(rec)) where rec records lines
 When the consumer calls src.Load(ctx)
 Then os.Getenv("APP_A") is "1", os.Getenv("APP_B") is "0" and os.Getenv("OTHER") is "3"
 And rec holds one line naming "APP_B" and containing neither "2" nor "0"
 ```
 
-#### Scenario: A second Load exports nothing
+#### Scenario: A second Load exports nothing and sees the exported variables
 ```gherkin
-Given the source above after its first Load, and .env changed to APP_C=3 with APP_C unset (t.Setenv then os.Unsetenv)
+Given the source above after its first Load, where src.Lookup("a") returned ("1", true) from the .env layer
+And .env changed to APP_A=5 and APP_C=3, with APP_C unset (t.Setenv then os.Unsetenv)
 When the consumer calls src.Load(ctx) again
 Then os.LookupEnv("APP_C") returns ("", false) and src.Lookup("c") returns ("3", true)
+And src.Lookup("a") returns ("1", true), because the exported APP_A=1 is now process env, which beats .env
 ```
 
 <!-- cases: 1 default: without DotEnvExport nothing is exported (".env is a layer ...") -->
@@ -901,55 +963,63 @@ Then os.LookupEnv("APP_C") returns ("", false) and src.Lookup("c") returns ("3",
 <!-- cases: 4 boundaries: prefixed and unprefixed variables -->
 <!-- cases: N/A 5 errors: os.Setenv failures are logged by name and do not fail Load -->
 <!-- cases: 6 duplicate: an already-set variable is skipped -->
-<!-- cases: 7 lifecycle: first Load only; never during Watch -->
+<!-- cases: 7 lifecycle: first Load only; never during Watch; the first Load's env layer is captured before exporting, a later Load sees the exported values as process env -->
 <!-- cases: N/A 8 concurrency: export happens inside the serialized Load; godoc warns that os.Setenv races cgo getenv -->
 <!-- cases: N/A 9 panics: no user code runs -->
 <!-- cases: N/A 10 compatibility: golang-lib exported unconditionally; this is the opt-in -->
 
 ### Requirement: Added layers and their order
-`config.Layer(name LayerName, src LayerSource)`, with `LayerSource` as `interface{ Load(ctx context.Context) (map[string]string, error) }`, SHALL add a layer above process env in the order added; its keys SHALL be normalized like file keys and it is loaded during `Load`. `config.LayerOrder(names...)` SHALL set the full order, lowest first, from `LayerBase`, `LayerProfile`, `LayerDotEnv`, `LayerEnv` and added names; an omitted built-in layer SHALL NOT be read.
+`config.Layer(name, src)`, with `LayerSource` as `interface{ LoadLayer(ctx context.Context) (map[string]string, error) }`, SHALL add a layer above process env, in the order added, read during `Load` and normalized like file keys. A type MAY be both a `doger.ConfigSource` and a `LayerSource`. `config.LayerOrder(names...)` SHALL set the full order, lowest first, from `LayerBase`, `LayerProfile`, `LayerDotEnv`, `LayerEnv` and added names; an omitted built-in layer SHALL NOT be read.
 
 #### Scenario: A vault-style layer
 ```gherkin
 Given config.yaml holding db.password: from-file and APP_DB_PASSWORD=from-env (t.Chdir, clearEnvPrefix(t, "APP_"), t.Setenv)
-And vault := a LayerSource returning {"db.password": "from-vault"} whose Load counts calls
+And vault := a LayerSource whose LoadLayer returns {"db.password": "from-vault"} and counts calls
 When the consumer calls <source>.Load(ctx)
-Then Lookup("db.password") returns <result> and vault's Load was called <calls> times
+Then Lookup("db.password") returns <result> and vault's LoadLayer was called <calls> times
 
 Examples:
   | source                                                                                                   | result               | calls |
-  | config.Files(config.Layer("vault", vault))                                                               | ("from-vault", true) | 1     |
-  | config.Files(config.Layer("vault", vault), config.LayerOrder("vault", config.LayerBase, config.LayerEnv)) | ("from-env", true)   | 1     |
-  | config.Files(config.Layer("vault", vault), config.LayerOrder(config.LayerBase, "vault"))                 | ("from-vault", true) | 1     |
-  | config.Files(config.LayerOrder(config.LayerBase))                                                        | ("from-file", true)  | 0     |
-  | config.Files()                                                                                           | ("from-env", true)   | 0     |
+  | config.New(config.Layer("vault", vault))                                                               | ("from-vault", true) | 1     |
+  | config.New(config.Layer("vault", vault), config.LayerOrder("vault", config.LayerBase, config.LayerEnv)) | ("from-env", true)   | 1     |
+  | config.New(config.Layer("vault", vault), config.LayerOrder(config.LayerBase, "vault"))                 | ("from-vault", true) | 1     |
+  | config.New(config.LayerOrder(config.LayerBase))                                                        | ("from-file", true)  | 0     |
+  | config.New()                                                                                           | ("from-env", true)   | 0     |
 ```
 
 #### Scenario: A failing added layer
 ```gherkin
-Given vault := a LayerSource whose Load returns errVault, errors.New("vault sealed: token s3cret")
-When the consumer calls config.Files(config.Layer("vault", vault)).Load(ctx)
+Given vault := a LayerSource whose LoadLayer returns errVault, errors.New("vault sealed: token s3cret")
+When the consumer calls config.New(config.Layer("vault", vault)).Load(ctx)
 Then Load returns a *config.LayerError with Layer "vault" whose text is `layer "vault": *errors.errorString`
 And errors.Is(err, errVault) is true and neither err.Error() nor fmt.Sprintf("%#v", err) contains "s3cret"
 ```
 
 #### Scenario: A layer key that cannot be normalized
 ```gherkin
-Given vault := a LayerSource returning {"bad key": "x"}
-When the consumer calls config.Files(config.Layer("vault", vault)).Load(ctx)
-Then Load returns a *config.LayerError with Layer "vault" wrapping a *config.ParseError of category "invalid key"
+Given vault := a LayerSource whose LoadLayer returns {"bad key": "x"}
+When the consumer calls config.New(config.Layer("vault", vault)).Load(ctx)
+Then Load returns a *config.LayerError with Layer "vault" wrapping a *config.ParseError with File "", Line 0 and Category config.ParseCategoryInvalidKey
+And err.Error() is `layer "vault": invalid key`
+```
+
+#### Scenario: One type as both a source and a layer
+```gherkin
+Given vaultSrc, a type with both Load(ctx) error and LoadLayer(ctx) (map[string]string, error), whose LoadLayer returns {"db.password": "from-vault"}
+When the consumer calls config.New(config.Layer("vault", vaultSrc)).Load(ctx)
+Then var _ doger.ConfigSource = vaultSrc and var _ config.LayerSource = vaultSrc compile, and Lookup("db.password") returns ("from-vault", true)
 ```
 
 <!-- cases: 1 default: no added layer row -->
 <!-- cases: 2 overrides: Layer and LayerOrder rows, including omitting env -->
 <!-- cases: 3 zero values: Layer(name, nil), an empty name, a built-in name, a repeated name, an unknown LayerOrder name and an added layer missing from LayerOrder are "Options are checked when Load runs" -->
 <!-- cases: 4 boundaries: zero, one added layer; first and last positions -->
-<!-- cases: 5 errors: a failing layer's error is wrapped in *config.LayerError, text type-only; an invalid layer key -->
+<!-- cases: 5 errors: a failing layer's error is wrapped in *config.LayerError, text type-only; an invalid layer key is a *config.ParseError with File "" (a layer has no file) -->
 <!-- cases: N/A 6 duplicate: a repeated layer name is an option error -->
-<!-- cases: 7 lifecycle: loaded during Load; re-reading at polls under config.StageTimeout is specified by config-reload -->
+<!-- cases: 7 lifecycle: read during Load; re-reading on a schedule set by config.LayerRefresh(name, d), DefaultLayerRefresh (1 minute) by default, under config.StageTimeout is specified by config-reload -->
 <!-- cases: N/A 8 concurrency: covered by "Reads during Load see one snapshot" -->
-<!-- cases: N/A 9 panics: the module does not recover a layer's panic; the root recovers it as ErrConfigLoadFailed (config-sources) -->
-<!-- cases: N/A 10 compatibility: new module -->
+<!-- cases: 9 panics: a panicking LoadLayer is "Panics in user code become errors" -->
+<!-- cases: 10 compatibility: the method is LoadLayer, not Load, so one adapter can implement both contracts -->
 
 ### Requirement: Keys lists every key under a prefix
 `Keys(prefix)` SHALL return, after precedence and byte-wise sorted, every key whose uniform form equals `prefix` or extends it segment by segment, each uniform key once, the prefix part spelled as the caller wrote it and the rest as the highest layer holds it. `Lookup` SHALL find every key `Keys` returns. An empty prefix SHALL return every key; before the first `Load` the result SHALL be empty.
@@ -958,7 +1028,7 @@ Then Load returns a *config.LayerError with Layer "vault" wrapping a *config.Par
 ```gherkin
 Given config.yaml holding server.port: 8080 and server.labels: {team: core} (t.Chdir, clearEnvPrefix(t, "APP_"))
 And APP_SERVER_HOST=h, APP_SERVERS_0=x and APP_SERVER_ALLOWEDHOSTS_0=z are set (t.Setenv)
-And src := config.Files() after Load(ctx) returned nil
+And src := config.New() after Load(ctx) returned nil
 When the consumer calls src.Keys("<prefix>")
 Then the result is <keys>, and src.Lookup of every returned key finds a value
 
@@ -974,7 +1044,7 @@ Examples:
 #### Scenario: Ordering, duplicates and before Load
 ```gherkin
 Given a temp working directory (t.Chdir, clearEnvPrefix(t, "APP_")) with config.yaml holding <content> and <env>
-And src := config.Files() <state>
+And src := config.New() <state>
 When the consumer calls src.Keys("<prefix>")
 Then the result is <keys>
 
@@ -997,14 +1067,14 @@ Examples:
 <!-- cases: N/A 10 compatibility: new module -->
 
 ### Requirement: Load errors carry no values
-Every `Load` failure caused by file content SHALL be a `*config.ParseError{File, Line, Category}` whose text is `<file>:<line>: <category>` (or `<file>: <category>` when the line is 0), `Category` being a `config.ParseCategory`. It SHALL NOT wrap the parser's error or keep any source text, so no value reaches its message, `%#v`, or `errors.As` targets.
+Every `Load` failure caused by file content SHALL be a `*config.ParseError{File, Line, Category}` whose text is `<file>:<line>: <category>` (or `<file>: <category>` when the line is 0), `Category` being a typed `config.ParseCategory` constant. It SHALL NOT wrap the parser's error or keep any source text, so no value reaches its message, `%#v`, or `errors.As` targets.
 
 #### Scenario: A syntax error near a secret
 ```gherkin
 Given a temp directory holding <file> whose line <line> is <content> containing "s3cret"
-When the consumer calls config.Files(config.File("<file>")).Load(ctx)
+When the consumer calls config.New(config.File("<file>")).Load(ctx)
 Then err.Error() is "<message>"
-And errors.As(err, &pe) holds with pe.File "<file>" and pe.Category config.CategorySyntax
+And errors.As(err, &pe) holds with pe.File "<file>" and pe.Category config.ParseCategorySyntax
 And neither err.Error(), fmt.Sprintf("%#v", err) nor errors.Unwrap(err) contains "s3cret"
 
 Examples:
@@ -1018,53 +1088,62 @@ Examples:
 <!-- cases: N/A 1 default, 2 overrides: secrecy is not configurable (same guarantee as extension-properties) -->
 <!-- cases: 3 zero values: line 0 row when the parser gives no position -->
 <!-- cases: 4 boundaries: first line, later line -->
-<!-- cases: 5 errors: every row; the categories are config.CategorySyntax, CategoryDuplicateKey, CategoryMultipleDocuments, CategoryNotMapping, CategoryExcessiveAliasing, CategoryInvalidLine, CategoryInvalidKey, CategoryTooDeep, CategoryTooManyKeys and CategoryUnsupportedValue -->
+<!-- cases: 5 errors: every row; the categories are the typed constants config.ParseCategorySyntax, ParseCategoryDuplicateKey, ParseCategoryMultipleDocuments, ParseCategoryNotMapping, ParseCategoryExcessiveAliasing, ParseCategoryInvalidLine, ParseCategoryInvalidKey, ParseCategoryTooDeep, ParseCategoryTooManyKeys, ParseCategoryUnsupportedValue and ParseCategoryPanic, named with their type like the root's StartOp constants -->
 <!-- cases: N/A 6 duplicate, 7 lifecycle, 8 concurrency: Load only -->
 <!-- cases: 9 panics: FuzzFiles_YAML, FuzzFiles_TOML, FuzzFiles_JSON and FuzzFiles_DotEnv fuzz the in-package decoders with a high-entropy marker in value positions and assert the error text matches ^<file>(:\d+)?: <category>$ and never holds the marker -->
 <!-- cases: N/A 10 compatibility: new module -->
 
 ### Requirement: Config errors are typed and value-free
-Every error `Load` returns, except a context error, SHALL be a `*config.ParseError`, `*config.FileError{File, Err}`, `*config.LayerError{Layer, Err}` or a config sentinel, and each SHALL implement `ValueFree()` so the root prints its text. Texts SHALL hold no value and no `config:` prefix. `FileError` and `LayerError` SHALL unwrap to their cause; `LayerError` SHALL print its cause's text only when the cause is value-free, else its type.
+Every error `Load` returns, except a context error, SHALL be a `*config.ParseError`, `*FileError{File, Err}`, `*LayerError{Layer, Err}`, `*OptionError{Option, Reason}`, `*ProfileError{Profile}`, `*AmbiguousFormatError{Files}` or a config sentinel, each with a nil-safe pointer-receiver `ValueFree() bool`. Texts SHALL hold no value and no `config:` prefix. `FileError` and `LayerError` SHALL unwrap to their cause; `LayerError` SHALL print its cause's text only when it is value-free, else its type.
 
 #### Scenario: Error texts and matching
 ```gherkin
 Given clearEnvPrefix(t, "APP_") and <setup>
 When the consumer calls <source>.Load(ctx)
-Then err.Error() is "<text>", errors.Is(err, <target>) is true, and any(err).(interface{ ValueFree() }) succeeds
+Then err.Error() is "<text>", errors.Is(err, <target>) is true, and errors.As(err, &vf) with vf an interface{ error; ValueFree() bool } holds with vf.ValueFree() true
 
 Examples:
-  | setup                                       | source                                     | text                                     | target                   |
-  | no file c/missing.yaml                      | config.Files(config.File("c/missing.yaml")) | c/missing.yaml: does not exist           | fs.ErrNotExist           |
-  | a config.yaml of 4 MiB + 1 B in dir d       | config.Files(config.Dir("d"))              | d/config.yaml: file too large            | config.ErrFileTooLarge   |
-  | a FIFO named config.yaml in dir d (not Windows) | config.Files(config.Dir("d"))          | d/config.yaml: not a regular file        | config.ErrNotRegularFile |
-  | config.yaml and config.toml in dir d        | config.Files(config.Dir("d"))              | d/config.yaml, d/config.toml: ambiguous format | config.ErrAmbiguousFormat |
-  | config.yaml in dir d                        | config.Files(config.Dir("d"), config.Profile("dev")) | profile "dev" not found        | config.ErrProfileNotFound |
-  | nothing                                     | config.Files(config.Dir())                 | invalid option Dir: no path              | config.ErrInvalidOption  |
-  | vault returning errVault (text holds s3cret) | config.Files(config.Layer("vault", vault)) | layer "vault": *errors.errorString      | errVault                 |
+  | setup                                            | source                                               | text                                            | target                    |
+  | no file c/missing.yaml                           | config.New(config.File("c/missing.yaml"))            | c/missing.yaml: does not exist                  | fs.ErrNotExist            |
+  | a config.yaml of 1 MiB + 1 B in dir d            | config.New(config.Dir("d"))                          | d/config.yaml: file too large                   | config.ErrFileTooLarge    |
+  | a FIFO named config.yaml in dir d (not Windows)  | config.New(config.Dir("d"))                          | d/config.yaml: not a regular file               | config.ErrNotRegularFile  |
+  | config.yaml with mode 0o000 in dir d (not Windows, not run as root) | config.New(config.Dir("d"))       | d/config.yaml: permission denied                | fs.ErrPermission          |
+  | app.hcl in dir d                                 | config.New(config.File("d/app.hcl"))                 | d/app.hcl: unknown format                       | config.ErrUnknownFormat   |
+  | config.yaml and config.toml in dir d             | config.New(config.Dir("d"))                          | d/config.yaml, d/config.toml: ambiguous format  | config.ErrAmbiguousFormat |
+  | config.yaml in dir d                             | config.New(config.Dir("d"), config.Profile("dev"))   | profile "dev" not found                         | config.ErrProfileNotFound |
+  | nothing                                          | config.New(config.Dir())                             | invalid option Dir: no path                     | config.ErrInvalidOption   |
+  | vault returning errVault (text holds s3cret)     | config.New(config.Layer("vault", vault))             | layer "vault": *errors.errorString              | errVault                  |
+```
+
+#### Scenario: A context error is returned unwrapped
+```gherkin
+Given a context ctx and vault, a LayerSource whose LoadLayer cancels ctx and then returns ctx.Err()
+When the consumer calls config.New(config.Layer("vault", vault)).Load(ctx)
+Then err == context.Canceled holds, so err is not a *config.LayerError
 ```
 
 <!-- cases: N/A 1 default, 2 overrides: error shapes are fixed -->
-<!-- cases: N/A 3 zero values: covered by the option row -->
-<!-- cases: 4 boundaries: a cause that is not value-free is printed by type only -->
-<!-- cases: 5 errors: every row; errors.Is reaches the cause through Unwrap; %#v prints type-only text (GoString) -->
+<!-- cases: 3 zero values: the Dir() option row; a nil *config.FileError's ValueFree() returns false without panicking (nil-safe receivers) -->
+<!-- cases: 4 boundaries: a cause that is not value-free is printed by type only; EACCES and other IO errors print the path as given and the fs error's short text -->
+<!-- cases: 5 errors: every row; errors.As reaches each typed error; errors.Is reaches the cause through Unwrap or matches the sentinel through Is; %#v prints type-only text (GoString); a done ctx wins over a layer that returned ctx.Err() -->
 <!-- cases: N/A 6 duplicate, 7 lifecycle, 8 concurrency: Load only -->
 <!-- cases: N/A 9 panics: errors are plain values -->
-<!-- cases: N/A 10 compatibility: new module -->
+<!-- cases: 10 compatibility: pointer receivers follow the root's *StartError and *ExtensionError, so errors.As with a value target can never silently miss -->
 
 ### Requirement: Files over the size limit and non-regular files are refused
-Every file, `.env` included, SHALL be checked with `os.Stat` before it is opened and refused with `config.ErrNotRegularFile` unless it is a regular file after following symlinks, so a FIFO never blocks `Load`. It SHALL be read through a limit of `config.MaxFileSize(n)` bytes, 4 MiB by default; a larger file SHALL fail matching `config.ErrFileTooLarge`. Polls reuse this reader (config-reload).
+Every file, `.env` included, SHALL be opened without blocking and checked on the opened file, never on the path, and refused with `config.ErrNotRegularFile` unless it is a regular file after following symlinks, so a FIFO never blocks `Load`. It SHALL be read through a limit of `config.MaxFileSize(n)` bytes, `config.DefaultMaxFileSize` (1 MiB) by default; a larger file SHALL fail matching `config.ErrFileTooLarge`. Polls reuse this reader (config-reload).
 
 #### Scenario: Size limit
 ```gherkin
-Given a temp directory d holding config.yaml of <size>
-When the consumer calls config.Files(config.Dir("d")<extra>).Load(ctx)
+Given a temp directory d holding config.yaml of <size>: one key v whose value is a single long scalar filling the file
+When the consumer calls config.New(config.Dir("d")<extra>).Load(ctx)
 Then Load returns <error>
 
 Examples:
   | size        | extra                          | error                                                       |
-  | 4 MiB       |                                | nil                                                         |
-  | 4 MiB + 1 B |                                | an error matching config.ErrFileTooLarge naming config.yaml |
-  | 4 MiB       | , config.MaxFileSize(0)        | nil                                                         |
+  | 1 MiB       |                                | nil                                                         |
+  | 1 MiB + 1 B |                                | a *config.FileError with File "d/config.yaml", matching config.ErrFileTooLarge |
+  | 1 MiB       | , config.MaxFileSize(0)        | nil                                                         |
   | 2 KiB       | , config.MaxFileSize(1024)     | an error matching config.ErrFileTooLarge                    |
   | 8 MiB       | , config.MaxFileSize(16 << 20) | nil                                                         |
 ```
@@ -1072,7 +1151,7 @@ Examples:
 #### Scenario: Non-regular files
 ```gherkin
 Given a temp directory d where config.yaml is <kind> (test skipped on Windows)
-When the consumer calls config.Files(config.Dir("d")).Load(ctx) under testWithTimeout
+When the consumer calls config.New(config.Dir("d")).Load(ctx) under testWithTimeout
 Then Load returns an error matching config.ErrNotRegularFile naming config.yaml and does not block
 
 Examples:
@@ -1082,96 +1161,127 @@ Examples:
   | a symlink to a FIFO          |
 ```
 
-<!-- cases: 1 default: 4 MiB rows; regular-file check always on -->
+<!-- cases: 1 default: 1 MiB rows; regular-file check always on. Godoc states the memory cost: a YAML node tree costs about 60 MiB per MiB of file, which is why the default is 1 MiB and not larger -->
 <!-- cases: 2 overrides: MaxFileSize rows -->
 <!-- cases: 3 zero values: MaxFileSize(0) means the default; a negative size is "Options are checked when Load runs" -->
 <!-- cases: 4 boundaries: exactly at and one past the limit -->
 <!-- cases: 5 errors: ErrFileTooLarge, ErrNotRegularFile -->
 <!-- cases: N/A 6 duplicate, 7 lifecycle: Load only; polls are config-reload's -->
-<!-- cases: 8 concurrency: a FIFO never blocks because Stat comes before Open -->
+<!-- cases: 8 concurrency: a FIFO never blocks: Unix opens with O_RDONLY|O_NONBLOCK and checks f.Stat() on the descriptor, Windows opens plainly and checks f.Stat(); a path swapped for a FIFO between listing and opening is still refused -->
 <!-- cases: N/A 9 panics: plain file reads -->
 <!-- cases: N/A 10 compatibility: new module -->
 
 ### Requirement: Options are checked when Load runs
-An invalid option SHALL fail `Load` matching `config.ErrInvalidOption` and naming the option. Invalid are: an empty path or no path in `Dir` or `File`, an empty `Name` or one with `/`, an unknown `FileFormat`, a `Codec` without a decoder or a leading `.`, `ProfileEnv("")`, a `Layer` without a source or with an empty, repeated or built-in name, a `LayerOrder` that is empty, repeats or misses a name, and a negative `MaxFileSize` or `PollInterval`. `Logger(nil)` and `EnvMapper(nil)` mean unset.
+An invalid option SHALL fail `Load` with a `*config.OptionError` naming it, matching `config.ErrInvalidOption`: no path or `""` in `Dir` or `File`; an empty `Name` or one with `/`; an unknown `Format`; a `Decoder` with a nil func or ext `""` or `"."`; `ProfileEnv("")`; a `Layer` with no source or an empty, repeated or built-in name; an empty `LayerOrder`, or one repeating or missing a name; a `LayerRefresh` for no added layer; a negative `MaxFileSize`, `MaxKeys` or `PollInterval`.
 
 #### Scenario: Invalid options
 ```gherkin
 Given a temp working directory (t.Chdir, clearEnvPrefix(t, "APP_")) and vault, a valid LayerSource
-When the consumer calls config.Files(<option>).Load(ctx)
-Then Load returns an error matching config.ErrInvalidOption whose message names "<named>"
+When the consumer calls config.New(<option>).Load(ctx)
+Then Load returns a *config.OptionError with Option "<named>", matching config.ErrInvalidOption
 
 Examples:
-  | option                                                       | named        |
-  | config.Dir()                                                 | Dir          |
-  | config.Dir("")                                               | Dir          |
-  | config.File()                                                | File         |
-  | config.Name("")                                              | Name         |
-  | config.Name("a/b")                                           | Name         |
-  | config.Format("ini")                                         | Format       |
-  | config.Codec(".hcl", nil)                                    | Codec        |
-  | config.Codec("hcl", hclDecoder)                              | Codec        |
-  | config.ProfileEnv("")                                        | ProfileEnv   |
-  | config.Layer("vault", nil)                                   | Layer        |
-  | config.Layer("", vault)                                      | Layer        |
-  | config.Layer("env", vault)                                   | Layer        |
-  | config.Layer("vault", vault), config.Layer("vault", vault)   | Layer        |
-  | config.LayerOrder()                                          | LayerOrder   |
-  | config.LayerOrder(config.LayerBase, "nope")                  | LayerOrder   |
-  | config.LayerOrder(config.LayerEnv, config.LayerEnv)          | LayerOrder   |
-  | config.Layer("vault", vault), config.LayerOrder(config.LayerBase) | LayerOrder |
-  | config.MaxFileSize(-1)                                       | MaxFileSize  |
-  | config.PollInterval(-time.Second)                            | PollInterval |
+  | option                                                            | named        |
+  | config.Dir()                                                      | Dir          |
+  | config.Dir("")                                                    | Dir          |
+  | config.Dir("a", "")                                               | Dir          |
+  | config.File()                                                     | File         |
+  | config.Name("")                                                   | Name         |
+  | config.Name("a/b")                                                | Name         |
+  | config.Format("ini")                                              | Format       |
+  | config.Decoder(".hcl", nil)                                       | Decoder      |
+  | config.Decoder("", hclDecode)                                     | Decoder      |
+  | config.Decoder(".", hclDecode)                                    | Decoder      |
+  | config.ProfileEnv("")                                             | ProfileEnv   |
+  | config.Layer("vault", nil)                                        | Layer        |
+  | config.Layer("", vault)                                           | Layer        |
+  | config.Layer("env", vault)                                        | Layer        |
+  | config.Layer("vault", vault), config.Layer("vault", vault)        | Layer        |
+  | config.LayerOrder()                                               | LayerOrder   |
+  | config.LayerOrder(config.LayerBase, "nope")                       | LayerOrder   |
+  | config.LayerOrder(config.LayerEnv, config.LayerEnv)               | LayerOrder   |
+  | config.Layer("vault", vault), config.LayerOrder(config.LayerBase) | LayerOrder   |
+  | config.LayerRefresh("nope", time.Second)                          | LayerRefresh |
+  | config.LayerRefresh(config.LayerEnv, time.Second)                 | LayerRefresh |
+  | config.MaxFileSize(-1)                                            | MaxFileSize  |
+  | config.MaxKeys(-1)                                                | MaxKeys      |
+  | config.PollInterval(-time.Second)                                 | PollInterval |
+```
+
+#### Scenario: Option values that mean the default or unset
+```gherkin
+Given a temp working directory (t.Chdir, clearEnvPrefix(t, "APP_")) with config.yaml holding server.port: 8080, and vault, a valid LayerSource
+When the consumer calls config.New(<option>).Load(ctx)
+Then Load returns nil and Lookup("server.port") returns ("8080", true)
+
+Examples:
+  | option                                                                    |
+  | config.Logger(nil)                                                        |
+  | config.EnvMapper(nil)                                                     |
+  | config.MaxFileSize(0)                                                     |
+  | config.MaxKeys(0)                                                         |
+  | config.PollInterval(0)                                                    |
+  | config.StageTimeout(-time.Second)                                         |
+  | config.Layer("vault", vault), config.LayerRefresh("vault", 0)             |
+  | config.Layer("vault", vault), config.LayerRefresh("vault", -time.Second)  |
 ```
 
 <!-- cases: N/A 1 default: no invalid option by default -->
 <!-- cases: 2 overrides: every row -->
-<!-- cases: 3 zero values: Logger(nil) and EnvMapper(nil) mean unset; MaxFileSize(0), PollInterval(0) and StageTimeout(0) mean the default; StageTimeout with a negative value means no timeout (config-reload) -->
-<!-- cases: 4 boundaries: built-in layer name collision; added layer missing from LayerOrder -->
-<!-- cases: 5 errors: every row matches ErrInvalidOption -->
-<!-- cases: 6 duplicate: repeated layer names -->
+<!-- cases: 3 zero values: Logger(nil) and EnvMapper(nil) mean unset; MaxFileSize(0), MaxKeys(0), PollInterval(0), StageTimeout(0) and LayerRefresh(name, 0) mean the default; a negative StageTimeout means no timeout and a negative LayerRefresh means the layer is read only at Load and when a watched file changes (config-reload) -->
+<!-- cases: 4 boundaries: built-in layer name collision; added layer missing from LayerOrder; Dir with one valid and one empty path; Decoder ext "" versus "." -->
+<!-- cases: 5 errors: every row matches ErrInvalidOption through *config.OptionError; texts are "invalid option <Option>: <reason>" -->
+<!-- cases: 6 duplicate: repeated layer names; repeated LayerOrder names -->
 <!-- cases: N/A 7 lifecycle, 8 concurrency, 9 panics: options are plain data checked in Load -->
-<!-- cases: N/A 10 compatibility: new module -->
+<!-- cases: 10 compatibility: Dir, File and LayerOrder keep variadic ...T signatures (a caller holding a slice passes it with ...), and an empty call is the error, as filepath.Join treats no argument -->
 
 ### Requirement: Load honors its context
-`Load(ctx)` SHALL stop and return an error matching `ctx.Err()` when the context ends before loading finishes, return before reading any file when the context has already ended, and keep answering from the snapshot it held before that `Load`.
+`Load(ctx)` SHALL stop and return `ctx.Err()` itself, unwrapped, when the context ends before loading finishes, even when a layer returned it; return before reading any file when the context has already ended; and keep answering from the snapshot it held before that `Load`.
 
 #### Scenario: A cancelled load keeps the previous snapshot
 ```gherkin
-Given a source config.Files(config.File("config.yaml"), config.Layer("slow", slow)) already loaded once with server.port: 8080
-And config.yaml now holds server.port: 9090 and slow's Load blocks until its context ends
-When the consumer calls Load(ctx) with ctx cancelled once slow's Load has started (channel handshake)
-Then the error matches context.Canceled with errors.Is
+Given a source config.New(config.File("config.yaml"), config.Layer("slow", slow)) already loaded once with server.port: 8080
+And config.yaml now holds server.port: 9090 and slow's LoadLayer blocks, from its second call on, until its context ends
+When the consumer calls Load(ctx) with ctx cancelled once slow's LoadLayer has started (channel handshake)
+Then err == context.Canceled holds
 And Lookup("server.port") returns ("8080", true)
 ```
 
 #### Scenario: An already-cancelled context
 ```gherkin
-Given src := config.Files(config.File("config.yaml")) never loaded, and a context cancelled before the call
+Given src := config.New(config.File("config.yaml")) never loaded, and a context cancelled before the call
 When the consumer calls src.Load(ctx)
-Then the error matches context.Canceled, config.yaml was never opened (recorded by a test hook on the reader), and src.Keys("") returns []
+Then err == context.Canceled holds, config.yaml was never opened (recorded by a test hook on the reader), and src.Keys("") returns []
 ```
 
 <!-- cases: N/A 1 default, 2 overrides: the timeout belongs to the container (config-sources) -->
 <!-- cases: 3 zero values: an already-cancelled context returns before reading any file -->
 <!-- cases: 4 boundaries: a deadline matches context.DeadlineExceeded the same way -->
-<!-- cases: 5 errors: the error matches ctx.Err() and is not wrapped in a config type -->
+<!-- cases: 5 errors: the error is ctx.Err() itself, never wrapped in a config type, even when a layer returned it ("A context error is returned unwrapped") -->
 <!-- cases: N/A 6 duplicate: one context per call -->
 <!-- cases: 7 lifecycle: a failed Load keeps the previous snapshot -->
 <!-- cases: 8 concurrency: cancellation from another goroutine; no goroutine outlives Load (goleak) -->
-<!-- cases: N/A 9 panics: no user code runs except layers -->
+<!-- cases: N/A 9 panics: layer panics are "Panics in user code become errors" -->
 <!-- cases: N/A 10 compatibility: new module -->
 
 ### Requirement: Loads are serialized and stop while watching
-Concurrent `Load` calls SHALL run one at a time: a second call SHALL start reading only after the first returns. While `Watch` is running, `Load` SHALL return an error matching `config.ErrWatching` and change nothing; after `Watch` has returned, `Load` SHALL work again.
+Concurrent `Load` calls SHALL run one at a time: a second call SHALL start reading only after the first returns, and while it waits it SHALL return `ctx.Err()` if its own context ends. While `Watch` is running, `Load` SHALL return an error matching `config.ErrWatching` and change nothing; after `Watch` has returned, `Load` SHALL work again.
 
 #### Scenario: Two overlapping Loads
 ```gherkin
-Given a source whose config.yaml holds v: 1, with slow, an added layer that records "start" and "end" around each Load and blocks its first Load on a channel
+Given a source whose config.yaml holds v: 1, with slow, an added layer that records "start" and "end" around each LoadLayer and blocks its first LoadLayer on a channel
 And Load A has read config.yaml and is blocked in slow, and config.yaml is then rewritten to v: 2, and Load B has been called
 When the consumer releases the channel
 Then slow recorded start, end, start, end (no interleaving)
 And Lookup("v") returns ("2", true)
+```
+
+#### Scenario: A waiting Load honors its context
+```gherkin
+Given a source whose added layer slow blocks its first LoadLayer on a channel, and Load A is blocked in slow
+And Load B was called with ctxB, waiting for A
+When the consumer cancels ctxB
+Then Load B returns with err == context.Canceled before A is released, and slow's LoadLayer was called once
 ```
 
 #### Scenario: Load while watching
@@ -1192,7 +1302,7 @@ Examples:
 <!-- cases: 5 errors: Load while watching matches ErrWatching (a second concurrent Watch is config-reload's) -->
 <!-- cases: N/A 6 duplicate: see overlapping Loads -->
 <!-- cases: 7 lifecycle: Load, Watch, Load again -->
-<!-- cases: 8 concurrency: overlapping Loads, under -race -->
+<!-- cases: 8 concurrency: overlapping Loads, under -race; a waiting Load leaves on its own ctx (the wait selects on ctx.Done) -->
 <!-- cases: N/A 9 panics, 10 compatibility: no user code; new module -->
 
 ### Requirement: Reads during Load see one snapshot
@@ -1200,7 +1310,7 @@ Examples:
 
 #### Scenario: Concurrent reads while loading
 ```gherkin
-Given a loaded config.Files(config.File("config.yaml")) whose file holds a.x: 1 and a.y: 1
+Given a loaded config.New(config.File("config.yaml")) whose file holds a.x: 1 and a.y: 1
 And the file is rewritten to a.x: 2 and a.y: 2
 When 50 goroutines call Lookup("a.x") and Keys("a") in a loop while the consumer calls Load(ctx) 20 times
 Then every Lookup returned ("1", true) or ("2", true)
@@ -1212,12 +1322,38 @@ And go test -race reports no data race
 <!-- cases: 8 concurrency: the subject; runs under -race (spike 3 RED test) -->
 <!-- cases: N/A 9 panics, 10 compatibility: no user code; new module -->
 
+### Requirement: Panics in user code become errors
+A panic in a `LayerSource`'s `LoadLayer` or in a `DecodeFunc` during `Load` SHALL be recovered by the module and returned as an error naming only the panic value's type: a `*config.LayerError` for a layer, a `*config.ParseError` with category `config.ParseCategoryPanic` for a decoder. The previous snapshot SHALL be kept. Panics during polls are staging errors (config-reload).
+
+#### Scenario: A panicking layer or decoder
+```gherkin
+Given a temp directory holding a.x with any content, and clearEnvPrefix(t, "APP_")
+And <user code> panics with the string "boom s3cret"
+When the consumer calls <source>.Load(ctx)
+Then err.Error() is "<text>", errors.As(err, &<target>) holds, err.Error() does not contain "s3cret", and Keys("") returns []
+
+Examples:
+  | user code                    | source                                                         | text                               | target           |
+  | vault's LoadLayer            | config.New(config.Layer("vault", vault))                       | layer "vault": panic of type string | *config.LayerError |
+  | decode, the ".x" DecodeFunc  | config.New(config.File("a.x"), config.Decoder(".x", decode))   | a.x: panic of type string          | *config.ParseError |
+```
+
+<!-- cases: N/A 1 default, 2 overrides: recovery is always on -->
+<!-- cases: 3 zero values: panic(nil) recovers as *runtime.PanicNilError and prints "panic of type *runtime.PanicNilError" -->
+<!-- cases: 4 boundaries: a layer panic and a decoder panic -->
+<!-- cases: 5 errors: the panic value never reaches the text, only its type; *config.ParseError with ParseCategoryPanic renders as "panic of type T" -->
+<!-- cases: N/A 6 duplicate: one panic ends the Load -->
+<!-- cases: 7 lifecycle: the first Load returns the error and keeps the empty snapshot; a later poll turns the same panic into a staging error (config-reload) -->
+<!-- cases: N/A 8 concurrency: the Load slot is released on the panic path (deferred) -->
+<!-- cases: 9 panics: the subject -->
+<!-- cases: N/A 10 compatibility: new module -->
+
 ### Requirement: Where the source logs
 The source SHALL log through `config.Logger(l)` when set, else through the function given to `SetLogf` when the container called it, else through `slog.Default()` looked up at each log call. It SHALL never log a value.
 
 #### Scenario: Log sink
 ```gherkin
-Given a config.Files(config.DotEnvExport()<option>) source whose Load logs one skipped-variable line
+Given a config.New(config.DotEnvExport()<option>) source whose Load logs one skipped-variable line
 And slog.SetDefault set to a recording handler after the source was built (t.Cleanup restores slog's and log's defaults; test not parallel)
 And <setlogf>
 When the consumer calls Load(ctx)
@@ -1241,23 +1377,33 @@ Examples:
 <!-- cases: N/A 7 lifecycle, 8 concurrency, 9 panics: logging is stateless -->
 <!-- cases: N/A 10 compatibility: new module -->
 
-### Requirement: Structs bind end to end through config.Files
-A container whose `ConfigSource` is `config.Files(...)` SHALL bind a struct field from env even when no file holds its key, and SHALL bind a field from every file spelling of its name, so file and env layers reach the binder as one source.
+### Requirement: Structs bind end to end through config.New
+A container whose `ConfigSource` is `config.New(...)` SHALL bind a struct field from env even when no file holds its key, including a scalar field whose variable comes from `config.EnvMapper`, and SHALL bind a field from every file spelling of its name, so file and env layers reach the binder as one source.
 
 #### Scenario: An env-only key binds although the file lacks it
 ```gherkin
 Given a directory holding config.yaml with "service:\n  name: demo\n"
 And clearEnvPrefix(t, "APP_") and t.Setenv("APP_SERVICE_VERSION", "9.9.9")
-And root, err := doger.NewWithOpts(&doger.InjectorOpts{ConfigSource: config.Files(config.Dir(dir), config.DotEnv(""))}) returned a nil err
-When the consumer calls doger.BindConfig(root, "service", ServiceConfig{})
-Then the error is nil and doger.MustInvoke[ServiceConfig](root) is ServiceConfig{Name: "demo", Version: "9.9.9"}
+And root, err := doger.NewWithOpts(ctx, &doger.InjectorOpts{ConfigSource: config.New(config.Dir(dir), config.DotEnv(""))}) returned a nil err
+When the consumer calls cv, err := doger.BindConfig(root, "service", ServiceConfig{})
+Then err is nil, cv.Get() and doger.MustInvoke[ServiceConfig](root) are both ServiceConfig{Name: "demo", Version: "9.9.9"}
+```
+
+#### Scenario: A scalar field binds from a mapped variable
+```gherkin
+Given a directory holding config.yaml with "service:\n  name: demo\n"
+And clearEnvPrefix(t, "APP_") and t.Setenv("SVC_VERSION", "9.9.9")
+And mapper := func(key string) string returning "SVC_VERSION" for "service.version" and "" otherwise
+And root, err := doger.NewWithOpts(ctx, &doger.InjectorOpts{ConfigSource: config.New(config.Dir(dir), config.DotEnv(""), config.EnvMapper(mapper))}) returned a nil err
+When the consumer calls cv, err := doger.BindConfig(root, "service", ServiceConfig{})
+Then err is nil and cv.Get() is ServiceConfig{Name: "demo", Version: "9.9.9"}
 ```
 
 #### Scenario: Every file spelling binds the same field
 ```gherkin
 Given a directory holding config.yaml with "server:\n  <spelling>: https://kartala.id\n"
 And clearEnvPrefix(t, "APP_")
-And root, err := doger.NewWithOpts(&doger.InjectorOpts{ConfigSource: config.Files(config.Dir(dir), config.DotEnv(""))}) returned a nil err
+And root, err := doger.NewWithOpts(ctx, &doger.InjectorOpts{ConfigSource: config.New(config.Dir(dir), config.DotEnv(""))}) returned a nil err
 When the consumer calls doger.ResolveConfig(root, "server", struct{ IssuerURI string }{})
 Then the result's IssuerURI is "https://kartala.id" and the error is nil
 
@@ -1272,18 +1418,18 @@ Examples:
 <!-- cases: 1 default: zero-config Files over one directory -->
 <!-- cases: N/A 2 overrides: binding rules are config-binding's; this checks the two modules together -->
 <!-- cases: 3 zero values: a key held by no layer keeps the default (config-binding "Presence decides") -->
-<!-- cases: 4 boundaries: env-only versus file-only fields in one struct -->
+<!-- cases: 4 boundaries: env-only versus file-only fields in one struct; a mapped variable reaches a scalar field although the mapped layer lists no keys (the binder looks the canonical key up) -->
 <!-- cases: N/A 5 errors: conversion errors are config-binding's -->
 <!-- cases: N/A 6 duplicate: keys that normalize together fail the load ("Invalid file shapes fail the load") -->
 <!-- cases: N/A 7 lifecycle, 8 concurrency, 9 panics: covered by the binding and reload specs -->
-<!-- cases: 10 compatibility: spike 4 of golang-lib/config, where an env var for a key missing from the file was ignored -->
+<!-- cases: 10 compatibility: spike 4 of golang-lib/config, where an env var for a key missing from the file was ignored; the mapped-variable row is the same defect through EnvMapper -->
 
 ### Requirement: The module satisfies the root contract and stays small
-`*config.Source` SHALL satisfy `doger.ConfigSource`, `doger.ConfigLogger` and `doger.ConfigWatcher` structurally and SHALL NOT implement `doger.ConfigValidator`. Its non-test code SHALL NOT import doger and SHALL depend only on `go.yaml.in/yaml/v3` and `github.com/pelletier/go-toml/v2` at v2.4.0 or later (needed for duplicate-key lines). Watching is specified by `config-reload`.
+`*config.Source` SHALL satisfy `doger.ConfigSource`, `doger.LogfSetter` and `doger.ConfigWatcher` structurally and SHALL NOT implement `doger.ConfigValidator`; its godoc SHALL say that only the container calls `Load` on an installed source. Its non-test code SHALL NOT import doger and SHALL depend only on the modules `go.yaml.in/yaml/v3` and `github.com/pelletier/go-toml/v2` at v2.4.3 or later. Watching is specified by `config-reload`.
 
 #### Scenario: Compile-time contract checks
 ```gherkin
-Given the config module's test file declaring var _ doger.ConfigSource, var _ doger.ConfigLogger and var _ doger.ConfigWatcher all equal to (*config.Source)(nil)
+Given the config module's test file declaring var _ doger.ConfigSource, var _ doger.LogfSetter and var _ doger.ConfigWatcher all equal to (*config.Source)(nil)
 When the consumer type-asserts any((*config.Source)(nil)) to doger.ConfigValidator
 Then the declarations compile and the assertion's ok is false
 ```
@@ -1291,10 +1437,11 @@ Then the declarations compile and the assertion's ok is false
 #### Scenario: Dependency footprint
 ```gherkin
 Given the CI job for the config module
-When it runs go list -deps -f '{{if not .Standard}}{{.ImportPath}}{{end}}' ./... in config/ without test files
-Then every listed path starts with "github.com/kartaladev/doger/config", "go.yaml.in/yaml/v3" or "github.com/pelletier/go-toml/v2"
-And config/go.mod requires github.com/pelletier/go-toml/v2 at v2.4.0 or later
+When it runs go list -deps -f '{{with .Module}}{{.Path}}{{end}}' ./... | sort -u in config/ without test files, then drops the module's own path github.com/kartaladev/doger/config
+Then the remaining module paths are exactly "github.com/pelletier/go-toml/v2" and "go.yaml.in/yaml/v3"
+And config/go.mod requires github.com/pelletier/go-toml/v2 at v2.4.3 or later
 ```
 
-<!-- cases: N/A 1-9: build-level guarantees -->
-<!-- cases: 10 compatibility: golang-lib/config is untouched; this module is separate -->
+<!-- cases: N/A 1-8: build-level guarantees -->
+<!-- cases: N/A 9 panics: build-level guarantee; v2.4.3 is the go-toml floor because v2.4.2 overflows the stack on a long run of "[" (D50) -->
+<!-- cases: 10 compatibility: golang-lib/config is untouched; this module is separate; relying on go-toml/v2/unstable means a consumer's MVS upgrade could break the build, which doger's own tests cannot catch (design Risks) -->

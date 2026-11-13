@@ -34,7 +34,7 @@ Examples:
 <!-- cases: 10 compatibility: the rows are unchanged from the main spec; the one-to-one environment clause is dropped because the environment mapping now follows Spring (see "The environment source maps keys by Spring Boot's rules"); suffixes are referenced here so the archived spec stays coherent, and defined in the ADDED "Keys may index lists and maps" -->
 
 ### Requirement: The property source is chosen by the application
-A container's source SHALL be `InjectorOpts.ConfigSource` when non-nil, decided when the constructor runs. Otherwise, at the container's first property read, it SHALL be decided and kept: `InjectorOpts.PropertySource` when non-nil; otherwise the root's service named `NameOf[PropertySource]()`; otherwise `EnvPropertySource("DOGER_")`, registered in the root as a default under that name. Services of other names are never selected.
+A container's source SHALL be the committed view of `InjectorOpts.ConfigSource` when non-nil, decided when the constructor runs, and never registered as a service. With no `ConfigSource`, the source SHALL be decided and kept at the first property read: `InjectorOpts.PropertySource` when non-nil; otherwise the root's service named `NameOf[PropertySource]()`; otherwise `EnvPropertySource("DOGER_")`, registered in the root as a default under that name. Services of other names are never selected.
 
 #### Scenario: Source selection
 ```gherkin
@@ -56,7 +56,7 @@ Examples:
 
 #### Scenario: A source registered after the first read is not used
 ```gherkin
-Given a root scope with no InjectorOpts.PropertySource, "DOGER_REDIS_ADDR" set to "env-a" and "DOGER_REDIS__B_ADDR" set to "env-b"
+Given a root scope with no InjectorOpts.PropertySource and no ConfigSource, "DOGER_REDIS_ADDR" set to "env-a" and "DOGER_REDIS__B_ADDR" set to "env-b"
 And doger.Extend(root, redisExt) read the property "addr"
 And a lazy "*app.MapSource" (registered under its own type name) with "redis/b.addr" = "late" is registered afterwards
 When a second extension "redis" with instance "b" reads "addr" during its Extend
@@ -65,7 +65,7 @@ Then it reads "env-b"
 
 #### Scenario: Registering the interface name after the first read panics
 ```gherkin
-Given a root scope with no InjectorOpts.PropertySource whose first property read happened
+Given a root scope with no InjectorOpts.PropertySource and no ConfigSource whose first property read happened
 When the consumer registers a lazy service under the name doger.NameOf[doger.PropertySource]()
 Then the registration panics with "DI: service `github.com/kartaladev/doger.PropertySource` has already been declared"
 ```
@@ -73,7 +73,7 @@ Then the registration panics with "DI: service `github.com/kartaladev/doger.Prop
 #### Scenario: An installed config source is decided before any package runs
 ```gherkin
 Given a test config source holding "redis.addr" = "from-config"
-And root, err := doger.NewWithOpts(&doger.InjectorOpts{ConfigSource: src}, pkg) returned a nil err, where pkg registers a lazy doger.PropertySource (doger.MapSource{"redis.addr": "from-service"})
+And root, err := doger.NewWithOpts(context.Background(), &doger.InjectorOpts{ConfigSource: src}, pkg) returned a nil err, where pkg registers a lazy doger.PropertySource (doger.MapSource{"redis.addr": "from-service"})
 When the consumer calls doger.Extend(root, redisExt) whose Extend reads "addr"
 Then the read returns ("from-config", true)
 ```
@@ -86,7 +86,7 @@ Then the read returns ("from-config", true)
 <!-- cases: 6 duplicate: late registration scenarios -->
 <!-- cases: 7 lifecycle: the decision is kept for the container's life -->
 <!-- cases: 8 concurrency: covered by "Concurrent lookups" -->
-<!-- cases: 9 panics: third scenario -->
+<!-- cases: 9 panics: third scenario; it applies only without a ConfigSource, since an installed source is never registered under the interface name (config-sources "The installed source is not a service") -->
 <!-- cases: 10 compatibility: without ConfigSource the selection order is unchanged; a source with only Lookup is still selected (the *app.Cache row is rejected only because of its name); the rows that used the test type *app.MapSource now use doger.MapSource, so TestPropertySource_Selection is rewritten (same assertions); the instance variable in the late-registration scenario follows the new mapping -->
 
 ## REMOVED Requirements
@@ -122,6 +122,7 @@ Examples:
   | [0]               | no key                    |
   | labels[team core] | no key                    |
   | labels[5xx]       | no key                    |
+  | labels.5xx        | "redis.labels.5xx"        |
 ```
 
 <!-- cases: N/A 1 default, 2 overrides: grammar only -->
@@ -129,7 +130,7 @@ Examples:
 <!-- cases: 4 boundaries: index 0 and 10 versus a leading zero; one and two suffixes; a map key with a slash and with upper case; a suffix right after the view prefix ([0]) -->
 <!-- cases: 5 errors: malformed suffixes are a miss -->
 <!-- cases: N/A 6 duplicate, 7 lifecycle, 8 concurrency, 9 panics: pure validation of one string -->
-<!-- cases: 10 compatibility: every key valid before stays valid; map keys starting with a digit (such as 5xx) cannot be addressed, documented -->
+<!-- cases: 10 compatibility: every key valid before stays valid; a map key starting with a digit (such as 5xx) cannot take the bracket form, which is reserved so that [n] is always an index, and is addressed as a plain segment instead (labels.5xx), documented -->
 
 ### Requirement: The environment source maps keys by Spring Boot's rules
 `EnvPropertySource(prefix)` SHALL map a key to the normalized prefix followed by the key upper-cased, with `-` removed, `/` replaced by `__`, `.` by `_`, and `[i]` or `[k]` by `_` and the upper-cased index or key. A map key outside `[a-z0-9]+` SHALL be a miss. Keys that differ only in dashes, or in `[k]` versus `.k`, SHALL map to the same variable. `EnvPropertySource` SHALL return a `PropertySource` that also implements `PropertyKeys`.
@@ -253,15 +254,17 @@ Then <outcome>
 
 Examples:
   | uses                                                                                                   | outcome                                                                                                         |
-  | calls doger.NewWithOpts(&doger.InjectorOpts{PropertySource: src, Logf: logf})                           | the root is nil and the error matches doger.ErrInvalidConfigSource and contains "invalid env prefix \"MY APP\"" |
+  | calls doger.NewWithOpts(context.Background(), &doger.InjectorOpts{PropertySource: src, Logf: logf}) | the root is nil and the error matches doger.ErrInvalidConfigSource and contains "invalid env prefix \"MY APP\"" |
   | registers src as the root's lazy doger.PropertySource service and reads "redis.addr" through an extension | the read returns ("", false) and one recorded line contains "invalid env prefix \"MY APP\""                    |
+  | calls src.Lookup("redis.addr") directly                                                                 | the result is ("", false)                                                                                       |
+  | calls src.(doger.PropertyKeys).Keys("") directly                                                        | the result is a non-nil empty []string                                                                          |
 ```
 
 <!-- cases: 1 default: DOGER_ row -->
 <!-- cases: 2 overrides: MYAPP_, MYAPP, myapp, dashed and dotted prefixes, and the empty prefix -->
-<!-- cases: 3 zero values: empty prefix row -->
+<!-- cases: 3 zero values: empty prefix row: EnvPropertySource("") means no prefix and looks each key up, never enumerating the environment; its godoc states how this differs from config.EnvPrefix(""), which is an invalid option (config-files) -->
 <!-- cases: 4 boundaries: with and without a trailing _; lower case; separators -->
-<!-- cases: 5 errors: the invalid prefix fails construction when installed through options, otherwise misses and is logged -->
+<!-- cases: 5 errors: the invalid prefix fails construction when installed through options; used as a service it misses and is logged; used directly, Lookup misses and Keys returns [] -->
 <!-- cases: N/A 6 duplicate: one prefix per source -->
 <!-- cases: N/A 7 lifecycle: the prefix is normalized once, when the source is made -->
 <!-- cases: N/A 8 concurrency: the source is immutable -->
@@ -269,11 +272,11 @@ Examples:
 <!-- cases: 10 compatibility: BREAKING for prefixes that relied on being used as written: "myapp_" now reads MYAPP_, "my-app" now reads MY_APP_ (it never matched a variable before); config.EnvPrefix follows the same rule (config-files) -->
 
 ### Requirement: A property source can list its keys
-A source that implements `PropertyKeys` SHALL return from `Keys(prefix)`, sorted byte-wise and each once, every key whose uniform form matches the prefix's segment by segment, spelled so that the same source's `Lookup` finds it. Uniform form lowercases, drops `-` and `_` per segment, and folds `[k]` (k in `[a-z0-9]+`) into `.k` and `.n` (all digits) into `[n]`; an instance segment never folds. An empty prefix returns every key.
+A source that implements `PropertyKeys` SHALL return from `Keys(prefix)` a non-nil slice, sorted byte-wise and each key once, of every key whose uniform form matches the prefix's segment by segment, spelled so that the same source's `Lookup` finds it. Uniform form lowercases, drops `-` and `_` per segment, and folds `[k]` (k in `[a-z0-9]+`) into `.k` and `.n` (all digits) into `[n]`; an instance segment never folds. An empty prefix returns every key.
 
 #### Scenario: Map source keys
 ```gherkin
-Given src := doger.MapSource{"redis.hosts[0]": "a", "redis.hosts[1]": "b", "redis.hostsx": "c", "redis.addr": "d", "redis": "e", "server.allowedhosts[0]": "f", "redis.labels[team]": "g", "redis.queue.0": "h"}
+Given src := doger.MapSource{"redis.hosts[0]": "a", "redis.hosts[1]": "b", "redis.hostsx": "c", "redis.addr": "d", "redis": "e", "server.allowedhosts[0]": "f", "redis.labels[team]": "g", "redis.queue.0": "h", "redis/x.addr": "i"}
 When the consumer calls src.Keys("<prefix>")
 Then the result is <keys>
 
@@ -284,6 +287,7 @@ Examples:
   | server.allowed-hosts | ["server.allowedhosts[0]"]                                                                                              |
   | redis.labels.team    | ["redis.labels[team]"]                                                                                                  |
   | redis.queue[0]       | ["redis.queue.0"]                                                                                                       |
+  | redis/x              | ["redis/x.addr"]                                                                                                        |
   | kafka                | []                                                                                                                      |
 ```
 
@@ -308,7 +312,7 @@ Then the result is <keys>
 Examples:
   | source                                    | keys                     |
   | doger.MapSource{"b.x": "1", "a.y": "2"}   | ["a.y", "b.x"]           |
-  | doger.MapSource(nil)                      | []                       |
+  | doger.MapSource(nil)                      | [], a non-nil empty slice |
 ```
 
 #### Scenario: A map source reads the map it is
@@ -322,7 +326,7 @@ Then the result is ["redis.addr", "redis.port"]
 <!-- cases: 1 default: the env and map sources implement it -->
 <!-- cases: 2 overrides: any custom source may implement PropertyKeys; one that does not still works for scalars (config-binding) -->
 <!-- cases: 3 zero values: empty prefix and nil map rows -->
-<!-- cases: 4 boundaries: "redis.hostsx" is not under "redis.hosts" (segment-aware); exact-prefix key "redis"; byte-wise order puts [10] before [2]; [k] versus .k and .n versus [n] folding -->
+<!-- cases: 4 boundaries: "redis.hostsx" is not under "redis.hosts" (segment-aware); exact-prefix key "redis"; "redis/x.addr" is not under "redis", since an instance is not a nested segment; byte-wise order puts [10] before [2]; [k] versus .k and .n versus [n] folding -->
 <!-- cases: N/A 5 errors: Keys returns no error -->
 <!-- cases: 6 duplicate: two stored keys with one uniform form are both returned; the binder picks the canonical spelling, else the lexically smallest (config-binding) -->
 <!-- cases: 7 lifecycle: MapSource is not copied; its godoc says mutating it while in use is a fatal concurrent map write -->
@@ -331,11 +335,11 @@ Then the result is ["redis.addr", "redis.port"]
 <!-- cases: 10 compatibility: PropertySource is unchanged, so existing sources keep compiling -->
 
 ### Requirement: The environment source lists its keys
-The `PropertySource` returned by `EnvPropertySource(prefix)` SHALL implement `PropertyKeys`, mapping each variable under the prefix back to a key: `__` after the name marks an instance (never folded into an index), an all-digit segment without a leading zero becomes an index `[i]`, and every other segment becomes a lowercase dash-free name. Variables that cannot be mapped back SHALL be skipped.
+The `PropertySource` returned by `EnvPropertySource(prefix)` SHALL implement `PropertyKeys`, mapping each variable under the prefix back to a key: `__` after the name marks an instance (never folded into an index), an all-digit segment without a leading zero becomes an index `[i]`, and every other segment becomes a lowercase dash-free name. Variables that cannot be mapped back, including a digit segment directly after the name or instance, SHALL be skipped.
 
 #### Scenario: Environment source keys
 ```gherkin
-Given clearEnvPrefix(t, "TKEYS_") and only these variables start with "TKEYS_": "TKEYS_REDIS_HOSTS_0" = "a", "TKEYS_REDIS_HOSTS_1" = "b", "TKEYS_REDIS_POOLSIZE_0" = "5", "TKEYS_REDIS__QUEUE_ADDR" = "q", "TKEYS_REDIS__0_ADDR" = "i", "TKEYS_REDIS" = "r", "TKEYS__X" = "1", "TKEYS_REDIS___Y" = "2", "TKEYS_redis_z" = "3", "TKEYS_REDIS_HOSTS_01" = "4", "TKEYS_REDIS_HOSTS__X" = "6", "TKEYS_0_X" = "7"
+Given clearEnvPrefix(t, "TKEYS_") and only these variables start with "TKEYS_": "TKEYS_REDIS_HOSTS_0" = "a", "TKEYS_REDIS_HOSTS_1" = "b", "TKEYS_REDIS_POOLSIZE_0" = "5", "TKEYS_REDIS__QUEUE_ADDR" = "q", "TKEYS_REDIS__0_ADDR" = "i", "TKEYS_REDIS" = "r", "TKEYS__X" = "1", "TKEYS_REDIS___Y" = "2", "TKEYS_redis_z" = "3", "TKEYS_REDIS_HOSTS_01" = "4", "TKEYS_REDIS_HOSTS__X" = "6", "TKEYS_0_X" = "7", "TKEYS_REDIS_7_PORT" = "8", "TKEYS_REDIS__Q_3" = "9"
 When the consumer calls doger.EnvPropertySource("TKEYS_").(doger.PropertyKeys).Keys("<prefix>")
 Then the result is <keys>
 
@@ -353,7 +357,7 @@ Examples:
 <!-- cases: N/A 2 overrides: the prefix is the override -->
 <!-- cases: 3 zero values: a prefix with no variables returns []; an empty prefix returns every key -->
 <!-- cases: 4 boundaries: a single-segment variable, an index, an instance, an all-digit instance (redis/0, not redis[0]) -->
-<!-- cases: 5 errors: malformed names are skipped, not errors: an empty segment (__X right after the prefix), triple underscore, lower case, a leading zero (HOSTS_01), __ after the name position (HOSTS__X), an all-digit first segment (0_X) -->
+<!-- cases: 5 errors: malformed names are skipped, not errors: an empty segment (__X right after the prefix), triple underscore, lower case, a leading zero (HOSTS_01), __ after the name position (HOSTS__X), an all-digit first segment (0_X), a digit segment directly after the name (REDIS_7_PORT) or the instance (REDIS__Q_3), since the name and the instance take no suffix -->
 <!-- cases: N/A 6 duplicate: a variable maps to one key -->
 <!-- cases: N/A 7 lifecycle: read at each call -->
 <!-- cases: N/A 8 concurrency: os.Environ is safe for concurrent use -->
@@ -361,7 +365,7 @@ Examples:
 <!-- cases: 10 compatibility: new method on the unexported concrete type; EnvPropertySource still returns PropertySource; clearEnvPrefix keeps inherited TKEYS_ variables out of the test -->
 
 ### Requirement: Extension views list keys relative to the view
-`x.Properties().Keys(k)` and `ExtensionProperties(i).Keys(k)` SHALL return the source's keys under the view's prefix plus `k`, with the view's prefix removed, dropping keys the key grammar rejects. They SHALL return `[]` when the source has no `PropertyKeys`, when `k` is not a valid key (including `""`), for the zero `Properties{}`, and, logging as `Lookup` does, after the view's `Extend` returned.
+`x.Properties().Keys(k)` and `ExtensionProperties(i).Keys(k)` SHALL return the source's keys under the view's prefix plus `k`, with the view's prefix removed, dropping keys the grammar rejects; `k == ""` SHALL return every key of the view. They SHALL return `[]` when the source has no `PropertyKeys`, when `k` is not a valid key, for the zero `Properties{}`, and, logging as `Lookup` does, after the view's `Extend` returned.
 
 #### Scenario: Keys through an extension view
 ```gherkin
@@ -376,7 +380,8 @@ Examples:
   | doger.MapSource{"redis.hosts[0]": "a", "redis.hosts[1]": "b", "redis/cache.hosts[0]": "c"} | cache    | hosts | ["hosts[0]"]             |
   | doger.MapSource{"redis.hosts[0]": "a", "redis.Hosts[1]": "b"}                              |          | hosts | ["hosts[0]"]             |
   | doger.MapSource{"redis.hosts[0]": "a"}                                                     |          | Hosts | []                       |
-  | doger.MapSource{"redis.hosts[0]": "a"}                                                     |          |       | []                       |
+  | doger.MapSource{"redis.hosts[0]": "a", "redis.addr": "b", "redis/cache.addr": "c"}          |          |       | ["addr", "hosts[0]"]     |
+  | doger.MapSource{"redis.hosts[0]": "a", "redis.addr": "b", "redis/cache.addr": "c"}          | cache    |       | ["addr"]                 |
   | a source with only a Lookup method holding "redis.hosts[0]" = "a"                          |          | hosts | []                       |
 ```
 
@@ -395,8 +400,8 @@ Examples:
 
 <!-- cases: 1 default: the map-source rows -->
 <!-- cases: 2 overrides: a source without PropertyKeys -->
-<!-- cases: 3 zero values: zero Properties row; an empty k returns [] on a view, while a source's Keys("") returns every key (stated in both requirements) -->
-<!-- cases: 4 boundaries: with and without an instance key; a stored key with upper case is dropped -->
+<!-- cases: 3 zero values: zero Properties row; an empty k returns every key of the view, relative to it, as a source's Keys("") returns every key -->
+<!-- cases: 4 boundaries: with and without an instance key; a stored key with upper case is dropped; Keys("") of the plain view excludes the instance's keys -->
 <!-- cases: 5 errors: an invalid k returns [] -->
 <!-- cases: N/A 6 duplicate: keys come from the source, each once -->
 <!-- cases: 7 lifecycle: a view used after Extend returned -->

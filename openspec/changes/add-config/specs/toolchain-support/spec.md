@@ -42,6 +42,7 @@ Examples:
   | examples/transient-services/go.mod     |
   | examples/web-application/go.mod        |
   | scheduler/gocron/go.mod                |
+  | tools/go.mod                           |
 ```
 
 <!-- cases: 1 default: the declared version is the only default -->
@@ -49,7 +50,7 @@ Examples:
 <!-- cases: N/A 3 zero values: no input -->
 <!-- cases: 4 boundaries: 1.27 is the floor; the language version follows the go directive, so compiling Go 1.27 features is guaranteed by the directive rows (no separate compiler test) -->
 <!-- cases: N/A 5 invalid input: no input -->
-<!-- cases: 6 duplicate: the rows cover every go.mod in the workspace (27 modules, config/go.mod and scheduler/gocron/go.mod included) plus go.work; the existing test already holds the scheduler/gocron row, which the main spec lacked; the test fails if the workspace lists a module without a row -->
+<!-- cases: 6 duplicate: the rows cover every go.mod in the workspace (27 modules, config/go.mod and scheduler/gocron/go.mod included), plus tools/go.mod, which pins govulncheck and is deliberately outside the workspace, plus go.work; the existing test already holds the scheduler/gocron row, which the main spec lacked; the test fails if the workspace lists a module without a row, and the tools row is checked by reading tools/go.mod directly -->
 <!-- cases: N/A 7 lifecycle: static property of the build -->
 <!-- cases: N/A 8 concurrency: static property of the build -->
 <!-- cases: N/A 9 panics: static property of the build; nothing executes -->
