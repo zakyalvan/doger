@@ -201,15 +201,13 @@ And no recorded line contains "DI: injector created"
 Examples:
   | setup                                                        | opts                                                                          |
   | a ConfigSource src whose Load returns errors.New("sealed")   | &doger.InjectorOpts{ConfigSource: src, Logf: recorder}                        |
-  | a ConfigSource src and a PropertySource ps                   | &doger.InjectorOpts{ConfigSource: src, PropertySource: ps, Logf: recorder}    |
-  | nothing                                                      | &doger.InjectorOpts{ConfigSource: (*app.Vault)(nil), Logf: recorder}          |
 ```
 
 <!-- cases: 1 default: without a source, packages run as before -->
 <!-- cases: N/A 2 overrides: the order is fixed -->
 <!-- cases: N/A 3 zero values: no packages is "Construction outcome" -->
 <!-- cases: 4 boundaries: two packages show the order; the creation line sits between Load and the first package -->
-<!-- cases: 5 errors: failed-load, conflict and typed-nil rows -->
+<!-- cases: 5 errors: the failed-load row; option failures are "A construction rejected by its options runs no package" (group 6, D77) -->
 <!-- cases: N/A 6 duplicate: not applicable to ordering -->
 <!-- cases: 7 lifecycle: the subject; the creation log line marks a returned container only -->
 <!-- cases: N/A 8 concurrency: construction runs on the caller's goroutine -->
@@ -217,7 +215,34 @@ Examples:
 <!-- cases: 10 compatibility: packages still run in the order given; the creation line still precedes them -->
 
 ### Requirement: CloneWithOpts returns an error
-`(*RootScope).CloneWithOpts(ctx context.Context, opts *InjectorOpts) (*RootScope, error)` SHALL construct the clone like `NewWithOpts(ctx, opts)`, sharing the parent's config only as specified in config-sources. On failure it SHALL return a nil clone and a non-nil error and leave the parent unchanged. A nil `opts` SHALL behave like `&InjectorOpts{}`.
+`(*RootScope).CloneWithOpts(ctx context.Context, opts *InjectorOpts) (*RootScope, error)` SHALL construct the clone like `NewWithOpts(ctx, opts)`, sharing the parent's config only as specified in config-sources. A clone that does not share SHALL rebind and validate every copied config handle against its own view. On failure it SHALL return a nil clone and a non-nil error and leave the parent unchanged. A nil `opts` SHALL behave like `&InjectorOpts{}`.
+
+#### Scenario: A construction rejected by its options runs no package
+```gherkin
+Given a root Logf recorder that records lines
+And <setup>
+And a package pkgA that appends "pkgA" to a shared log
+When the consumer calls doger.NewWithOpts(context.Background(), <opts>, pkgA)
+Then the returned root is nil and errors.Is(err, <sentinel>) is true
+And the shared log is empty
+And no recorded line contains "DI: injector created"
+
+Examples:
+  | setup                                       | opts                                                                       | sentinel                     |
+  | a ConfigSource src and a PropertySource ps  | &doger.InjectorOpts{ConfigSource: src, PropertySource: ps, Logf: recorder} | doger.ErrConfigConflict      |
+  | nothing                                     | &doger.InjectorOpts{ConfigSource: (*app.Vault)(nil), Logf: recorder}       | doger.ErrInvalidConfigSource |
+```
+
+<!-- cases: N/A 1 default: covered by "Load happens before the packages" -->
+<!-- cases: N/A 2 overrides: the order is fixed -->
+<!-- cases: N/A 3 zero values: a nil options value is "Construction outcome" -->
+<!-- cases: 4 boundaries: the option checks run before Load and before any package -->
+<!-- cases: 5 errors: the conflict and typed-nil rows -->
+<!-- cases: N/A 6 duplicate: not applicable -->
+<!-- cases: 7 lifecycle: no creation line for a rejected construction -->
+<!-- cases: N/A 8 concurrency: construction runs on the caller's goroutine -->
+<!-- cases: N/A 9 panics: option checks do not call user code -->
+<!-- cases: N/A 10 compatibility: new options -->
 
 #### Scenario: Cloning with options
 ```gherkin
@@ -239,13 +264,30 @@ Examples:
   | root.CloneWithOpts(context.Background(), nil)                                     | returns nil                              | non-nil, reading "app.name" as ("", false) | nil                                              | 0     |
 ```
 
+#### Scenario: Copied config handles follow the clone's source
+```gherkin
+Given a root created with InjectorOpts.ConfigSource srcA, where srcA is a test watcher source holding "server.port" = "8080"
+And doger.BindConfig(root, "server", ServerConfig{Port: 8000}) returned a nil error
+When the consumer calls clone, err := root.CloneWithOpts(context.Background(), <opts>)
+Then err is <error>
+And <clone>
+And the root's ConfigValue[ServerConfig].Get().Port is still 8080
+
+Examples:
+  | opts                                                                                  | error                                                                                         | clone                                                                       |
+  | &doger.InjectorOpts{ConfigSource: srcB}, srcB a test watcher source holding "server.port" = "7070"  | nil                                                                     | the clone's ConfigValue[ServerConfig].Get().Port is 7070                    |
+  | &doger.InjectorOpts{}                                                                 | nil                                                                                           | the clone's ConfigValue[ServerConfig].Get().Port is 8000 (the defaults)     |
+  | &doger.InjectorOpts{ConfigSource: srcB}, srcB a test watcher source holding "server.port" = "99999" | an error matching doger.ErrInvalidConfig whose text contains "server" and not "99999" | clone is nil                                                                |
+  | &doger.InjectorOpts{ConfigSource: srcA}                                               | nil                                                                                           | the clone's ConfigValue[ServerConfig].Get().Port is 8080, shared with the root |
+```
+
 <!-- cases: 1 default: sharing on Clone() is "Clone keeps its signature" and config-sources -->
 <!-- cases: 2 overrides: a different source per clone; context values and cancellation are "The caller's context bounds and cancels construction" -->
 <!-- cases: 3 zero values: nil ctx, empty and nil opts rows; the last two give a clone without a config source, reading env; inherited DOGER_ variables are cleared so the miss is deterministic -->
 <!-- cases: 4 boundaries: success, failure, no source -->
 <!-- cases: 5 errors: failure row; conflict and typed-nil apply as in NewWithOpts, and are checked before any sharing (config-sources) -->
 <!-- cases: N/A 6 duplicate: sharing the parent's own source is config-sources -->
-<!-- cases: 7 lifecycle: the parent is unchanged after a failed clone -->
+<!-- cases: 7 lifecycle: the parent is unchanged after a failed clone; a clone that does not share rebinds and validates every copied config handle against its own view, and a failure fails CloneWithOpts (D71, "Copied config handles follow the clone's source") -->
 <!-- cases: N/A 8 concurrency: as NewWithOpts; a Clone racing a reload commit is config-reload -->
 <!-- cases: N/A 9 panics: as NewWithOpts -->
 <!-- cases: 10 compatibility: BREAKING CloneWithOpts signature change (a ctx first parameter and an error result), flagged in the proposal -->

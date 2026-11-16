@@ -776,7 +776,7 @@ Examples:
 <!-- cases: N/A 10 compatibility: new API -->
 
 ### Requirement: A panic while binding is an error
-A panic raised during a bind by a type's `UnmarshalText` or by the source's `Lookup` or `Keys` SHALL be recovered and returned as a `*ConfigBindError` matching `ErrConfigConversion` naming the key being bound, never the panic value: `Reason` is `panic of type <T>` for a non-error value; for an error value it is `panic` and `Err` holds the value. A registration hook's panic SHALL propagate.
+A panic raised during a bind by a type's `UnmarshalText` or by the source's `Lookup` or `Keys` SHALL be recovered and returned as a `*ConfigBindError` matching `ErrConfigConversion` naming the key being bound, never the panic value: `Reason` is `panic of type <T>`, and for an error value `Err` also holds the value but is not printed. A registration hook's panic SHALL propagate.
 
 #### Scenario: Panics in user code
 ```gherkin
@@ -792,14 +792,14 @@ Examples:
   | Level.UnmarshalText   | "bad s3cret"                   | panic of type string            | false   |
   | the source's Lookup   | "bad s3cret"                   | panic of type string            | false   |
   | the source's Keys     | "bad s3cret"                   | panic of type string            | false   |
-  | Level.UnmarshalText   | errBoom = errors.New("s3cret") | panic: *errors.errorString      | true    |
-  | Level.UnmarshalText   | nil                            | panic: *runtime.PanicNilError   | false   |
+  | Level.UnmarshalText   | errBoom = errors.New("s3cret") | panic of type *errors.errorString | true  |
+  | Level.UnmarshalText   | nil                            | panic of type *runtime.PanicNilError | false |
 ```
 
 <!-- cases: N/A 1 default, 2 overrides: failure path -->
 <!-- cases: 3 zero values: panic(nil) row -->
 <!-- cases: N/A 4 boundaries: each panicking user hook once -->
-<!-- cases: 5 errors: matchable sentinel; errors.As gives Key and Type; an error panic value is reachable through Err; the value's text never appears unless it reports ValueFree() true -->
+<!-- cases: 5 errors: matchable sentinel; errors.As gives Key and Type; an error panic value is reachable through Err but never printed; every panic prints "panic of type T" (D78), as a load panic does -->
 <!-- cases: N/A 6 duplicate: one panic per bind -->
 <!-- cases: N/A 7 lifecycle: the same in every phase -->
 <!-- cases: N/A 8 concurrency: recovery is per call -->
@@ -1056,7 +1056,7 @@ Examples:
 <!-- cases: N/A 10 compatibility: new API -->
 
 ### Requirement: Only BindConfig follows the shutdown phase
-`BindConfig` and `BindConfigNamed` SHALL fail with an error matching `ErrStartAfterShutdown`, registering nothing, once the target scope's container has begun shutting down; a child scope has no phase of its own. A bind racing `Shutdown` SHALL either succeed or fail that way. `ResolveConfig` and `BindProperties` SHALL work in every phase, reading the last committed configuration.
+`BindConfig` and `BindConfigNamed` SHALL fail with an error matching `ErrStartAfterShutdown`, registering nothing, once the target scope's container has begun shutting down, checked before any other check; a child scope has no phase of its own. A bind racing `Shutdown` SHALL either succeed or fail that way. `ResolveConfig` and `BindProperties` SHALL work in every phase, reading the last committed configuration.
 
 #### Scenario: Binding in each phase
 ```gherkin
@@ -1074,6 +1074,7 @@ Examples:
   | closing, from a Shutdowner running during root.Shutdown() | root             | an error matching ErrStartAfterShutdown |
   | shut down with root.Shutdown()                            | root             | an error matching ErrStartAfterShutdown |
   | shut down with root.Shutdown(), child := root.Scope("c") taken before | child | an error matching ErrStartAfterShutdown |
+  | shut down with root.Shutdown(), after doger.BindConfig(root, "server", ServerConfig{}) succeeded | root | an error matching ErrStartAfterShutdown, not ErrConfigAlreadyBound |
 ```
 
 #### Scenario: A bind racing Shutdown
@@ -1102,7 +1103,7 @@ Examples:
 
 <!-- cases: N/A 1 default, 2 overrides: phases are not configurable -->
 <!-- cases: N/A 3 zero values: no input beyond the phase -->
-<!-- cases: 4 boundaries: every phase, and a child scope of a shut-down container; a child scope shut down on its own is not a phase, so it is not a row -->
+<!-- cases: 4 boundaries: every phase, and a child scope of a shut-down container; a child scope shut down on its own is not a phase, so it is not a row; the phase is checked first (D81 step 0), so a shut-down container with the name already bound reports the phase, not the duplicate -->
 <!-- cases: 5 errors: ErrStartAfterShutdown -->
 <!-- cases: N/A 6 duplicate: as "Binding a name twice fails" -->
 <!-- cases: 7 lifecycle: the subject; a service reading its drain timeout with ResolveConfig during shutdown works; a bind that succeeds before Shutdown leaves the reload set at that Shutdown (config-reload) -->
@@ -1308,7 +1309,7 @@ Then the result is ServerConfig{Port: 9090, Hosts: ["a"]}
 <!-- cases: N/A 10 compatibility: new API -->
 
 ### Requirement: Concurrent binding and reads
-Concurrent calls to `BindConfig`, `BindConfigNamed`, `ResolveConfig` and `ConfigValue[T].Get` on one container SHALL be race-free; of concurrent bindings of one service name, exactly one SHALL succeed and the others SHALL fail with `ErrConfigAlreadyBound`, leaving no half registration.
+Concurrent calls to `BindConfig`, `BindConfigNamed`, `ResolveConfig` and `ConfigValue[T].Get` on one container SHALL be race-free; of concurrent bindings of one service name, exactly one SHALL succeed and the others SHALL fail with `ErrConfigAlreadyBound`, also when the collision is found only at registration, leaving no half registration.
 
 #### Scenario: Concurrent use under -race
 ```gherkin
@@ -1321,6 +1322,6 @@ And both JobsConfig and its handle resolve, and the race detector reports nothin
 ```
 
 <!-- cases: N/A 1-7: concurrency only; the other items are covered by the requirements above -->
-<!-- cases: 8 concurrency: the subject; runs under -race; the per-type plan cache is shared safely -->
+<!-- cases: 8 concurrency: the subject; runs under -race; the per-type plan cache is shared safely; a bind that passes the duplicate pre-check but collides at registration maps doger's duplicate-service error to ErrConfigAlreadyBound (D81), never a panic -->
 <!-- cases: N/A 9 panics: no input panics here -->
 <!-- cases: N/A 10 compatibility: new API -->

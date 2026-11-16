@@ -335,7 +335,7 @@ Then the result is ["redis.addr", "redis.port"]
 <!-- cases: 10 compatibility: PropertySource is unchanged, so existing sources keep compiling -->
 
 ### Requirement: The environment source lists its keys
-The `PropertySource` returned by `EnvPropertySource(prefix)` SHALL implement `PropertyKeys`, mapping each variable under the prefix back to a key: `__` after the name marks an instance (never folded into an index), an all-digit segment without a leading zero becomes an index `[i]`, and every other segment becomes a lowercase dash-free name. Variables that cannot be mapped back, including a digit segment directly after the name or instance, SHALL be skipped.
+The `PropertySource` returned by `EnvPropertySource(prefix)` SHALL implement `PropertyKeys`, mapping each variable under the prefix back to a key: `__` after the name marks an instance (never folded into an index), an all-digit segment without a leading zero becomes an index `[i]`, and every other segment becomes a lowercase dash-free name. Variables that cannot be mapped back, including a digit segment directly after the extension name or instance (extension mode), SHALL be skipped.
 
 #### Scenario: Environment source keys
 ```gherkin
@@ -353,10 +353,26 @@ Examples:
   | kafka           | []                                                                                         |
 ```
 
+#### Scenario: The golden table's mode column
+```gherkin
+Given a row of the golden table testdata/envmapping.txt with mode "<mode>", env name "<env name>" and key "<key>"
+When the root's reverse mapping maps "<env name>" with prefix "APP_" in mode "<mode>"
+Then the result is "<key>", where "-" means the variable is skipped
+
+Examples:
+  | mode | env name           | key             |
+  | ext  | APP_REDIS_HOSTS_0  | redis.hosts[0]  |
+  | ext  | APP_REDIS_7_PORT   | -               |
+  | ext  | APP_REDIS__Q_3     | -               |
+  | ext  | APP_REDIS__Q_ADDR  | redis/q.addr    |
+  | file | APP_SERVERS_0      | servers[0]      |
+  | file | APP_SERVER_HOSTS_0 | server.hosts[0] |
+```
+
 <!-- cases: 1 default: the scan of a prefix -->
 <!-- cases: N/A 2 overrides: the prefix is the override -->
 <!-- cases: 3 zero values: a prefix with no variables returns []; an empty prefix returns every key -->
-<!-- cases: 4 boundaries: a single-segment variable, an index, an instance, an all-digit instance (redis/0, not redis[0]) -->
+<!-- cases: 4 boundaries: a single-segment variable, an index, an instance, an all-digit instance (redis/0, not redis[0]); the golden table's mode column (D74): the skip-digit rule is extension mode only, so in file mode APP_SERVERS_0 is servers[0]; the root runs the ext rows, the config module the file rows, and both copies stay byte-equal -->
 <!-- cases: 5 errors: malformed names are skipped, not errors: an empty segment (__X right after the prefix), triple underscore, lower case, a leading zero (HOSTS_01), __ after the name position (HOSTS__X), an all-digit first segment (0_X), a digit segment directly after the name (REDIS_7_PORT) or the instance (REDIS__Q_3), since the name and the instance take no suffix -->
 <!-- cases: N/A 6 duplicate: a variable maps to one key -->
 <!-- cases: N/A 7 lifecycle: read at each call -->
@@ -365,7 +381,7 @@ Examples:
 <!-- cases: 10 compatibility: new method on the unexported concrete type; EnvPropertySource still returns PropertySource; clearEnvPrefix keeps inherited TKEYS_ variables out of the test -->
 
 ### Requirement: Extension views list keys relative to the view
-`x.Properties().Keys(k)` and `ExtensionProperties(i).Keys(k)` SHALL return the source's keys under the view's prefix plus `k`, with the view's prefix removed, dropping keys the grammar rejects; `k == ""` SHALL return every key of the view. They SHALL return `[]` when the source has no `PropertyKeys`, when `k` is not a valid key, for the zero `Properties{}`, and, logging as `Lookup` does, after the view's `Extend` returned.
+`x.Properties().Keys(k)` and `p.Keys(k)` for `p, _ := ExtensionProperties(i)` SHALL return the source's keys under the view's prefix plus `k`, with the view's prefix removed, dropping keys the grammar rejects; `k == ""` SHALL return every key of the view. They SHALL return `[]` when the source has no `PropertyKeys`, when `k` is not a valid key, for the zero `Properties{}`, and, logging as `Lookup` does, after the view's `Extend` returned.
 
 #### Scenario: Keys through an extension view
 ```gherkin

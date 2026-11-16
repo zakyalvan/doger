@@ -318,17 +318,29 @@ Examples:
   | app.yml     | config.File("app.yml"), config.Decoder(".yaml", upperDecode)                      | nil                                                                          | ("8080", true)       |
   | app.hcl     | config.File("app.hcl"), config.Decoder(".hcl", failing)                           | a *config.ParseError with File "app.hcl", Line 0, Category config.ParseCategorySyntax | ("", false)  |
   | app.hcl     | config.File("app.hcl"), config.Decoder(".hcl", failingAtLine7)                    | a *config.ParseError with File "app.hcl", Line 7, Category config.ParseCategorySyntax | ("", false)  |
-  | config.hcl  | config.Decoder(".hcl", hclDecode)                                                 | nil                                                                          | ("8080", true)       |
-  | config.hcl  | config.Decoder(".hcl", hclDecode), config.Format("hcl")                           | nil                                                                          | ("8080", true)       |
+  | app.hcl     | config.File("app.hcl"), config.Decoder(".hcl", oddCategory)                       | a *config.ParseError with File "app.hcl", Line 3, Category config.ParseCategorySyntax, text "app.hcl:3: syntax error" | ("", false) |
 ```
 
-`failing` returns errors.New("hcl: bad token near s3cret"); `failingAtLine7` returns &config.ParseError{Line: 7, Category: config.ParseCategorySyntax}. Neither error text holds "s3cret".
+#### Scenario: Discovery finds a file for an added decoder
+```gherkin
+Given a temp working directory (t.Chdir, clearEnvPrefix(t, "APP_")) holding config.hcl with server.port: 8080 in HCL
+When the consumer calls config.New(<options>).Load(ctx)
+Then Load returns <error> and Lookup("server.port") returns <result>
+
+Examples:
+  | options                                                 | error | result         |
+  | config.Decoder(".hcl", hclDecode)                       | nil   | ("8080", true) |
+  | config.Decoder(".hcl", hclDecode), config.Format("hcl") | nil   | ("8080", true) |
+  | nothing                                                 | nil   | ("", false)    |
+```
+
+`failing` returns errors.New("hcl: bad token near s3cret"); `failingAtLine7` returns &config.ParseError{Line: 7, Category: config.ParseCategorySyntax}; `oddCategory` returns &config.ParseError{Line: 3, Category: config.ParseCategory("near s3cret")}, a category the module does not define. No error text holds "s3cret".
 
 <!-- cases: 1 default: built-in rows -->
-<!-- cases: 2 overrides: Decoder add, replace, discovery and Format-by-registered-name rows -->
+<!-- cases: 2 overrides: Decoder add and replace rows; discovery and Format-by-registered-name rows are the second scenario, built with discovery (group 14) -->
 <!-- cases: 3 zero values: Decoder with a nil func, "" or "." is "Options are checked when Load runs" -->
-<!-- cases: 4 boundaries: upper-case extension; ext with and without "."; a .yaml decoder does not cover .yml -->
-<!-- cases: 5 errors: unknown extension is a *FileError matching ErrUnknownFormat; a decoder's own error becomes a *config.ParseError at line 0 whose text never holds the decoder's message; a decoder's own *config.ParseError keeps its line and category, and the module fills in File -->
+<!-- cases: 4 boundaries: upper-case extension; ext with and without "."; a .yaml decoder does not cover .yml; an ext with an inner dot such as ".tar.gz" could never match and is "Options are checked when Load runs"; without a decoder, discovery ignores config.hcl -->
+<!-- cases: 5 errors: unknown extension is a *FileError matching ErrUnknownFormat; a decoder's own error becomes a *config.ParseError at line 0 whose text never holds the decoder's message; a decoder's own *config.ParseError keeps its line and a defined category, and the module fills in File; a category the module does not define becomes ParseCategorySyntax and its text is never shown (D78) -->
 <!-- cases: 6 duplicate: the last Decoder for one extension wins, whatever the spelling of ext -->
 <!-- cases: N/A 7 lifecycle, 8 concurrency: Load only -->
 <!-- cases: 9 panics: a panicking DecodeFunc is "Panics in user code become errors" -->
@@ -458,12 +470,14 @@ Examples:
   | a.yaml | 1    | "[a[b]": 1               |
   | a.yaml | 1    | ? [a, b]\n: 1            |
   | a.toml | 1    | "a.b" = 1                |
+  | a.toml | 2    | "bad key" = 1            |
+  | a.toml | 3    | [server.x--y]            |
 ```
 
 <!-- cases: N/A 1 default, 2 overrides: key rules are fixed -->
 <!-- cases: 3 zero values: empty and null keys; an empty bracket -->
 <!-- cases: 4 boundaries: "/" in the first segment is an instance (previous requirement) versus a later segment; a TOML quoted "a.b" is one key and is refused, while YAML and JSON "a.b" split like a dotted key; a trailing "-" and "--"; a segment of only "_" normalizes to nothing -->
-<!-- cases: 5 errors: every row; errors.As reaches *config.ParseError -->
+<!-- cases: 5 errors: every row; errors.As reaches *config.ParseError; TOML keys and table headers are checked by the pre-pass, which reports their own line (D75) -->
 <!-- cases: N/A 6 duplicate: see "Invalid file shapes fail the load" -->
 <!-- cases: N/A 7 lifecycle, 8 concurrency: Load only -->
 <!-- cases: 9 panics: FuzzFiles_YAML, FuzzFiles_TOML and FuzzFiles_JSON seeds include every row -->
@@ -484,6 +498,8 @@ Examples:
   | a.yaml | "logfile: x\nlog-file: y"                     | 2    | duplicate key      |
   | a.yaml | "port: 1\nport: 2"                            | 2    | duplicate key      |
   | a.toml | "port = 1\nport = 2"                          | 2    | duplicate key      |
+  | a.toml | "[a]\nx = 1\n[a]\ny = 2"                       | 3    | duplicate key      |
+  | a.toml | "a.b = 1\n[a]\nb = 2"                          | 3    | duplicate key      |
   | a.json | "{\"port\": 1,\n \"port\": 2}"                | 2    | duplicate key      |
   | a.yaml | "a: 1\n---\nb: 2"                             | 3    | multiple documents |
   | a.yaml | "a: 1\n---\n~"                                | 3    | multiple documents |
@@ -501,7 +517,7 @@ Examples:
 <!-- cases: 3 zero values: empty documents are "Empty files and documents load as no keys" -->
 <!-- cases: 4 boundaries: line 0 when the parser reports no position; "---" followed by "~" is not empty; only the last document may be an empty "---", so two trailing "---" fail -->
 <!-- cases: 5 errors: every row; errors.As reaches *config.ParseError -->
-<!-- cases: 6 duplicate: exact and uniform-form duplicates in every format; the error names neither value. TOML duplicate lines need github.com/pelletier/go-toml/v2 v2.4.3 or later -->
+<!-- cases: 6 duplicate: exact and uniform-form duplicates in every format; the error names neither value; TOML duplicate keys and tables are found by the pre-pass, which reports the second occurrence's line (D75) -->
 <!-- cases: N/A 7 lifecycle, 8 concurrency: Load only -->
 <!-- cases: 9 panics: an alias or merge cycle never overflows the stack; the node budget counts alias and merge expansion, so a bomb fails before it allocates; FuzzFiles_YAML seeds include both bombs and both self-references -->
 <!-- cases: N/A 10 compatibility: new module -->
@@ -536,7 +552,7 @@ Examples:
 <!-- cases: N/A 10 compatibility: new module -->
 
 ### Requirement: Hostile files are bounded
-A file SHALL fail `Load` with a `*config.ParseError` when a key would have more than 64 segments ("too deep") or the file yields more than `config.MaxKeys(n)` keys, `DefaultMaxKeys` (10,000) by default ("too many keys", line 0). Both caps SHALL be enforced before the content is converted to values, so time and memory grow linearly with file size. Nesting beyond a parser's own limit SHALL fail "syntax error". No input SHALL exhaust the stack.
+A file SHALL fail `Load` with a `*config.ParseError` when a key would have more than 64 segments ("too deep") or the file yields more than `config.MaxKeys(n)` keys, `DefaultMaxKeys` (10,000) by default ("too many keys", line 0). Both caps SHALL be enforced before the content is converted to values, so work is bounded by the file size and `MaxKeys` (at most 50,000). Nesting beyond a parser's own limit SHALL fail "syntax error". No input SHALL exhaust the stack.
 
 #### Scenario: Depth cap per format
 ```gherkin
@@ -575,16 +591,20 @@ Examples:
   | a.toml | one array of 10,001 tables of one key each       |                         | a *config.ParseError, Line 0, Category "too many keys"      |
   | a.json | 10,001 keys                                      |                         | a *config.ParseError, Line 0, Category "too many keys"      |
   | a.yaml | 1 MiB of distinct keys "kNNNNN: 1"               |                         | a *config.ParseError, Line 0, Category "too many keys"      |
+  | a.toml | 50,000 tables [tNNNNN] of one key each           | , config.MaxKeys(50000) | nil                                                         |
+  | a.yaml | base: &b holding 6,000 keys, and copy: *b        |                         | a *config.ParseError, Line 0, Category "excessive aliasing" |
+  | a.yaml | base: &b holding 6,000 keys, and copy: *b        | , config.MaxKeys(20000) | nil                                                         |
 ```
 
 <!-- cases: 1 default: DefaultMaxKeys 10,000 and depth 64 -->
-<!-- cases: 2 overrides: MaxKeys raises and lowers the key cap; the depth of 64 is fixed because it bounds key length and recursion -->
+<!-- cases: 2 overrides: MaxKeys raises and lowers the key cap, up to 50,000 (above is "Options are checked when Load runs"); godoc states the TOML cost, about 0.1 s at 10,000 keys, because go-toml's Unmarshal is superlinear (D75); the depth of 64 is fixed because it bounds key length and recursion -->
 <!-- cases: 3 zero values: MaxKeys(0) means the default; a negative MaxKeys is "Options are checked when Load runs"; empty content is "Empty files and documents load as no keys" -->
 <!-- cases: 4 boundaries: exactly at and one past each cap in each format; nesting rows per format: JSON is checked while decoding and reports "too deep" at any nesting past 64; TOML (pre-pass) and YAML (node walk) report "too deep" under the parser's own nesting limit and "syntax error" beyond it -->
 <!-- cases: 5 errors: too deep, too many keys, syntax error past a parser limit -->
 <!-- cases: N/A 6 duplicate: duplicates are "Invalid file shapes fail the load" -->
 <!-- cases: N/A 7 lifecycle, 8 concurrency: Load only -->
-<!-- cases: 9 panics: no row overflows the stack; the TOML rows need go-toml v2.4.3 or later (v2.4.2 overflows on a run of "["); FuzzFiles_TOML, FuzzFiles_YAML and FuzzFiles_JSON seed every row; BenchmarkLoad_Hostile shows time linear in size (the 1 MiB distinct-keys row fails in well under a second) -->
+<!-- cases: 9 panics: no row overflows the stack; the pre-pass rejects every failing TOML row before Unmarshal runs, so the go-toml >= v2.4.3 floor is defense in depth (deep-nesting overflow near 1.04M "[") and no row tests it (D75); FuzzFiles_TOML, FuzzFiles_YAML and FuzzFiles_JSON seed every row; BenchmarkLoad_Hostile records time at the caps (the 1 MiB distinct-keys row and the 50,000-table row each finish in under 2 seconds) -->
+<!-- cases: alias budget: each alias or merge expansion counts its expanded nodes against MaxKeys during the walk; a budget exceeded inside an expansion is "excessive aliasing", otherwise "too many keys" (D79) -->
 <!-- cases: N/A 10 compatibility: new module -->
 
 ### Requirement: Scalars become strings the same way per format
@@ -625,7 +645,7 @@ Examples:
 <!-- cases: N/A 10 compatibility: new module -->
 
 ### Requirement: YAML anchors, aliases and merge keys
-YAML SHALL be parsed into a node tree and walked once, never decoded into Go values first: an alias SHALL take its anchor's value and a `<<` merge key SHALL merge the referenced mappings under the keys written beside it. The walk SHALL count every node an alias or merge expands against its node budget and detect cycles.
+YAML SHALL be parsed into a node tree and walked once, never decoded into Go values first: an alias SHALL take its anchor's value and a `<<` merge key SHALL merge the referenced mappings under the keys written beside it. The walk SHALL count every node an alias or merge expands against `MaxKeys` and detect cycles.
 
 #### Scenario: Aliases and merges
 ```gherkin
@@ -720,7 +740,7 @@ Examples:
   | nothing                                                | ["server.hosts[0]", "server.hosts[1]", "server.hosts[2]"] | server.hosts[2] | ("c", true)   |
   | APP_SERVER_HOSTS_0=z                                   | ["server.hosts[0]"]                                       | server.hosts[1] | ("", false)   |
   | APP_SERVER_HOSTS=z,y                                   | ["server.hosts"]                                          | server.hosts    | ("z,y", true) |
-  | APP_PROFILE=prod and config.prod.yaml with hosts: []   | ["server.hosts[0]", "server.hosts[1]", "server.hosts[2]"] | server.hosts[0] | ("a", true)   |
+  | APP_PROFILE=prod and config.prod.yaml with server.hosts: [] | ["server.hosts[0]", "server.hosts[1]", "server.hosts[2]"] | server.hosts[0] | ("a", true)   |
 ```
 
 <!-- cases: 1 default: file-only row -->
@@ -766,7 +786,7 @@ Examples:
 <!-- cases: N/A 10 compatibility: new module; the root's doger.EnvPropertySource("") keeps its meaning (it looks keys up one by one and never enumerates; its godoc states the difference) -->
 
 ### Requirement: Env names follow Spring's mapping
-A key SHALL map to a variable by uppercasing, `.` to `_`, removing `-`, `/` to `__` and `[i]` to `_i`; a map key `[k]` SHALL map to `_K` only when `k` matches `[a-z0-9]+`, and other map keys are not addressable from env. Variables SHALL map back with `__` as the instance separator and an all-digit segment as an index. The mapping SHALL be identical in both modules.
+A key SHALL map to a variable by uppercasing, `.` to `_`, removing `-`, `/` to `__` and `[i]` to `_i`; a map key `[k]` SHALL map to `_K` only when `k` matches `[a-z0-9]+`, and other map keys are not addressable from env. Variables SHALL map back with `__` as the instance separator and an all-digit segment as an index, also right after the first segment (`APP_SERVERS_0` is `servers[0]`). Both modules SHALL share one golden table whose mode column marks the extension-only skip rule.
 
 #### Scenario: Key to variable
 ```gherkin
@@ -797,9 +817,10 @@ Examples:
   | APP_REDIS__QUEUE_ADDR=q                     | ["redis/queue.addr"]                   |
   | APP_SERVER_HOSTS_0=a, APP_SERVER_HOSTS_1=b  | ["server.hosts[0]", "server.hosts[1]"] |
   | APP__X=1, app_lower=1, APP_A___B=1          | []                                     |
+  | APP_SERVERS_0=x, APP_REDIS_7_PORT=1         | ["redis[7].port", "servers[0]"]        |
 ```
 
-<!-- cases: 1 default: Spring mapping rows; the table is the golden file testdata/envmapping.txt, copied into config/testdata/envmapping.txt, and a root test asserts the two copies are byte-equal -->
+<!-- cases: 1 default: Spring mapping rows; the table is the golden file testdata/envmapping.txt with columns | mode | env name | key |, copied into config/testdata/envmapping.txt, and a root test asserts the two copies are byte-equal. Mode file rows are read by this module; mode ext rows apply only to extension views, where a digit segment right after the name or the instance is skipped (extension-properties, D74) -->
 <!-- cases: 2 overrides: EnvMapper is "A custom env mapper" -->
 <!-- cases: 3 zero values: an empty variable value is ("", true) -->
 <!-- cases: 4 boundaries: index in the middle and at the end; instance separator -->
@@ -1100,7 +1121,7 @@ Every error `Load` returns, except a context error, SHALL be a `*config.ParseErr
 ```gherkin
 Given clearEnvPrefix(t, "APP_") and <setup>
 When the consumer calls <source>.Load(ctx)
-Then err.Error() is "<text>", errors.Is(err, <target>) is true, and errors.As(err, &vf) with vf an interface{ error; ValueFree() bool } holds with vf.ValueFree() true
+Then err.Error() is "<text>", errors.Is(err, <target>) is true, and errors.As(err, &vf) with vf an interface{ error; ValueFree() bool } holds with vf reporting true from ValueFree
 
 Examples:
   | setup                                            | source                                               | text                                            | target                    |
@@ -1123,11 +1144,12 @@ Then err == context.Canceled holds, so err is not a *config.LayerError
 ```
 
 <!-- cases: N/A 1 default, 2 overrides: error shapes are fixed -->
-<!-- cases: 3 zero values: the Dir() option row; a nil *config.FileError's ValueFree() returns false without panicking (nil-safe receivers) -->
+<!-- cases: 3 zero values: the Dir() option row; a nil *config.FileError reports true from its ValueFree method without panicking, as in the root module (nil-safe receivers, D78) -->
 <!-- cases: 4 boundaries: a cause that is not value-free is printed by type only; EACCES and other IO errors print the path as given and the fs error's short text -->
 <!-- cases: 5 errors: every row; errors.As reaches each typed error; errors.Is reaches the cause through Unwrap or matches the sentinel through Is; %#v prints type-only text (GoString); a done ctx wins over a layer that returned ctx.Err() -->
 <!-- cases: N/A 6 duplicate, 7 lifecycle, 8 concurrency: Load only -->
 <!-- cases: N/A 9 panics: errors are plain values -->
+<!-- cases: sentinels: each config sentinel is var ErrX error = &sentinelError{msg}, a struct with pointer receivers, so two sentinels with one text stay distinct for errors.Is (D78) -->
 <!-- cases: 10 compatibility: pointer receivers follow the root's *StartError and *ExtensionError, so errors.As with a value target can never silently miss -->
 
 ### Requirement: Files over the size limit and non-regular files are refused
@@ -1159,20 +1181,21 @@ Examples:
   | a FIFO                       |
   | a directory                  |
   | a symlink to a FIFO          |
+  | a unix socket                |
 ```
 
-<!-- cases: 1 default: 1 MiB rows; regular-file check always on. Godoc states the memory cost: a YAML node tree costs about 60 MiB per MiB of file, which is why the default is 1 MiB and not larger -->
+<!-- cases: 1 default: 1 MiB rows; regular-file check always on. Godoc states the memory cost: a YAML node tree costs up to about 130 MiB per MiB of file in the worst case, which is why the default is 1 MiB and not larger (D79) -->
 <!-- cases: 2 overrides: MaxFileSize rows -->
 <!-- cases: 3 zero values: MaxFileSize(0) means the default; a negative size is "Options are checked when Load runs" -->
 <!-- cases: 4 boundaries: exactly at and one past the limit -->
-<!-- cases: 5 errors: ErrFileTooLarge, ErrNotRegularFile -->
+<!-- cases: 5 errors: ErrFileTooLarge, ErrNotRegularFile; opening a unix socket fails with ENXIO or EOPNOTSUPP, which maps to ErrNotRegularFile (D79) -->
 <!-- cases: N/A 6 duplicate, 7 lifecycle: Load only; polls are config-reload's -->
-<!-- cases: 8 concurrency: a FIFO never blocks: Unix opens with O_RDONLY|O_NONBLOCK and checks f.Stat() on the descriptor, Windows opens plainly and checks f.Stat(); a path swapped for a FIFO between listing and opening is still refused -->
+<!-- cases: 8 concurrency: a FIFO never blocks: under the unix build tag the file is opened with O_RDONLY|O_NONBLOCK|O_NOCTTY and f.Stat() is checked on the descriptor; under !unix (Windows, js/wasm, wasip1) it is opened plainly and f.Stat() is checked (D79); a path swapped for a FIFO between listing and opening is still refused -->
 <!-- cases: N/A 9 panics: plain file reads -->
 <!-- cases: N/A 10 compatibility: new module -->
 
 ### Requirement: Options are checked when Load runs
-An invalid option SHALL fail `Load` with a `*config.OptionError` naming it, matching `config.ErrInvalidOption`: no path or `""` in `Dir` or `File`; an empty `Name` or one with `/`; an unknown `Format`; a `Decoder` with a nil func or ext `""` or `"."`; `ProfileEnv("")`; a `Layer` with no source or an empty, repeated or built-in name; an empty `LayerOrder`, or one repeating or missing a name; a `LayerRefresh` for no added layer; a negative `MaxFileSize`, `MaxKeys` or `PollInterval`.
+An invalid option SHALL fail `Load` with a `*config.OptionError` matching `config.ErrInvalidOption`: no path or `""` in `Dir`/`File`; an empty `Name` or one with `/`; unknown `Format`; a `Decoder` with a nil func or ext `""`, `"."` or `.a.b`; `ProfileEnv("")`; a `Layer` with no source or an empty, repeated or built-in name; an empty `LayerOrder` or one repeating or missing a name; a `LayerRefresh` for no added layer; a negative `MaxFileSize`, `MaxKeys` or `PollInterval`; `MaxKeys` over 50,000.
 
 #### Scenario: Invalid options
 ```gherkin
@@ -1192,6 +1215,7 @@ Examples:
   | config.Decoder(".hcl", nil)                                       | Decoder      |
   | config.Decoder("", hclDecode)                                     | Decoder      |
   | config.Decoder(".", hclDecode)                                    | Decoder      |
+  | config.Decoder(".tar.gz", hclDecode)                              | Decoder      |
   | config.ProfileEnv("")                                             | ProfileEnv   |
   | config.Layer("vault", nil)                                        | Layer        |
   | config.Layer("", vault)                                           | Layer        |
@@ -1205,6 +1229,7 @@ Examples:
   | config.LayerRefresh(config.LayerEnv, time.Second)                 | LayerRefresh |
   | config.MaxFileSize(-1)                                            | MaxFileSize  |
   | config.MaxKeys(-1)                                                | MaxKeys      |
+  | config.MaxKeys(50001)                                             | MaxKeys      |
   | config.PollInterval(-time.Second)                                 | PollInterval |
 ```
 
@@ -1345,7 +1370,7 @@ Examples:
 <!-- cases: N/A 6 duplicate: one panic ends the Load -->
 <!-- cases: 7 lifecycle: the first Load returns the error and keeps the empty snapshot; a later poll turns the same panic into a staging error (config-reload) -->
 <!-- cases: N/A 8 concurrency: the Load slot is released on the panic path (deferred) -->
-<!-- cases: 9 panics: the subject -->
+<!-- cases: 9 panics: the subject; a panic inside a built-in YAML, TOML or JSON parser is recovered the same way, as a *config.ParseError with ParseCategoryPanic naming only the type, tested in-package by swapping the parser for one that panics (D79) -->
 <!-- cases: N/A 10 compatibility: new module -->
 
 ### Requirement: Where the source logs
@@ -1425,7 +1450,7 @@ Examples:
 <!-- cases: 10 compatibility: spike 4 of golang-lib/config, where an env var for a key missing from the file was ignored; the mapped-variable row is the same defect through EnvMapper -->
 
 ### Requirement: The module satisfies the root contract and stays small
-`*config.Source` SHALL satisfy `doger.ConfigSource`, `doger.LogfSetter` and `doger.ConfigWatcher` structurally and SHALL NOT implement `doger.ConfigValidator`; its godoc SHALL say that only the container calls `Load` on an installed source. Its non-test code SHALL NOT import doger and SHALL depend only on the modules `go.yaml.in/yaml/v3` and `github.com/pelletier/go-toml/v2` at v2.4.3 or later. Watching is specified by `config-reload`.
+`*config.Source` SHALL satisfy `doger.ConfigSource`, `doger.LogfSetter` and `doger.ConfigWatcher` structurally and SHALL NOT implement `doger.ConfigValidator`; its godoc SHALL say that only the container calls `Load` on an installed source. Its non-test code SHALL NOT import doger and SHALL depend only on modules listed in `config/footprint.allow` (`go.yaml.in/yaml/v3`, `github.com/pelletier/go-toml/v2` at v2.4.3 or later). Watching is specified by `config-reload`.
 
 #### Scenario: Compile-time contract checks
 ```gherkin
@@ -1436,12 +1461,20 @@ Then the declarations compile and the assertion's ok is false
 
 #### Scenario: Dependency footprint
 ```gherkin
-Given the CI job for the config module
-When it runs go list -deps -f '{{with .Module}}{{.Path}}{{end}}' ./... | sort -u in config/ without test files, then drops the module's own path github.com/kartaladev/doger/config
-Then the remaining module paths are exactly "github.com/pelletier/go-toml/v2" and "go.yaml.in/yaml/v3"
-And config/go.mod requires github.com/pelletier/go-toml/v2 at v2.4.3 or later
+Given the CI job for the config module, where go list -deps -f '{{with .Module}}{{.Path}}{{end}}' ./... in config/ without test files reports <listed> besides github.com/kartaladev/doger/config
+When the job compares the sorted list with config/footprint.allow (comm -23)
+Then the job <job>
+And config/go.mod requires github.com/pelletier/go-toml/v2 at v2.4.3 or later once it requires go-toml at all
+
+Examples:
+  | listed                                                    | job    |
+  | nothing (the group-1 skeleton, standard library only)     | passes |
+  | github.com/pelletier/go-toml/v2, go.yaml.in/yaml/v3       | passes |
+  | go.yaml.in/yaml/v3 only                                   | passes |
+  | github.com/pelletier/go-toml/v2, github.com/x/extra       | fails, naming github.com/x/extra |
 ```
 
 <!-- cases: N/A 1-8: build-level guarantees -->
-<!-- cases: N/A 9 panics: build-level guarantee; v2.4.3 is the go-toml floor because v2.4.2 overflows the stack on a long run of "[" (D50) -->
-<!-- cases: 10 compatibility: golang-lib/config is untouched; this module is separate; relying on go-toml/v2/unstable means a consumer's MVS upgrade could break the build, which doger's own tests cannot catch (design Risks) -->
+<!-- cases: N/A 9 panics: build-level guarantee; v2.4.3 is the go-toml floor as defense in depth: v2.4.2 overflows the stack only near 1.04M nested "[" (D75) -->
+<!-- cases: footprint: one package pattern (./...) everywhere; an empty or partial list passes, so CI is green from the group-1 skeleton on (D76) -->
+<!-- cases: 10 compatibility: golang-lib/config is untouched; this module is separate; relying on go-toml/v2/unstable means a consumer's MVS upgrade could break the build, which doger's own tests cannot catch (design Risks); a compile-only test that uses the unstable Parser API fails loudly in our CI when that API moves (D76) -->

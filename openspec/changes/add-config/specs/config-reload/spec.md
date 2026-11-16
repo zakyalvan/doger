@@ -70,7 +70,7 @@ Property reads SHALL go through a view the root owns, switched to `next` only af
 #### Scenario: Read paths agree after a commit and after a rejection
 ```gherkin
 Given a root with a test watcher source holding "server.port" = "8080" and "srv.port" = "8080"
-And an extension "srv" whose private scope holds a transient "*app.Probe" whose provider records doger.ExtensionProperties(i) Lookup("port")
+And an extension "srv" whose private scope holds a transient "*app.Probe" whose provider calls p, ok := doger.ExtensionProperties(i), requires ok, and records p.Lookup("port")
 And doger.BindConfig(root, "server", ServerConfig{}) returned a nil error and root.Start() returned nil
 When the test source calls changed with next holding "server.port" = "<staged>" and "srv.port" = "<staged>"
 Then the read "<path>" returns <value>
@@ -98,7 +98,7 @@ And after "release" is closed and changed returned true, the same call returns P
 #### Scenario: One BindProperties call reads one view
 ```gherkin
 Given a root with a test watcher source holding "srv.host" = "h0" and "srv.port" = "1"
-And an extension "srv" whose private scope holds a transient "*app.Probe" whose provider calls doger.BindProperties(doger.ExtensionProperties(i), &cfg) into struct{ Host string; Port int }
+And an extension "srv" whose private scope holds a transient "*app.Probe" whose provider calls p, ok := doger.ExtensionProperties(i), requires ok, and calls doger.BindProperties(p, &cfg) into cfg of type struct{ Host string; Port int }
 And root.Start() returned nil
 When 8 goroutines invoke "*app.Probe" in a loop while the source commits 100 views, view n holding "srv.host" = "h<n>" and "srv.port" = "<n>"
 Then every recorded cfg has Host equal to "h" followed by its Port
@@ -399,7 +399,7 @@ Subscribers, hooks and the user code a rebind runs SHALL be able to call `OnChan
 
 #### Scenario: Re-entrant calls from a callback
 ```gherkin
-Given a testing/synctest bubble with a root, a test watcher source holding "server.port" = "8080" and "limits.per-minute" = "10" in every view it stages, doger.BindConfig(root, "server", ServerConfig{}), h its ConfigValue[ServerConfig], and a <callback> that calls <call> and sends its result on a channel
+Given a testing/synctest bubble with a root, a test watcher source holding "server.port" = "8080" and "limits.per-minute" = "10" in every view it stages, doger.BindConfig(root, "server", ServerConfig{}), h its ConfigValue[ServerConfig], and a <callback> that, only when it sees Port 9090 and only the first time (sync.Once), calls <call> and sends its result on a channel of capacity 1
 And root.Start() returned nil
 When the source <trigger>
 Then the channel receives <result>
@@ -422,7 +422,7 @@ Examples:
 <!-- cases: N/A 5 errors: each call succeeds -->
 <!-- cases: N/A 6 duplicate: a section bound from a callback joins the reload set like any other -->
 <!-- cases: 7 lifecycle: `go root.Shutdown()` from a callback completes; a synchronous Shutdown from a callback is documented as unsupported and has no scenario -->
-<!-- cases: 8 concurrency: the subject; results arrive on channels and the bubble test is bounded by testWithTimeout -->
+<!-- cases: 8 concurrency: the subject; results arrive on buffered channels and the bubble test is bounded by testWithTimeout; the Port 9090 gate and sync.Once keep a callback that triggers a rebind (BindConfig from Validate, which runs again on every rebind) from recursing or blocking on a second send (D72) -->
 <!-- cases: N/A 9 panics: none expected: every call is a supported re-entry -->
 <!-- cases: N/A 10 compatibility: new API -->
 
@@ -432,17 +432,17 @@ When the last started member begins shutting down, the root SHALL cancel the wat
 #### Scenario: A blocked callback does not hang Shutdown
 ```gherkin
 Given a testing/synctest bubble with a root, a test watcher source holding "server.port" = "8080", a service "*app.DB" whose Shutdown is recorded, doger.BindConfig(root, "server", ServerConfig{}), and a <blocker> that blocks until channel "release" is closed
-And root.Start() returned nil and the source has committed or rejected a change that reached the blocker
+And root.Start() returned nil, the source has called changed with "server.port" = "<port>", and the blocker has been entered
 When the consumer calls root.ShutdownWithContext with a context that times out after 1s
 Then it returns after 1s of bubble time with report.Succeed false and an error matching context.DeadlineExceeded
 And "*app.DB" Shutdown was called before the deadline
 And after "release" is closed, the bubble ends with no goroutine left
 
 Examples:
-  | blocker                                  |
-  | OnChange subscriber                      |
-  | HookConfigReloadFailed hook              |
-  | ServerConfig.Validate() during a rebind  |
+  | blocker                                  | port  |
+  | OnChange subscriber                      | 9090  |
+  | HookConfigReloadFailed hook              | 99999 |
+  | ServerConfig.Validate() during a rebind  | 9090  |
 ```
 
 #### Scenario: A reload in flight when shutdown begins does not commit
@@ -489,7 +489,7 @@ And at least one commit and one rejection happened
 <!-- cases: N/A 9 panics, 10 compatibility: concurrency only -->
 
 ### Requirement: The watcher runs while a member is started
-The watcher and dispatcher SHALL start at the first successful `Start` of any container sharing the config state and stop when the last started member shuts down. Membership SHALL count only successful starts. A start after every member stopped SHALL call `Watch` again only once the previous `Watch` returned, without blocking `Start`, and SHALL not call it if the new watch ends first.
+The watcher and dispatcher SHALL start at the first successful `Start` of any container sharing the config state and stop when the last started member shuts down. Membership SHALL count only successful starts. A restart SHALL call `Watch` only once the previous `Watch` and launcher returned, without blocking `Start`, and not if the new watch ends first. A restarted dispatcher SHALL start only after the previous one is done, and a stop SHALL affect only its own start cycle.
 
 #### Scenario: Watcher lifecycle
 ```gherkin
@@ -527,13 +527,28 @@ Examples:
   | root.Start(), root.Shutdown(), then closes "release"           | 1                                             |
 ```
 
+#### Scenario: Restarts never overlap start cycles
+```gherkin
+Given a testing/synctest bubble with a root using a test watcher source holding "server.port" = "8080" whose first Watch ignores its ctx and returns only when channel "release" is closed, doger.BindConfig(root, "server", ServerConfig{}), and an OnChange subscriber that records each value and the largest number of its calls running at once
+And root.Start() returned nil, and root.ShutdownWithContext with a context that timed out after 1s returned an error matching context.DeadlineExceeded
+When the consumer runs <steps>, closes "release", and the source then commits "server.port" = "9090" and then "server.port" = "9091"
+Then the test source's Watch was called 2 times, the second call after the first returned, and the second Watch's ctx is not done
+And the subscriber recorded 9090 and then 9091, with at most 1 call running at once
+And when the bubble ends after root.Shutdown(), no goroutine is left
+
+Examples:
+  | steps                                                                                         |
+  | root.Start()                                                                                  |
+  | root.Start(), root.ShutdownWithContext with a context that timed out after 1s, root.Start()  |
+```
+
 <!-- cases: 1 default: root Start/Shutdown row -->
 <!-- cases: N/A 2 overrides: config.DisableWatch is in "A config.New source polls for changes" -->
 <!-- cases: 3 zero values: the nothing row starts no goroutine -->
 <!-- cases: 4 boundaries: one member, two members, unbalanced calls, restart -->
 <!-- cases: N/A 5 errors: Watch errors are "A watch that stops" -->
 <!-- cases: 6 duplicate: double Shutdown row -->
-<!-- cases: 7 lifecycle: the subject (spike 1); a restart's launcher waits for the previous Watch's done channel with select on the new watch ctx, so Start never blocks and a stop before the old Watch returned leaks nothing -->
+<!-- cases: 7 lifecycle: the subject (spike 1); a restart's launcher waits for the previous launcher's and Watch's done channels with select on the new watch ctx, so Start never blocks and a stop before the old Watch returned leaks nothing; the stop flag belongs to one start cycle, so an old cycle's stop never stops a new one, and a new dispatcher starts after the old one is done (D81) -->
 <!-- cases: 8 concurrency: goleak at the end of every row -->
 <!-- cases: N/A 9 panics: covered by "A watch that stops" -->
 <!-- cases: N/A 10 compatibility: new API -->
@@ -577,7 +592,7 @@ Then HookContainerPanic received ("config-watch", "s3cret-9f2c7a41") and root.St
 <!-- cases: N/A 10 compatibility: new API -->
 
 ### Requirement: Clones share config and the watcher
-`Clone()` SHALL always share the parent's committed view, watcher and dispatcher, whatever the kind of its source, with no `Load` and no `SetLogf`. `CloneWithOpts` SHALL share them only when given the parent's own `ConfigSource` as the same pointer; a different source gets its own config state. One reload SHALL reach every container that shares the state.
+`Clone()` SHALL always share the parent's committed view, watcher and dispatcher, whatever the kind of its source, with no `Load` and no `SetLogf`. `CloneWithOpts` SHALL share them only when given the parent's own `ConfigSource` as the same pointer; another source, or none, gets its own config state, against which the copied handles are rebound (container-construction). One reload SHALL reach every container that shares the state.
 
 #### Scenario: One reload reaches parent and clone
 ```gherkin
@@ -605,7 +620,7 @@ And the test passes under -race
 
 <!-- cases: 1 default: the Clone row -->
 <!-- cases: 2 overrides: CloneWithOpts with the parent's own pointer; a different source loads its own state (config-sources); a zero-size source type may compare equal as a pointer, as the godoc notes -->
-<!-- cases: N/A 3 zero values: CloneWithOpts with no ConfigSource has no config state (config-sources) -->
+<!-- cases: N/A 3 zero values: CloneWithOpts with no ConfigSource gets its own empty state and rebinds copied handles to their defaults (container-construction "Copied config handles follow the clone's source") -->
 <!-- cases: 4 boundaries: pointer versus non-pointer source under Clone() -->
 <!-- cases: N/A 5 errors: Clone() cannot fail because it never loads; a clone's own load failure and ErrConfigConflict are config-sources' -->
 <!-- cases: N/A 6 duplicate: one watcher per state -->
@@ -647,8 +662,10 @@ Then the clone's ConfigValue[ServerConfig].Get().Port is 9090
 ```gherkin
 Given a root with a test watcher source holding "server.port" = "8080" and "limits.per-minute" = "10", doger.BindConfig(root, "server", ServerConfig{}), and a clone that bound doger.BindConfig(clone, "limits", LimitsConfig{}) and was then dropped without Shutdown
 And root.Start() returned nil
+And the test took w := weak.Make(clone) before dropping it
 When the test calls runtime.GC() and the source calls changed with "server.port" = "9090" and "limits.per-minute" = "0", retrying both until changed returns true or 100 attempts passed
 Then changed returned true and the root's ConfigValue[ServerConfig].Get().Port is 9090
+And w.Value() is nil, so the owner cleanup holds the clone only weakly
 ```
 
 #### Scenario: Whose hooks a failure fires
@@ -677,6 +694,86 @@ Examples:
 <!-- cases: 7 lifecycle: the subject; runtime.AddCleanup on the owner scope is only the fallback for a clone dropped without Shutdown. Documented caveats: an OnChange subscriber that captures a clone keeps it alive; a clone dropped without Shutdown keeps vetoing until it is garbage-collected, which is not deterministic. Membership (started, not shut down) drives only the watcher and dispatcher -->
 <!-- cases: 8 concurrency: owners are per-entry state outside the reload set; a reload commits when the current set is a subset of the one it rebound (removals only) and retries only for added entries, see "A bind racing a reload is never left behind" -->
 <!-- cases: N/A 9 panics: owner bookkeeping runs no user code -->
+<!-- cases: N/A 10 compatibility: new API -->
+
+### Requirement: A veto ends when its section leaves
+A failed rebind SHALL veto a reload only if its entry is still in the reload set when the commit is decided under the commit semaphore. The root SHALL keep the last rejected staged view and, when an entry leaves the set, re-offer it once through the reload slot; it SHALL commit if no remaining entry fails. A newer staged view or a stop SHALL discard it.
+
+#### Scenario: A veto from a section that left during the reload does not block
+```gherkin
+Given a root with InjectorOpts.Logf recording lines and a test watcher source holding "server.port" = "8080" and "limits.per-minute" = "10", doger.BindConfig(root, "server", ServerConfig{}), and clone := root.Clone() that bound doger.BindConfig(clone, "limits", LimitsConfig{}) with a LimitsConfig.Validate that, when PerMinute is 0, closes channel "entered", waits for channel "release" and fails
+And root.Start() returned nil and a goroutine is inside changed with next holding "server.port" = "9090" and "limits.per-minute" = "0", after "entered" closed
+When clone.Shutdown() returns and then "release" is closed
+Then changed returns true and the root's ConfigValue[ServerConfig].Get().Port is 9090
+And no recorded line contains "reload failed"
+```
+
+#### Scenario: A rejected view is re-offered when its vetoing section leaves
+```gherkin
+Given a testing/synctest bubble with a root, a test watcher source holding "server.port" = "8080" and "limits.per-minute" = "10", doger.BindConfig(root, "server", ServerConfig{}), and clone := root.Clone() that bound doger.BindConfig(clone, "limits", LimitsConfig{})
+And root.Start() returned nil, the source called changed with "server.port" = "9090" and "limits.per-minute" = "0", which returned false, and then <later>
+When clone.Shutdown() returns and the bubble is idle (synctest.Wait)
+Then the root's ConfigValue[ServerConfig].Get().Port is <port>
+
+Examples:
+  | later                                                                                                              | port |
+  | nothing                                                                                                            | 9090 |
+  | the source called changed with "server.port" = "9091" and "limits.per-minute" = "0", which returned false           | 9091 |
+  | the source called changed with "server.port" = "8081" and "limits.per-minute" = "10", which returned true           | 8081 |
+  | root.Shutdown() returned                                                                                           | 8080 |
+```
+
+<!-- cases: 1 default: the nothing row re-offers the rejected view -->
+<!-- cases: N/A 2 overrides: not configurable: a departed section never decides a reload -->
+<!-- cases: N/A 3 zero values: with no rejected view, a departure re-offers nothing (the 8081 row) -->
+<!-- cases: 4 boundaries: departure during the reload versus after the rejection -->
+<!-- cases: 5 errors: the newer rejected view replaces the older one (9091 row) -->
+<!-- cases: 6 duplicate: a view is re-offered once; a committed view clears it -->
+<!-- cases: 7 lifecycle: a stop discards the rejected view (Shutdown row) (D69) -->
+<!-- cases: 8 concurrency: the "entered"/"release" handshake pins the departure inside a reload; the re-offer runs through the reload slot, serialized with changed -->
+<!-- cases: N/A 9 panics: a re-offer runs the same rebind as changed, whose panics are config-binding's -->
+<!-- cases: N/A 10 compatibility: new API -->
+
+### Requirement: Ownership is released once and survives a removed entry
+Releasing an owner SHALL be idempotent, whether through `forget` or the cleanup of a collected scope. A clone that copies a registration whose entry already left the set SHALL re-add it and rebind it against the committed view; if that rebind fails, the clone's handle SHALL keep its last value, stop following reloads, and report the failure to the clone's hooks and `Logf`.
+
+#### Scenario: An owner released twice leaves the others in place
+```gherkin
+Given a root with a test watcher source holding "server.port" = "8080", doger.BindConfig(root, "server", ServerConfig{}), and clone := root.Clone() made after the bind, so both own "server"
+And root.Start() returned nil, clone.Shutdown() returned, the clone was dropped, and the test called runtime.GC() until a weak.Pointer to the clone was nil
+When the source calls changed with "server.port" = "<port>"
+Then changed returns <commit> and the root's ConfigValue[ServerConfig].Get().Port is <result>
+
+Examples:
+  | port  | commit | result |
+  | 9090  | true   | 9090   |
+  | 99999 | false  | 8080   |
+```
+
+#### Scenario: A clone of a removed section re-adds it
+```gherkin
+Given a root with InjectorOpts.Logf recording lines and a test watcher source holding "server.port" = "8080", and other := root.Clone() made before the root called doger.BindConfig(root, "server", ServerConfig{})
+And root.Start() and other.Start() returned nil, root.Shutdown() returned, so "server" left the set, and <while removed>
+And clone := root.Clone()
+When the source commits "server.port" = "9091"
+Then the clone's ConfigValue[ServerConfig].Get().Port is <port>
+And <logged>
+
+Examples:
+  | while removed                                       | port | logged                                                                           |
+  | nothing                                             | 9091 | no recorded line contains "reload failed"                                        |
+  | the source committed "server.port" = "99999"        | 8080 | one recorded line contains "reload failed" and "server.port", none "99999"       |
+```
+
+<!-- cases: 1 default: the 9090 row of the double release -->
+<!-- cases: N/A 2 overrides: ownership is not configurable -->
+<!-- cases: N/A 3 zero values: covered by "Which sections gate a reload" -->
+<!-- cases: 4 boundaries: an entry in the set versus one already removed -->
+<!-- cases: 5 errors: a re-added entry that fails its rebind keeps its last value and is reported once (99999 row) -->
+<!-- cases: 6 duplicate: Shutdown then collection releases the clone's owner once; each wrapper holds one owner token and forget stops its cleanup (D70) -->
+<!-- cases: 7 lifecycle: Shutdown, collection and a clone of a shut-down container -->
+<!-- cases: 8 concurrency: the re-add runs under the commit semaphore; lock order is the semaphore, then the entry's owner lock -->
+<!-- cases: N/A 9 panics: owner bookkeeping runs no user code; a rebind panic is config-binding's -->
 <!-- cases: N/A 10 compatibility: new API -->
 
 ### Requirement: A bind racing a reload is never left behind

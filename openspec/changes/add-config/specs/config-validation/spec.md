@@ -302,7 +302,7 @@ And errors.As(err, new(validator.ValidationErrors)) is false
 <!-- cases: N/A 10 compatibility: new API -->
 
 ### Requirement: A malformed validate tag is a target error
-A `validate:` tag the default validator cannot parse, on `T` or on any struct type reachable from it through fields, pointers, slices or maps, SHALL fail the bind before any source is consulted with an error matching `ErrInvalidConfigTarget`, not `ErrInvalidConfig`, naming `T` and saying a tag is malformed, without the validator's own message.
+A `validate:` tag with an unknown tag name or a syntax the default validator rejects on a zero value, on `T` or on any struct type reachable from it through fields, pointers, slices or maps, SHALL fail the bind before any source is consulted with an error matching `ErrInvalidConfigTarget`, not `ErrInvalidConfig`, naming `T` and saying a tag is malformed. A malformed tag parameter is not covered here.
 
 #### Scenario: A malformed tag
 ```gherkin
@@ -329,7 +329,7 @@ Examples:
 <!-- cases: N/A 6 duplicate: one report per type -->
 <!-- cases: 7 lifecycle: checked once per plan, so the same malformed type fails every bind -->
 <!-- cases: N/A 8 concurrency: plan building is covered by config-binding "Concurrent binding and reads" -->
-<!-- cases: 9 panics: go-playground panics on such a tag; the panic is recovered into this error; a validator panic at run time is "A panicking validator is an error" -->
+<!-- cases: 9 panics: go-playground panics on such a tag; the panic is recovered into this error; a malformed parameter (min=abc) panics only when a value reaches it and is "A panicking validator is an error" (D73) -->
 <!-- cases: N/A 10 compatibility: new API -->
 
 ### Requirement: ValidateConfig validates an extension's merged value
@@ -373,6 +373,17 @@ Examples:
   | (*doger.RootScope)(nil) | errors.Is(err, doger.ErrInvalidConfigTarget) is true and the validator was not called          |
 ```
 
+#### Scenario: A nested ValidateConfig is not re-prefixed
+```gherkin
+Given root's property source holds "server.pool.size" = "0"
+And type Pool struct { Size int `cfg:"size" validate:"min=1"` }
+And ServerConfig has a field Pool Pool `cfg:"pool"` and a Validate() method returning doger.ValidateConfig(root, c.Pool)
+And root was created with a ConfigValidator that always returns nil
+When the consumer calls doger.ResolveConfig(root, "server", ServerConfig{})
+Then errors.As(err, &verr) is true with verr.Section "server", and errors.As(verr.Err, &inner) is true with inner.Section "", inner.Type.String() "app.Pool" and inner.Violations[0].Key "size"
+And the error message is "DI: config: invalid \"server\" (app.ServerConfig): DI: config: invalid (app.Pool): size (min)"
+```
+
 #### Scenario: Invalid values to validate
 ```gherkin
 When the consumer calls doger.ValidateConfig(root, <v>)
@@ -390,12 +401,12 @@ Examples:
 <!-- cases: 2 overrides: code option wins before validation -->
 <!-- cases: 3 zero values: nil and typed-nil v; nil injector means DefaultRootScope; typed-nil injectors are rejected as for BindConfig -->
 <!-- cases: 4 boundaries: struct value and pointer accepted, the type text following what was given; non-struct rejected -->
-<!-- cases: 5 errors: ErrInvalidConfig wrapped in the extension's error; ErrInvalidConfigTarget; message without a section (Section "") -->
+<!-- cases: 5 errors: ErrInvalidConfig wrapped in the extension's error; ErrInvalidConfigTarget; message without a section (Section ""); a ValidateConfig error returned from Validate keeps its keys relative to its argument, never re-prefixed (D78) -->
 <!-- cases: N/A 6-9: as for tags -->
 <!-- cases: N/A 10 compatibility: new API -->
 
 ### Requirement: A panicking validator is an error
-A panic in a replacement `ConfigValidator` or in a type's `Validate()` SHALL be recovered and returned as an error matching `ErrInvalidConfig`, with message `DI: config: invalid "<section>" (<type>): validator panic of type <panic type>`, never the panic value.
+A panic in the default validator, a replacement `ConfigValidator` or a type's `Validate()` SHALL be recovered and returned as an error matching `ErrInvalidConfig`, with message `DI: config: invalid "<section>" (<type>): validator panic of type <panic type>`, never the panic value. At a reload it SHALL reject the reload and keep the last good value.
 
 #### Scenario: Validator panics
 ```gherkin
@@ -411,9 +422,35 @@ Examples:
   | ServerConfig.Validate         | nil                          | *runtime.PanicNilError  |
 ```
 
+#### Scenario: A malformed tag parameter panics only when a value reaches it
+```gherkin
+Given root's property source holds "server.port" = "<port>"
+And type ServerConfig struct { Port int `cfg:"port" validate:"<tag>"` }
+When the consumer calls doger.ResolveConfig(root, "server", ServerConfig{})
+Then <outcome>
+
+Examples:
+  | port | tag              | outcome                                                                                                                         |
+  |      | omitempty,max=xyz | the error is nil and the result is ServerConfig{}                                                                               |
+  | 8080 | omitempty,max=xyz | errors.Is(err, doger.ErrInvalidConfig) is true and the error message is "DI: config: invalid \"server\" (app.ServerConfig): validator panic of type string" |
+  | 8080 | required,min=abc | errors.Is(err, doger.ErrInvalidConfig) is true and the error message is "DI: config: invalid \"server\" (app.ServerConfig): validator panic of type string" |
+```
+
+#### Scenario: A reload that reaches a malformed parameter is rejected
+```gherkin
+Given root's source holds "server.port" = "" and root, err := doger.NewWithOpts(context.Background(), &doger.InjectorOpts{ConfigSource: src, Logf: recorder}) returned a nil err
+And h, err := doger.BindConfig(root, "server", ServerConfig{}) returned a nil err, where Port has `validate:"omitempty,max=xyz"`
+And root.Start(ctx) returned a nil err
+When the source stages a view holding "server.port" = "8080"
+Then changed returns false
+And h.Get() is ServerConfig{}
+And the recorder holds one warning containing "validator panic of type string"
+```
+
 <!-- cases: N/A 1 default, 2 overrides: failure path -->
-<!-- cases: 3 zero values: panic(nil) row -->
-<!-- cases: N/A 4 boundaries: one panic per row -->
+<!-- cases: 3 zero values: panic(nil) row; an empty value skips omitempty, so a malformed parameter behind it is never reached -->
+<!-- cases: 4 boundaries: one panic per row; a malformed parameter behind required and behind omitempty with a value (D73) -->
+<!-- cases: 7 lifecycle: at construction the bind fails; at a reload the reload is rejected and the last good value kept -->
 <!-- cases: 5 errors: matches ErrInvalidConfig; the value never appears -->
 <!-- cases: N/A 6-8: as for every validation -->
 <!-- cases: 9 panics: the subject; returned as an error to the caller, not routed to HookContainerPanic, because the caller receives it synchronously; a malformed tag is "A malformed validate tag is a target error" -->

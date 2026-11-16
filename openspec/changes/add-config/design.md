@@ -2,7 +2,7 @@
 
 ## Context
 
-See proposal.md for the motivation. The decision record (D1–D68, with options and reasons) is the Claude Doc "doger/config: Config as a First-Class Component". D33–D41 came from the first round of adversarial audits of this change, D42–D45 from the second and D46–D68 from the third (summarized in decision 13 below). Every decision was audited for idiomatic Go before being applied. The specs in `specs/*/spec.md` are the behavior contract. This document explains how the change meets them.
+See proposal.md for the motivation. The decision record (D1–D68, with options and reasons) is the Claude Doc "doger/config: Config as a First-Class Component". D33–D41 came from the first round of adversarial audits of this change, D42–D45 from the second, D46–D68 from the third (summarized in decision 13 below) and D69–D81 from the fourth (decision 14). Every decision was audited for idiomatic Go before being applied. The specs in `specs/*/spec.md` are the behavior contract. This document explains how the change meets them.
 
 Today:
 - `New(packages...) *RootScope` (`root_scope.go:43`) delegates to `NewWithOpts(opts, packages...) *RootScope` (`root_scope.go:67`), which calls `opts.initDefaults()` on the caller's own struct (`injector.go:447`). Neither can fail. `CloneWithOpts` (`root_scope.go:738`) copies the container with replaced options; `Clone()` passes `s.opts.copy()`.
@@ -65,11 +65,11 @@ Today:
 
 ## Decisions
 
-### 1. Constructors take a ctx, return errors and never write the caller's options (D5, D37, D38, D28, D55, D65, D67)
+### 1. Constructors take a ctx, return errors and never write the caller's options (D5, D37, D38, D28, D55, D65, D67, D71, D80)
 
 `New` and `Clone` stay as they are: they cannot fail. `NewWithOpts(ctx, opts, packages...)` and `CloneWithOpts(ctx, opts)` take the caller's context as their first parameter and return `(*RootScope, error)`. The `Must` variants take the same ctx and panic with the error value itself (`panic(err)`), like `must1` in `utils.go`.
 
-- **Why a ctx parameter, not a new name (D55).** The `context` package says the ctx is the first parameter and is never stored. A constructor that does I/O takes one, as `config.LoadDefaultConfig(ctx, ...)` (AWS SDK v2), `storage.NewClient(ctx, ...)` and `pgxpool.New(ctx, ...)` do. The Go blog's `XxxContext` duplicate exists to avoid a break, and these two signatures break anyway because they now return an error, so the parameter costs nothing extra. A nil ctx means `context.Background()`, as in every existing ctx-taking method. The ctx is used only during the call; nothing keeps it (D53).
+- **Why a ctx parameter, not a new name (D55).** The `context` package says the ctx is the first parameter and is never stored. A constructor that does I/O takes one, as `config.LoadDefaultConfig(ctx, ...)` (AWS SDK v2), `storage.NewClient(ctx, ...)` and `pgxpool.New(ctx, ...)` do. The Go blog's `XxxContext` duplicate exists to avoid a break, and these two signatures break anyway because they now return an error, so the parameter costs nothing extra. A nil ctx means `context.Background()`, as in every existing ctx-taking method. The ctx is used only during the call; nothing keeps it (D53). The repo's existing `Xxx`/`XxxWithContext` pairs are methods that cannot break; these constructors break anyway. `unify-constructor` keeps the ctx as the first parameter of its constructor, never an `Option`, since an option would store it (D80).
 - `New(packages...)` behaves as `NewWithOpts(context.Background(), nil, packages...)`; `Clone()` loads nothing (decision 1, Clone sharing).
 
 The constructor works on `o := opts.copy()`, never on `opts`:
@@ -99,7 +99,7 @@ NewWithOpts(ctx, opts, packages...)                (ctx nil -> Background)
   |      cancel lctx when the constructor returns                           | fails
   |                                                                         v
   |                                          return (nil, err)
-  |                                          *ConfigLoadError{Source, Err}
+  |                                          *ConfigLoadError{SourceType, Err}
   |                                          or an option-check sentinel;
   |                                          no package ran, nothing built,
   |                                          nothing logged
@@ -116,13 +116,13 @@ return (root, nil)
   - `Clone()` always shares the parent's config state, whatever the kind of its source: no `Load`, no `SetLogf`. So `Clone()` still cannot fail.
   - `CloneWithOpts` shares only when `o.ConfigSource` is the parent's own source as the same pointer (`reflect.ValueOf(src).Kind() == reflect.Pointer && src == parentSrc`). Comparing only pointers means `==` can never panic; godoc notes that pointers to a zero-size type may compare equal.
   - The option checks (`ErrConfigConflict`, typed-nil, D67) run before any sharing.
-  - A nil source gives a clone with no config. Any other source, including non-pointer kinds, is loaded for the clone.
+  - Otherwise (another source, including non-pointer kinds, or none) the clone loads its own source (none: the env-only default), and every config handle copied from the parent is rebound against the clone's view and validated; a failure fails `CloneWithOpts` with that error and returns a nil clone (D71). The clone then has its own entries, view, watcher and dispatcher.
 - **Alternatives.** Recording errors on the root and returning them from `Start` was rejected (D5). Changing `New` too was rejected (D37): it cannot fail, and changing it would rewrite about 800 call sites. Writing defaults back into the caller's options was rejected: it made "Logf set by the user" undecidable. A new pair of context-suffixed constructors (D55 as first drafted in round 3) was rejected by the user: it adds names for a break that happens anyway. `InjectorOpts.ConfigContext` was rejected (it stores a ctx), and so were pre-loading with a `Loaded() bool` marker (a second loading path that still uses an implicit Background) and loading in `Start` (packages call `BindConfig` at construction).
 
 ### 2. The Load context: real clock vs a user clock (D52)
 
 - **Real clock** (no `InjectorOpts.Clock`, or a caller-supplied `clockwork.NewRealClock()`): `context.WithTimeout(ctx, ConfigTimeout)`. The stdlib keeps the earlier of the caller's deadline and `now + ConfigTimeout`. `ConfigTimeout` 0 means `DefaultConfigTimeout`; a negative value means no timeout (ctx alone bounds `Load`). This path also covers `testing/synctest`, because the real clock is fake inside a bubble.
-- **Detecting a user clock.** `clockSet` is recorded before defaults (decision 1, step 0): `opts.Clock != nil && reflect.TypeOf(opts.Clock) != reflect.TypeOf(clockwork.NewRealClock())`. Comparing with `==` is unsafe: the real clock has size zero, so whether two pointers to it are equal is unspecified (probe `audit-r4/clk`).
+- **Detecting a user clock.** `clockSet` is recorded before defaults (decision 1, step 0): `opts.Clock != nil && reflect.TypeOf(opts.Clock) != reflect.TypeOf(clockwork.NewRealClock())`. Comparing with `==` is unsafe: the real clock has size zero, so whether two pointers to it are equal is unspecified (probed during the audit).
 - **A user clock** (`clockSet`): a small shim context.
   - `Deadline()` returns the **parent's** deadline (`ok == false` when it has none). The stdlib and every network dialer treat a deadline as wall time, so a clock-time deadline would make a child `WithTimeout` never fire and make dials fail at once.
   - `Done()` closes when either the parent's `Done` or the clock timer fires; this is where the clock bound lives.
@@ -155,7 +155,7 @@ EnvPropertySource("DOGER_") as a default
 - **Two fields stay (D36).** `ConfigSource` says that the container loads and may watch the source; `PropertySource` stays a bare lookup.
 - **Alternatives.** Adding `Keys` to `PropertySource` (the old D30) was rejected: it breaks every implementation. Returning keys in canonical spelling was rejected: a `MapSource` stored as `allowedhosts` could not find them.
 
-### 4. Uniform form, the env mapping and the key grammar (D39)
+### 4. Uniform form, the env mapping and the key grammar (D39, D74)
 
 - **Grammar:** a full key is the extension's name (optionally `/instance`), then dotted kebab segments, each optionally followed by `[i]` (decimal, no leading zero) or `[k]` suffixes. The name and the instance take no suffix. A bracket whose content starts with a digit is always an index, so `labels[5xx]` is not a key; such a map key is addressed as a plain segment, `labels.5xx`.
 - **Uniform form**, per segment: lowercase, with `-` and `_` removed. Bracket contents are untouched, except that `[k]` with `k` in `[a-z0-9]+` equals `.k` and an all-digit `.n` equals `[n]`. An instance segment never folds into an index. Prefix matching is segment-aware.
@@ -175,20 +175,20 @@ forward:  upper; "." -> "_"; "-" removed; "/" -> "__"; "[i]" -> "_I"; "[k]" -> "
 reverse:  "__" after the name = instance; an all-digit segment = [n];
           other segments = lowercase dash-free names; names that do not parse
           (leading zero, "__" later, all-digit first segment, "___",
-          lowercase, a digit segment right after the name or the
-          instance) are skipped
+          lowercase; in extension mode also a digit segment right
+          after the name or the instance) are skipped
 ```
 
 - **Prefix rule (both modules):** the raw input must be ASCII `[A-Za-z0-9_.-]`, checked before uppercasing (`ſ`, U+017F, would otherwise uppercase to `S`); then `-` and `.` become `_`, the result is uppercased, and `_` is appended when missing. A prefix that fails the check:
   - `config.EnvPrefix`: `Load` fails with `*OptionError{Option: "EnvPrefix"}` matching `ErrInvalidOption`. `config.EnvPrefix("")` is also `ErrInvalidOption` (D66): an empty prefix would enumerate PATH, HOME and every secret. Unprefixed variables are read through `EnvMapper`, which looks keys up one by one, and the env layer is turned off by leaving `LayerEnv` out of `LayerOrder`;
-  - `EnvPropertySource` installed via options: the constructor fails with `ErrInvalidConfigSource` (`DI: config: invalid env prefix "<prefix>"`; a prefix is not a secret);
+  - `EnvPropertySource` installed via options: the constructor fails with `ErrInvalidConfigSource` (`DI: config: invalid env prefix "<prefix>"`; a prefix is not a secret). This is a BEHAVIOR CHANGE, flagged (D80): such a source used to miss every lookup;
   - elsewhere: every lookup misses, and the decision log line names the prefix.
 
   `EnvPropertySource` never panics. `EnvPropertySource("")` keeps its meaning (no prefix): it looks keys up one by one and enumerates only for `Keys`; its godoc states the difference from `config.EnvPrefix("")`.
-- **One golden table** holds the forward and reverse mapping: `testdata/envmapping.txt` in the root and a copy in `config/testdata/envmapping.txt` (the config module cannot read outside itself when built with `GOWORK=off`). A root test asserts the two copies are byte-equal, so the duplicated mapping code (the config module may not import doger) cannot drift.
+- **One golden table** holds the forward and reverse mapping: `testdata/envmapping.txt` in the root and a copy in `config/testdata/envmapping.txt` (the config module cannot read outside itself when built with `GOWORK=off`). A root test asserts the two copies are byte-equal, so the duplicated mapping code (the config module may not import doger) cannot drift. Each row has a mode column (D74): `ext` rows use the extension reverse mapping, where a digit segment right after the name is skipped (`APP_EXT_<NAME>_<n>`); `file` rows use the config module's mapping, where `APP_SERVERS_0` is `servers[0]`. Each module tests only its own mode's rows.
 - **Alternatives.** Keeping the old one-to-one mapping was rejected (decided item 7). A panicking `EnvPropertySource` was rejected: a panic needs a `Must` name.
 
-### 5. The binder (decided items 4, 9)
+### 5. The binder (decided items 4, 9; D68, D73, D78)
 
 **Field names.** Split before byte i when:
 - (a) `s[i]` is upper and `s[i-1]` is lower;
@@ -221,7 +221,7 @@ A non-ASCII name is `ErrInvalidConfigTarget`, but only for an untagged field tha
 - two fields with one uniform name (outer vs promoted, or sibling promoted);
 - unexported embedded pointers;
 - any type cycle among bound non-scalar types (recursion);
-- malformed `validate` tags (D68): a zero value of every struct type reachable in the plan is validated once, so a malformed tag behind `*Inner` or behind `[]Inner` with `dive` is caught before any source is consulted.
+- malformed `validate` tags (D68, narrowed by D73): a zero value of every struct type reachable in the plan is validated once, so an unknown tag name, or tag syntax the validator rejects, behind `*Inner` or behind `[]Inner` with `dive` is caught before any source is consulted. A malformed parameter (`min=abc` behind `required`, `omitempty,max=xyz`) is reached only by a value, so plan time cannot catch it; its panic is recovered at validation (decision 7).
 
 All of these return `ErrInvalidConfigTarget`. Types converted as scalars, `cfg:"-"` fields and unexported fields are exempt from the recursion check.
 
@@ -255,30 +255,32 @@ for each planned field f (prefix + key(f)):
    |            exactly at the pointer's own key is ignored, as for maps
    +-- struct:  recurse (embedded exported structs promote; tagged embed nests)
 user panics (UnmarshalText, Lookup, Keys, an EnvMapper called by Lookup)
-  -> *ConfigBindError naming the key: Reason "panic of type T" for a non-error
-     value; Reason "panic" and Err = the value for an error value
-     (panic(nil) shows *runtime.PanicNilError); registration hooks re-panic
+  -> *ConfigBindError naming the key, Reason "panic of type T" for every
+     value (D78); an error value is also kept as Err for errors.As, never
+     printed (panic(nil) shows *runtime.PanicNilError); registration hooks
+     re-panic
 ```
 
 - **Error keys (D51).** `ConfigBindError.Key` uses the canonical bracket spelling of the element or entry (`server.hosts[1]`, `server.labels[team]`), never the spelling the source used.
-- **`ConfigBindError` text (D58).** `DI: config: invalid value for <key> (<type>)`, then `: <Reason>` when set, then `: <Err text>` when `Err` reports value-free, else `: <Err's type>`. `UnmarshalText` errors often hold their input (`net.ParseError.Text`, netip), so their text is never trusted. An error panic value is therefore printed as its type: `...: panic: *errors.errorString`.
+- **`ConfigBindError` text (D58).** `DI: config: invalid value for <key> (<type>)`, then `: <Reason>` when set, then `: <Err text>` when `Err` reports value-free, else `: <Err's type>`. `UnmarshalText` errors often hold their input (`net.ParseError.Text`, netip), so their text is never trusted. A panic prints only its Reason, `...: panic of type *errors.errorString`, whatever the value (D78); a panic's `Err` is never printed.
 - **`EnvMapper` panics.** The mapper runs inside the config source's `Lookup` (decision 8), so the root recovers its panic while binding, like any `Lookup` panic.
 
 - **Alternatives.** A default-tag mechanism was rejected (D6). A `SetDefaults()` method was deferred. mapstructure was rejected (decided item 9). A deep copy of the defaults was rejected: it changes the identity of non-config pointers such as `*http.Client`.
 
-### 6. Typed binding and registration (D8a, D9, D10, D43, D46, D64, D66)
+### 6. Typed binding and registration (D8a, D9, D10, D43, D46, D64, D66, D70, D81)
 
 - `BindConfig(i, prefix, defaults T) (ConfigValue[T], error)`, `BindConfigNamed(i, name, prefix, defaults T) (ConfigValue[T], error)` and `ResolveConfig(i, prefix, defaults T) (T, error)`. `T` is always inferred. On error the handle is the zero `ConfigValue[T]` (D66). A nil injector means `DefaultRootScope`; a typed-nil injector is `ErrInvalidConfigTarget`. `T` must be a struct type, otherwise `ErrInvalidConfigTarget`. The prefix is `""` or a valid key (`server`, `redis/queue`, `server.hosts[0]`); its first segment takes no suffix, so `hosts[0]` is invalid (D64-B2), as in extension-properties.
 - **The bind protocol (D46, with the r5 overrides).** User code never runs under the commit semaphore, and that includes `Logf`.
+  0. Check the container phase: once it has begun shutting down, return `ErrStartAfterShutdown` before anything else (D81).
   1. Pre-check the registration conflict (a non-default or resolved default registration under either name): `ErrConfigAlreadyBound` before any property read.
   2. Read the committed view V.
   3. Bind and validate against V, with no lock held (user code runs here).
   4. Take the commit semaphore. `BindConfig` has no ctx, so it waits.
-  5. If the committed view is still V: add the entry to the entry set (CAS), its cell holding the value bound in step 3; release.
+  5. If the committed view is still V: add the entry to the entry set (CAS) together with its first owner token (D70), its cell holding the value bound in step 3; release.
   6. Otherwise release, set V to the current view and go back to step 3. Each retry follows a committed reload, so the loop ends unless reloads never stop.
-  7. With no lock held, register `T`, then `ConfigValue[T]` (`ConfigValueName(name)` for the named form). Registration hooks are user code.
+  7. With no lock held, register `T`, then `ConfigValue[T]` (`ConfigValueName(name)` for the named form). Registration hooks are user code. A `duplicateServiceError` here (a registration that appeared after step 1) maps to `ErrConfigAlreadyBound` (D81).
   8. Re-check the container phase. If it has begun shutting down, roll back and return `ErrStartAfterShutdown`.
-  - **Rollback** (a failed or panicking registration, or step 8): remove each wrapper we registered only if the slot still holds it (`removeService(name, match)`, no hooks, as the extension rollback does at `extension.go:737-745`); re-store a fresh `clone(scope)` of a replaced unresolved `AsDefault` registration through `registerLocked`, with no hooks (`supersede`/`forget` are one-way, so the same object cannot come back); CAS-remove the entry; then return the error or re-panic.
+  - **Rollback** (a failed or panicking registration, or step 8): remove each wrapper we registered only if the slot still holds it (`removeService(name, match)`, no hooks, as the extension rollback does at `extension.go:737-745`); re-store a fresh `clone(scope)` of a replaced unresolved `AsDefault` registration at its original registration index, with no hooks (`supersede`/`forget` are one-way, so the same object cannot come back), and skip this restore once shutdown has begun (D81); CAS-remove the entry; then return the error or re-panic.
   - In P1 (task group 11) there is no reload, so steps 2–6 collapse to one bind and the entry set is not needed; group 20 adds steps 4–6, driven by the racing tests.
 
 How a bind and a reload interleave (no update is lost, no lock is held around user code):
@@ -307,9 +309,9 @@ How a bind and a reload interleave (no update is lost, no lock is held around us
 - **Phases (D64-B3).** `BindConfig` and `BindConfigNamed` are refused with `ErrStartAfterShutdown` only on the container's phase, once it has begun shutting down, also when called on a child scope of that container (a child has no phase of its own). A bind racing `Shutdown` either succeeds, and its entry is released at that Shutdown, or returns `ErrStartAfterShutdown` with both names unregistered. `ResolveConfig` and `BindProperties` work in every phase: they read the last committed view once per call.
 - **`ConfigValue[T]`** is `struct{ c *cell[T] }`. Copies share state, and the zero value works (`Get` returns zero `T`; `OnChange` returns a no-op stop). `Get` is one atomic load. Its result is read-only by documented contract, because maps and slices are shared with the registered `T`.
 - **`BindProperties(p, target)`** binds through the view's underlying source with the same algorithm and rules as `BindConfig` (keys, tags, kinds, the D61 fallback) but never validates. A `Properties` value stays readable after the `Extend` call that produced it returns. It keeps its target-pointer shape, following the Extension SPI.
-- **Alternatives.** A `ConfigBinding` package was dropped (D8a). `BindOption`/`ConfigDefaults` were replaced by the `defaults` argument (D43). Registering under the commit lock was rejected: registration hooks would run under it. The round-2 "pending entry added before registration" was rejected (X1): a reload that commits between the read of V and the add is lost (probe `audit-r3/casmodel`).
+- **Alternatives.** A `ConfigBinding` package was dropped (D8a). `BindOption`/`ConfigDefaults` were replaced by the `defaults` argument (D43). Registering under the commit lock was rejected: registration hooks would run under it. The round-2 "pending entry added before registration" was rejected (X1): a reload that commits between the read of V and the add is lost; probed during the audit.
 
-### 7. Validation and value-free text (D7, D34, D44, D56, D57, D64-B4, D67, D68)
+### 7. Validation and value-free text (D7, D34, D44, D56, D57, D64-B4, D67, D68, D73, D78)
 
 ```
 which validator?                              validating one value v (a copy)
@@ -331,13 +333,14 @@ error text: DI: config: invalid "<prefix or name>" (<T>): <key> (<rule>), ...
 ```
 
 - **One error type (D56).** `ConfigValidationError{Section string; Type reflect.Type; Violations []ConfigViolation; Err error}` with `ConfigViolation{Key, Rule, Param string}` (`Param` from the tag, such as `65535`). Tag failures set `Violations` and leave `Err` nil; a `Validate()` or replacement-validator error sets `Err` and leaves `Violations` nil. `Unwrap()` returns `Err`; `Is(ErrInvalidConfig)` holds. `ValidateConfig` leaves `Section` empty and names `reflect.TypeOf(v).String()` as given.
-- **The value-free marker (D57).** `type ValueFreeError interface{ error; ValueFree() bool }`, a predicate like `net.Error.Timeout() bool`, so a wrapper can answer per instance. It is found by walking the chain: a context error's text wins, then the first error whose `ValueFree()` reports true; a marker reporting false is skipped and the walk continues to its cause; otherwise only the type is shown. Only the root config sentinels, `*ConfigBindError`, `*ConfigValidationError` and `*ConfigLoadError` implement it. Their methods use pointer receivers and are nil-safe: a nil `*ConfigLoadError` answers `ValueFree()` with true and does not panic. Value receivers were rejected: `errors.As(err, &ConfigBindError{})` would compile and never match. `StartError`, `ExtensionError` and `ShutdownReport` keep their texts and do not implement the marker. A cause is always reachable through `errors.Is` and `errors.As`.
+- **The value-free marker (D57).** `type ValueFreeError interface{ error; ValueFree() bool }`, a predicate like `net.Error.Timeout() bool`, so a wrapper can answer per instance. It is found by walking the chain: a context error's text wins, then the first error whose `ValueFree()` reports true; a marker reporting false is skipped and the walk continues to its cause; otherwise only the type is shown. Only the root config sentinels, `*ConfigBindError`, `*ConfigValidationError` and `*ConfigLoadError` implement it. Their methods use pointer receivers and are nil-safe: a nil receiver of any of them answers `ValueFree()` with true and does not panic, as in the config module (D78). Value receivers were rejected: `errors.As(err, &ConfigBindError{})` would compile and never match. `StartError`, `ExtensionError` and `ShutdownReport` keep their texts and do not implement the marker. A cause is always reachable through `errors.Is` and `errors.As`.
 - **`Validate()` runs on a copy (D64-B4).** Changes to top-level fields are discarded. Maps, slices and pointees are shared, and godoc documents them as read-only for validators. Two promoted `Validate` methods at one depth are ambiguous by the Go method-set rule, so neither runs. Field types' `Validate` methods are not called.
-- Fields skipped by `cfg:"-"`, and unexported fields, are not validated by the default validator (via `StructFiltered`). A replacement validator receives a pointer to a copy; its changes never reach the bound value. A malformed `validate` tag on any reachable struct type is `ErrInvalidConfigTarget` with a fixed message, found at plan time (decision 5, D68). A validator panic is `ErrInvalidConfig` (`validator panic of type T`). `BindProperties` never validates; `ValidateConfig` is its explicit counterpart.
+- Fields skipped by `cfg:"-"`, and unexported fields, are not validated by the default validator (via `StructFiltered`). A replacement validator receives a pointer to a copy; its changes never reach the bound value. An unknown tag name, or tag syntax the validator rejects, on any reachable struct type is `ErrInvalidConfigTarget` with a fixed message, found at plan time (decision 5, D68 narrowed by D73). A malformed parameter (`min=abc`) panics in go-playground only when a value reaches it, so a panic in the default validator is recovered exactly like a replacement validator's: `ErrInvalidConfig` (`validator panic of type T`). At construction it fails the bind; at a reload it rejects the reload and keeps the last good config. `BindProperties` never validates; `ValidateConfig` is its explicit counterpart.
+- **Nested `ValidateConfig` (D78).** A `Validate()` that calls `ValidateConfig` on a field returns violations keyed relative to that field; the outer error keeps them as returned in `Err`, with no second prefix.
 - **Cost (D45, honest):** go-playground adds 7 modules (mimetype, locales, universal-translator, go-urn, x/crypto, x/sys, x/text) to every consumer's build, `go.sum` and binary, plus go-playground/assert (its tests only) to the module graph. Only building the validator instance is lazy.
 - **Alternatives.** A go-playground adapter module was rejected: D7 says tags are always checked by default. A source-level validator was dropped (D34): a Go method set cannot depend on an option. Two error types, one per failure kind, were rejected (E2). A marker method with no result (round 2) was rejected: a wrapper could not decline per instance.
 
-### 8. The config module (D50, D59, D60, D62, D66)
+### 8. The config module (D50, D59, D60, D62, D66, D75, D78, D79)
 
 `config.New(opts...) *Source` (D66: one primary type, as `slog.New`). Options are checked at `Load`, not when `New` is called, and every invalid option is an `*OptionError{Option, Reason}` matching `ErrInvalidOption`. Options that need a value keep `...T` (`Dir`, `File`, `LayerOrder`), following `filepath.Join`; calling one with no argument is `ErrInvalidOption`, so a caller holding a slice still writes `Dir(dirs...)`. Paths are resolved to absolute at the first `Load`. Only the container calls `Load` on an installed source; a direct call is unsupported (godoc).
 
@@ -372,24 +375,24 @@ Load(ctx) (serialized: a cap-1 channel acquired with select on ctx):
   - a set profile with no file fails with `*ProfileError{Profile}` matching `ErrProfileNotFound`.
 
   `File(...)` turns off discovery and the profile overlay. `Dir` together with `File`, and `Profile` or `ProfileEnv` together with `File`, are `ErrInvalidOption`. `Format` with `File` forces the format. `Format` names a built-in format or a registered extension; a `Format` naming no decoder is an `*OptionError` (an option problem, with no file to name), while `ErrUnknownFormat` is kept for a file whose extension has no decoder, inside `*FileError{File, Err: ErrUnknownFormat}`. The `ProfileEnv` variable is read only from the process, never from `.env`, and never becomes a key. Profile names must match `^[a-z0-9][a-z0-9_-]*$`, so no path escapes. Symlinks are followed (no `os.Root`). `FileError.File` keeps the path as given.
-- **Opening a file (D62).** Unix: `os.OpenFile(p, O_RDONLY|syscall.O_NONBLOCK, 0)`, then `f.Stat()`, which must report `Mode().IsRegular()`, else `ErrNotRegularFile`; Windows: a plain `Open` and `f.Stat()`. The check runs on the opened descriptor, never on the path, so a path swapped for a FIFO cannot hang `Load` (probe `audit-r4/fifo`). Reads go through `io.LimitReader(MaxFileSize+1)`; more is `ErrFileTooLarge`. `EACCES` is `<file>: permission denied` and matches `fs.ErrPermission`.
+- **Opening a file (D62, D79).** In a `unix`-tagged file: `os.OpenFile(p, O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOCTTY, 0)`; `ENXIO` and `EOPNOTSUPP` from the open (a unix socket) are `ErrNotRegularFile`. Under `!unix` (Windows, js/wasm, wasip1): a plain `Open`. Then `f.Stat()`, which must report `Mode().IsRegular()`, else `ErrNotRegularFile`. The check runs on the opened descriptor, never on the path, so a path swapped for a FIFO cannot hang `Load`. Reads go through `io.LimitReader(MaxFileSize+1)`; more is `ErrFileTooLarge`. `EACCES` is `<file>: permission denied` and matches `fs.ErrPermission`.
 - **File keys:**
   - A whole key written as `"[...]"`, holding one or more printable ASCII characters other than `[`, `]` and whitespace, is kept verbatim as a map key.
   - Otherwise keys are split on `.`, with `/` allowed only in the first segment, and each segment, map keys included, is normalized with the field-naming rule (`userId` becomes `user-id`; bracket it to keep it verbatim). The result must match `[a-z0-9]+(-[a-z0-9]+)*`, so `a@b`, a trailing `-`, `--`, a segment of only `_`, a TOML quoted key holding `.` and a non-scalar YAML key are "invalid key".
   - An all-digit key becomes an index. Sequences become `[i]`, nested `[i][j]`; `null` means absent. Duplicates are checked in uniform form.
-- **Hostile files are bounded linearly (D50).** Caps are enforced before the content is converted to values:
+- **Hostile files are bounded (D50, D75).** Caps are enforced before the content is converted to values:
   - 64 segments per key ("too deep"; fixed, because it bounds key length and recursion; each `[i]`/`[k]` counts as a segment);
-  - `DefaultMaxKeys = 10_000` keys per file ("too many keys", line 0), overridable with `config.MaxKeys(n)` (0 means the default, negative is `ErrInvalidOption`);
-  - `DefaultMaxFileSize = 1 << 20` (1 MiB). The `yaml.Node` tree is fully built before any cap applies; a file four times that size costs about 170-240 MiB, 1 MiB about 60 MiB (probe `audit-r4/yamlmem`). The godoc states this memory cost.
-  - **YAML** is parsed into a `yaml.Node` and walked once, never decoded into `any` first. The walk keeps a node budget that counts every node an alias or a `<<` merge expands ("excessive aliasing"), detects alias cycles, uses a hash set for duplicate keys, and applies both caps.
-  - **TOML** gets a linear pre-pass with `go-toml/v2/unstable.Parser` that counts keys and dotted depth, inline tables and array values included, before `Unmarshal`.
+  - `DefaultMaxKeys = 10_000` keys per file ("too many keys", line 0), overridable with `config.MaxKeys(n)` (0 means the default; negative or above 50,000 is `ErrInvalidOption`, D75);
+  - `DefaultMaxFileSize = 1 << 20` (1 MiB). The `yaml.Node` tree is fully built before any cap applies; the worst case is about 130 MiB per MiB of input (D79), so the default costs up to about 130 MiB. The godoc states this memory cost.
+  - **YAML** is parsed into a `yaml.Node` and walked once, never decoded into `any` first. The walk counts, as it goes, every node an alias or a `<<` merge expands against a budget of `MaxKeys` expanded nodes (D79); passing it is "excessive aliasing". It detects alias cycles, uses a hash set for duplicate keys, and applies both caps; whichever check fails first in document order is reported.
+  - **TOML** gets a linear pre-pass with `go-toml/v2/unstable.Parser` before `Unmarshal` (D75). It checks every key with its line number ("invalid key"), detects duplicate keys and tables ("duplicate key"), counts keys, and caps dotted depth at 64, inline tables and array values included, so go-toml never sees a document the pre-pass rejects. `Unmarshal` after it is superlinear in the number of keys (about 0.1 s at 10,000 keys, over 1 s at 40,000), so TOML is bounded by `MaxKeys`, capped at 50,000, not linearly; godoc states the cost.
   - **JSON** streams with `json.Decoder.Token`, counting as it goes, and reports "too deep" at depth 65.
-  - **Nesting beyond a parser's own limit** is "syntax error". go-toml v2.4.3 and yaml v3 both stop at 10,000 levels with an error (probe `limits` in this round: `a = ` plus 500,000 `[` gives "arrays and inline tables are nested more than the maximum of 10000 levels deep"; 20,000 nested YAML flow sequences give "exceeded max depth of 10000"). Under that limit TOML and YAML report "too deep" from the pre-pass or the walk. go-toml before v2.4.3 has no limit and dies on a stack overflow (probe `audit-r4/tomldeep`), hence the floor.
+  - **Nesting beyond a parser's own limit** is "syntax error"; yaml v3 stops at 10,000 levels. Under that limit YAML and TOML report "too deep" from the walk or the pre-pass. The go-toml >= v2.4.3 floor is defense in depth (D75): earlier versions overflow the stack only near 1.04M nested `[`, which a file at the 1 MiB default can hold. No test can pin it; the `go.mod` require does.
 - **Rendering.**
   - YAML keeps its literal text (`True`, `yes`, `1.0`, `0x1F`). A trailing `---` is "the last document": `a: 1\n---\n---\n` is "multiple documents".
   - JSON uses `UseNumber` literals; trailing data is a syntax error; an empty file or top-level `null` loads as no keys.
   - TOML uses go-toml/v2 (v2.4.3 or later): ints decimal, floats `strconv.FormatFloat('g', -1)`, offset datetimes `time.RFC3339Nano`, local date/time types as TOML text.
-  - A `DecodeFunc` result (`type DecodeFunc func(data []byte) (map[string]any, error)`, added with `config.Decoder(ext, fn)`, `ext` case-insensitive with an optional leading dot, `""`/`"."` invalid) is rendered by Go type: `map[string]any`, `map[string]string`, `[]any`, `[]string`, `[]map[string]any`, every int/uint/float width (floats `strconv.FormatFloat(f, 'g', -1, bits)`), `bool`, `string`, `time.Time` (RFC3339Nano) and `json.Number`. `map[any]any` is "not a mapping"; any other type is "unsupported value". A `DecodeFunc` may return its own `*ParseError`, which keeps its line.
+  - A `DecodeFunc` result (`type DecodeFunc func(data []byte) (map[string]any, error)`, added with `config.Decoder(ext, fn)`, `ext` case-insensitive with an optional leading dot; `""`, `"."` and an inner dot such as `.tar.gz` are invalid, D79) is rendered by Go type: `map[string]any`, `map[string]string`, `[]any`, `[]string`, `[]map[string]any`, every int/uint/float width (floats `strconv.FormatFloat(f, 'g', -1, bits)`), `bool`, `string`, `time.Time` (RFC3339Nano) and `json.Number`. `map[any]any` is "not a mapping"; any other type is "unsupported value". A `DecodeFunc` may return its own `*ParseError`, which keeps its line; a `Category` outside the defined constants becomes `ParseCategorySyntax`, so its text is never shown (D78).
 - **Env layer.** The process environment is captured once at `Load`. With `EnvMapper(fn)`, `fn(key)` is called by `Lookup` and the name is looked up in that capture, then in `.env`; a mapped layer contributes nothing to `Keys`, and scalar fields reach it through the binder's direct lookup (D61). A mapper panic therefore surfaces in the root's binder (decision 5).
 - **`.env` grammar:**
   - `KEY=VALUE`, with an optional `export `; spaces around `=` are ignored; keys match `[A-Za-z_][A-Za-z0-9_]*`.
@@ -401,18 +404,18 @@ Load(ctx) (serialized: a cap-1 channel acquired with select on ctx):
 - **`DotEnvExport()`** captures the process environment, then sets only unset variables (prefixed or not), once, at the first successful `Load`, and logs the names it skipped. A later explicit `Load` sees the exported variables as process env. The godoc warns about `os.Setenv` with cgo.
 - **Added layers (D60).** `type LayerSource interface{ LoadLayer(ctx context.Context) (map[string]string, error) }`, so one type can be both a `doger.ConfigSource` and a layer. A layer's `*ParseError` has `File ""` and prints `layer "<name>": invalid key`.
 - **Errors (D59).**
-  - Sentinels are `type sentinelError string`; every config error type has a nil-safe pointer-receiver `ValueFree() bool`.
+  - Sentinels are `var ErrX error = &sentinelError{msg}`: a struct with pointer receivers, so two sentinels with one text stay distinct (D78). Every config error type has a nil-safe pointer-receiver `ValueFree() bool`, and a nil receiver reports true.
   - `*FileError{File, Err}` prints `<file>: does not exist | file too large | not a regular file | permission denied | unknown format`.
   - `*ParseError{File, Line, Category}` prints `<file>:<line>: <category>`, or `<file>: <category>` when the line is unknown. `ParseCategory` constants are typed and named with the type (`ParseCategorySyntax`, ..., `ParseCategoryPanic`), following the repo's `StartOpBuild` convention.
   - `*LayerError{Layer, Err}` prints `layer "<name>": <value-free text | type>`.
   - `*OptionError{Option, Reason}`, `*ProfileError{Profile}` and `*AmbiguousFormatError{Files}` carry value-free detail; `Is` matches `ErrInvalidOption`, `ErrProfileNotFound` and `ErrAmbiguousFormat`.
   - When the ctx is done, `Load` returns `ctx.Err()` itself, unwrapped, even if a layer returned it.
   - None of them carries a `config:` prefix, and none wraps parser text.
-- **Panics.** A panic in `LoadLayer` or a `DecodeFunc` is recovered: at `Load` it is a `*LayerError` or a `*ParseError` with `ParseCategoryPanic`, naming only the panic value's type, and the previous snapshot is kept; during a poll it is a staging error (decision 10).
+- **Panics.** A panic in `LoadLayer`, a `DecodeFunc` or a built-in parser (D79) is recovered: at `Load` it is a `*LayerError` or a `*ParseError` with `ParseCategoryPanic`, naming only the panic value's type, and the previous snapshot is kept; during a poll it is a staging error (decision 10).
 - **Logging:** an explicit `config.Logger(l)` wins over `SetLogf`, which wins over `slog.Default()`, looked up at each call.
-- **Alternatives.** viper, fsnotify and godotenv were rejected (spikes 1–5). `os.Root` was dropped: it rejects absolute in-directory symlinks (Docker secrets), and profile validation already prevents traversal. Decoding YAML into `any` and calling go-toml `Unmarshal` directly were rejected (X4): both are quadratic in the number of keys and cannot be cancelled (probes `audit-r3/p1`, `p2`). A decoder interface registered per extension was replaced by a `DecodeFunc` (D66). An `os.Stat` before `Open` was rejected (F1). `EnvPrefix("")` meaning "no prefix" (r4) was rejected in r5.
+- **Alternatives.** viper, fsnotify and godotenv were rejected (spikes 1–5). `os.Root` was dropped: it rejects absolute in-directory symlinks (Docker secrets), and profile validation already prevents traversal. Decoding YAML into `any` was rejected (X4): it is quadratic in the number of keys and cannot be cancelled. Calling go-toml `Unmarshal` without the pre-pass was rejected for the same reason. Building TOML values from the `unstable` AST (C4) was rejected: it would duplicate go-toml's value rendering, and the `MaxKeys` cap bounds the cost (D75). These were probed during the audits. A decoder interface registered per extension was replaced by a `DecodeFunc` (D66). An `os.Stat` before `Open` was rejected (F1). `EnvPrefix("")` meaning "no prefix" (r4) was rejected in r5.
 
-### 9. Reload: the root owns the commit (D14, D33, D47, D53, D54, D63)
+### 9. Reload: the root owns the commit (D14, D33, D47, D53, D54, D63, D69, D70, D71, D72, D81)
 
 ```
  watcher goroutine (source.Watch)          root config state
@@ -429,8 +432,13 @@ Load(ctx) (serialized: a cap-1 channel acquired with select on ctx):
                                            S := entries.Load()      (CAS set, immutable)
                                            rebind EVERY entry of S from S'
                                              with NO lock held          (user code)
-                                           all ok? no -> enqueue warning + hook event
-                                                          per owner; return false
+                                           all ok? no -> under the semaphore, keep only
+                                                          failures of entries still in
+                                                          the set (D69); none left ->
+                                                          commit below; else remember S'
+                                                          as the rejected view, enqueue
+                                                          warning + hook event per owner;
+                                                          return false
                                       +--> take commit semaphore (chan, select ctx.Done)
                                       |    shutting down? -> release; return false
                                       |    cur := entries.Load()
@@ -456,10 +464,14 @@ Load(ctx) (serialized: a cap-1 channel acquired with select on ctx):
 
 - **Every read path** (property reads, `ResolveConfig`, `BindProperties`, a `Properties` value obtained from a view) reads one committed view per call or value, through `atomic.Pointer[viewBox]`. A box is used because the dynamic type of the view changes, and two atomics cannot be compared as one snapshot. No reader mixes snapshots.
 - **No lock around user code.** `Validate`, `UnmarshalText`, the source's `Lookup`/`Keys` on the staged view, registration hooks and `Logf` never run under the commit semaphore. The semaphore is a `chan struct{}` of capacity 1, so synctest sees it.
+- **A veto by a departed section (D69).** A failure counts only if its entry is still in the set when the semaphore is held. The root keeps the last rejected staged view; when an entry leaves the set and a rejected view is kept, the reload slot offers that view once more, and it commits if no remaining entry fails. A newer staged view, or a stop, discards it. Without this, a valid update vetoed by a clone that then shut down would be lost until the file changed again, because the poller never re-stages content it already staged.
 - **The retry loop ends (R1).** `S` is reassigned after each rebind of the added entries, and a retry happens only when entries were added, so it ends unless binds never stop. Removals alone never force a retry: a removed entry's rebind result is simply not published.
 - **Participation and ownership (D47, r5).**
   - Every entry in the set is rebound at every reload and can veto it, whether or not an owner started. A clone that starts late therefore sees values that are already current, and nothing has to happen at `Start`.
   - The owners of an entry are the registered `ConfigValue[T]` wrappers. One owner is added at registration and one in `Scope.clone` (`scope.go:794`) for each clone that copies the registration. An owner is released in `RootScope.forget` (`root_refresh.go:238`), which `Override`, `removeService` and `serviceShutdown` all reach, so a `Shutdown` releases ownership even for a container that never started (its services are still shut down). `runtime.AddCleanup` on the wrapper's scope is the fallback for a clone dropped without `Shutdown` and for a scope detached without shutdown (`root_scope.go:803`).
+  - **Owner tokens (D70).** Each wrapper holds one `*ownerToken`. A release is a CAS on the token, so releasing twice is a no-op; `forget` calls the cleanup's `Stop()` and then releases. The cleanup's argument holds the container only through a `weak.Pointer`, since a strong reference would keep the scope reachable and the cleanup would never run. An entry is added to the set together with its first owner, so no ownerless entry is ever visible.
+  - **A removed entry (D70).** When the last owner leaves, the entry is marked `removed` under its owner lock and CAS-removed from the set. A clone that copies a removed entry re-adds it under the commit semaphore and rebinds it against the committed view. If that rebind fails, the clone's handle keeps its last value and stops following reloads, and the failure goes to the clone's reload-failed hooks and `Logf` (`Clone()` cannot fail).
+  - **Lock order (D70).** The commit semaphore, then an entry's owner lock; never the reverse.
   - Owners are mutable per-entry state kept outside the CAS set; the set pointer changes only when an entry is added or removed. An entry leaves the set when it has no owners left.
   - **Caveat 1:** an `OnChange` subscriber that captures a clone keeps that clone, and its entries, alive.
   - **Caveat 2:** a clone dropped without `Shutdown` keeps vetoing reloads until it is garbage-collected, which is not deterministic. Both caveats are documented on `Clone` and `OnChange`.
@@ -474,13 +486,15 @@ members: {} ------------> {root} ------------> {root,clone} ------> {root} -----
            context.Background, like                                         both until the
            the health scheduler)                                            Shutdown ctx ends
 {} after all stopped, then clone.Start(): a launcher goroutine waits for the previous
-Watch's done channel with select on the NEW watch ctx, then calls Watch; Start never
+launcher's done channel (closed after its Watch returned) and the previous
+dispatcher's, with select on the NEW watch ctx, then calls Watch (D81); Start never
 blocks on it, and a Watch that ignores its ctx cannot leak past the next Shutdown.
 config.New rejects a concurrent second Watch with ErrWatching.
 ```
 
-- **Clones (D54).** `Clone()` always shares the parent's committed view, watcher and dispatcher, whatever the kind of its source; `CloneWithOpts` shares only for the parent's own source as the same pointer. A `Clone()` racing a commit is covered by a `-race` scenario: the clone's owners are added under the entry's owner lock, so the commit either publishes into the clone's wrappers or the clone copies the already published cell.
-- **Shutdown order:** cancel the watch, stop accepting changes (`changed` returns false and enqueues nothing, including a reload already in flight, which re-checks under the semaphore), shut down services as today, then wait for the watcher and dispatcher until the Shutdown ctx ends. The dispatcher checks its done channel first, and pending notifications are dropped at stop.
+- **Clones (D54, D71).** `Clone()` always shares the parent's committed view, watcher and dispatcher, whatever the kind of its source; `CloneWithOpts` shares only for the parent's own source as the same pointer. Otherwise the clone's copied handles are rebound against its own view at construction (decision 1), and the clone has its own entries, view, watcher and dispatcher. A `Clone()` racing a commit is covered by a `-race` scenario: the clone's owners are added under the entry's owner lock, so the commit either publishes into the clone's wrappers or the clone copies the already published cell.
+- **Shutdown order:** cancel the watch, stop accepting changes (`changed` returns false and enqueues nothing, including a reload already in flight, which re-checks under the semaphore), shut down services as today, then wait for the watcher and dispatcher until the Shutdown ctx ends. The dispatcher checks its done channel first, and pending notifications are dropped at stop. The stop flag belongs to one watch generation, so a restart never sees the previous generation's flag (D81).
+- **Re-entrant callbacks (D72).** A callback that triggers a reload must be gated on the value it waits for, or it reloads forever. The Example checks `Port == 9090` and reports through a buffered channel.
 - **D42:** a subscriber or hook must call `go root.Shutdown()`. A synchronous call waits on itself: services are not skipped, but the self-wait uses up the Shutdown deadline and fails the report with `ctx.Err()`. Godoc documents this (as for Starters), and there is no scenario for the synchronous case. Groups 19 and 21 own these docs.
 - **A watch that ends:** with nil or `ctx.Err()` after its ctx ended, it is a normal stop. A nil return before that means "not watching" (`DisableWatch`). Any other error or panic is logged by type as `ErrConfigWatchFailed` and sent to the hooks; a panic goes to `HookContainerPanic("config-watch")` when that hook is set.
 - **Hooks (D53).** `HookConfigReloadFailed []func(root *RootScope, err error)` and `AddConfigReloadFailedHook(fn func(root *RootScope, err error))`, following the async health hooks (`HookContainerHealthChanged`). No ctx is stored or passed; `OnChange` subscribers take none either.
@@ -490,7 +504,7 @@ config.New rejects a concurrent second Watch with ErrWatching.
   - Several failing sections warn once, one line per section.
 - **Alternatives.** The source owning the swap (`changed(next) bool` without a root view) was rejected: the root could not publish after the commit. A mutex was rejected: it is held across user code and synctest cannot detect it. A generation counter was rejected: it can be read torn, and a cap on retries leaves exhaustion undefined. Live-member gating with `weak.Pointer[RootScope]` owners pruned at commit (round 2) was rejected (R2, R3): a section owned by a clone that had not started went stale, and per-request clones leaked owners. Passing hooks `context.WithoutCancel(startCtx)` was rejected (C2): it stores a context.
 
-### 10. Polling (config.New(...).Watch) (D60)
+### 10. Polling (config.New(...).Watch) (D60, D79)
 
 ```
 every PollInterval (default 10s; 0 = default; negative = ErrInvalidOption at Load),
@@ -502,8 +516,9 @@ on a time.NewTicker stopped on exit, select on ctx:
                 (DotEnv(path) path; none with DotEnv(""))
   read each added layer whose LayerRefresh is due, or every layer when a watched
         file changed (under StageTimeout; a panic is a staging error)
-  fp := per file (path, len, sha256) + a hash of each layer's sorted last read
-        (the layer content is never logged)
+  fp := per file (path, len, sha256) + a hash of each settled layer's sorted
+        last read (a never-settling layer is left out, D79; the layer
+        content is never logged)
   fp == the previous poll's fp?          (debounce over two polls: rides out
      no  -> wait                           partial writes; covers changes and failures)
      yes -> fp != lastStaged?
@@ -517,14 +532,14 @@ new files appearing after Load are not noticed (documented)
 ```
 
 - **Layer refresh.** `config.LayerRefresh(name LayerName, d time.Duration) Option`; default `DefaultLayerRefresh = time.Minute`; 0 means the default; a negative value reads the layer only at `Load` and when a watched file changes. A `LayerRefresh` naming no added layer is `ErrInvalidOption`.
-- **A layer that never settles** (3 consecutive reads that all differ) warns once, `layer "<name>" never settles; its changes are not staged`; its read is still used whenever a file change stages.
-- **Panics during a poll** in `LoadLayer` or a `DecodeFunc` are staging errors naming only the panic type. An `EnvMapper` runs in the staged view's `Lookup`, so its panic surfaces in the root's rebind and fails the reload the same way.
+- **A layer that never settles** (3 consecutive reads that all differ) warns once, `layer "<name>" never settles; its changes are not staged`. It is left out of the fingerprint, so it cannot keep the poll from settling (D79); its read is still used whenever a file change stages. Dynamic secrets that change on every read belong in such a layer only if staleness until the next file change is acceptable (godoc).
+- **Panics during a poll** in `LoadLayer`, a `DecodeFunc` or a built-in parser are staging errors naming only the panic type. An `EnvMapper` runs in the staged view's `Lookup`, so its panic surfaces in the root's rebind and fails the reload the same way.
 
-### 11. Errors (D56–D59, D67)
+### 11. Errors (D56–D59, D67, D78)
 
 | Sentinel | Means |
 |---|---|
-| `ErrConfigLoadFailed` | `Load` failed or panicked (`*ConfigLoadError{Source reflect.Type; Err error}`) |
+| `ErrConfigLoadFailed` | `Load` failed or panicked (`*ConfigLoadError{SourceType reflect.Type; Err error}`) |
 | `ErrConfigWatchFailed` | `Watch` ended abnormally |
 | `ErrConfigConversion` | a value could not be converted (`*ConfigBindError{Key string; Type reflect.Type; Reason string; Err error}`) |
 | `ErrInvalidConfig` | validation failed (`*ConfigValidationError{Section string; Type reflect.Type; Violations []ConfigViolation; Err error}`, `ConfigViolation{Key, Rule, Param string}`) |
@@ -535,11 +550,11 @@ new files appearing after Load are not noticed (documented)
 | `ErrConfigAlreadyBound` | a non-default (or resolved default) registration exists |
 
 - Texts start with `DI: config: `. Types use `reflect.Type.String()` (`app.ServerConfig` in specs). Services use `NameOf`.
-- Each error type implements `Is` for its sentinel, and `GoString()` with type-only output, so `%#v` never prints a value; `%v`, `%+v`, `%s` and `%q` already use `Error()`. All methods use pointer receivers and are nil-safe (D57).
-- Load text is `DI: config: load failed: source <T>: <context text | value-free text | cause type | "panic of type T">`. A panic value that is an error is kept as the cause and shown by the same rule (its value-free text or its type); `panic(nil)` shows `*runtime.PanicNilError`. A panic value that implements the marker and reports true has its text shown.
+- Each error type implements `Is` for its sentinel, and `GoString()` with type-only output, so `%#v` never prints a value; `%v`, `%+v`, `%s` and `%q` already use `Error()`. All methods use pointer receivers and are nil-safe (D57); a nil receiver's `ValueFree()` is true (D78). Sentinels are `&sentinelError{msg}` pointers, as in the config module.
+- Load text is `DI: config: load failed: source <T>: <context text | value-free text | cause type | "panic of type T">`. Every panic prints `panic of type T`, whatever the value (D78), the one panic format of both modules; an error panic value is kept as the cause for `errors.Is`/`errors.As` but never printed; `panic(nil)` shows `*runtime.PanicNilError`.
 - Problems with the source itself stay `ErrInvalidConfigSource`; problems with the root's own new options are `ErrInvalidConfigOption`.
 
-### 12. Module, CI and release (D48, D49)
+### 12. Module, CI and release (D48, D49, D76)
 
 ```
 repo/
@@ -557,9 +572,12 @@ CI (test.yml / lint.yml / security.yml):
   config: (cd config && go test -race ./... && golangci-lint run ./...)
   GOWORK=off job: each published module builds/tests with its replace and runs
                   go mod tidy -diff (go.mod/go.sum complete)
-  footprint: (cd config && go list -deps -f '{{with .Module}}{{.Path}}{{end}}' . \
-               | sort -u | grep -vx github.com/kartaladev/doger/config)
-             lists only go.yaml.in/yaml/v3 and github.com/pelletier/go-toml/v2
+  footprint (D76): (cd config && go list -deps \
+               -f '{{with .Module}}{{.Path}}{{end}}' ./... | sort -u \
+               | { grep -vx -e github.com/kartaladev/doger/config -e '' || true; } \
+               | comm -23 - footprint.allow)  must print nothing
+             footprint.allow (sorted, checked in): go.yaml.in/yaml/v3,
+             github.com/pelletier/go-toml/v2; an empty list passes (skeleton)
   govulncheck (D48): build once, outside the workspace, then scan each module
              the way a consumer builds it:
                GOWORK=off go -C tools build -o "$RUNNER_TEMP/govulncheck" \
@@ -573,14 +591,15 @@ release.yml (existing order kept):
   test -> drop tests (keep *_example_test.go) -> go mod tidy (root)
        -> (cd config && go mod tidy)
        -> pin config and each adapter (http/*, scheduler/*) only if still required
-          (D49; jq exits non-zero when absent, so no bare grep under set -e):
-          if go -C config mod edit -json \
+          (D49, D76; under set -e; jq exits non-zero when absent):
+          mod=$(go -C config mod edit -json)   # own line: a failure fails the release
+          if printf '%s' "$mod" \
                | jq -e '.Require[]? | select(.Path=="github.com/kartaladev/doger")' >/dev/null
           then go -C config mod edit -require=github.com/kartaladev/doger@"$SEMVER"; fi
        -> tag <semver>, http/<x>/<semver>, scheduler/<x>/<semver>, config/<semver>
 ```
 
-- Running govulncheck through `go tool` with a `-modfile` flag was rejected (X2): it fails with "-modfile cannot be used in workspace mode" (probe `audit-r3/modfile`). A bare `grep` for the pin was rejected (X3): it also matches the `replace` line, runs against the root `go.mod`, and exits 1 under `-e` (probe `audit-r3/release`).
+- Running govulncheck through `go tool` with a `-modfile` flag was rejected (X2): it fails with "-modfile cannot be used in workspace mode"; probed during the audit. A bare `grep` for the pin was rejected (X3): it also matches the `replace` line, runs against the root `go.mod`, and exits 1 under `-e`; probed during the audit. Piping `mod edit` straight into `jq` inside the `if` was rejected (c12): a failing `mod edit` made the condition false and the pin was skipped silently.
 - No version is tagged between this change and `unify-constructor`, so the constructor break ships once.
 
 ### 13. Round-3 decisions (D46–D68)
@@ -616,19 +635,41 @@ The third audit round (6 blockers, 26 majors) produced D46–D68; r5 overrides a
 Judgment calls confirmed in this round (the forks' choices, now part of the design):
 - `Format` naming no decoder is an `*OptionError` (matches `ErrInvalidOption`); `ErrUnknownFormat` is only for a file whose extension has no decoder. This narrows r4's D59.
 - `EnvMapper` panics are recovered by the root while binding, because the mapper runs inside `Lookup`, not inside `Load`.
-- A nil `*ConfigLoadError` reports true from its `ValueFree` method and does not panic.
+- A nil `*ConfigLoadError` reports true from its `ValueFree` method and does not panic (D78 extends this to every config error type in both modules).
 - `labels[5xx]` is invalid (a bracket starting with a digit is an index); the entry is addressed as `labels.5xx`.
-- `ConfigBindError` for an error panic value: `Reason` "panic", `Err` the value, printed by type (`panic: *errors.errorString`); for another value `Reason` "panic of type T".
+- `ConfigBindError` for a panic: superseded by D78, `Reason` "panic of type T" for every value, with an error value kept unprinted as `Err`.
 - `Shutdown` of a never-started container still shuts its services down, so it releases ownership through `forget`.
 - An added layer is read when its refresh is due and at every poll where a watched file changed.
 - Registration rollback and the phase re-check (D46 steps 7–8) are P1 behavior, built in group 11; only the view check and retry (steps 4–6) wait for group 20.
+
+### 14. Round-4 decisions (D69–D81)
+
+The fourth audit round (0 blockers, 13 majors) produced D69–D81. Each is applied in the decision named; where an earlier decision says otherwise, this one wins.
+
+| ID | Fixes | Decision | Where |
+|---|---|---|---|
+| D69 | M1 | A veto counts only if its entry is still in the set when the failure is decided (checked under the commit semaphore). The root keeps the last rejected staged view; when an entry leaves the set, the reload slot re-offers that view once, and it commits if no remaining entry fails. A newer staged view, or a stop, discards it | 9 |
+| D70 | M2, M3, M4, m9, m11 | Each wrapper holds one owner token (a `*ownerToken`); a release is idempotent (CAS on the token). `forget` calls `cleanup.Stop()` and then releases. The cleanup's argument holds the container only through `weak.Pointer`. An entry is added to the set together with its first owner. An entry removed from the set is marked `removed` under its owner lock; a clone that copies a removed entry re-adds it under the commit semaphore and rebinds it against the committed view; if that rebind fails, the clone's handle keeps its last value, stops following reloads, and the failure goes to the clone's reload-failed hooks and `Logf`. Lock order: the commit semaphore, then an entry's owner lock, never the reverse | 9 |
+| D71 | M5 | `CloneWithOpts` shares config state only when the clone's `ConfigSource` is the parent's own source as the same pointer. Otherwise (another source, or none) the clone loads its own source, and every copied config handle is rebound against the clone's view and validated; a failure fails `CloneWithOpts` with that error. The clone then has its own entries, view, watcher and dispatcher | 1, 9 |
+| D72 | M6 | A callback that triggers a reload must be gated on the value it waits for; the Example uses a buffered channel and checks `Port == 9090` | 9 |
+| D73 | A1 | D68 is narrowed. Plan time catches unknown tag names and tag syntax that the validator rejects on the zero value. A malformed parameter (`min=abc`) is reached only by a value, so a panic in the default validator is recovered like a replacement validator's: `ErrInvalidConfig` with `validator panic of type T`. At construction it fails construction; at a reload it rejects the reload and keeps the last good config | 5, 7 |
+| D74 | C1 | The shared env golden table gets a mode column. The skip-digit-after-name rule applies only in extension mode (`APP_EXT_<NAME>_<n>`); in file mode `APP_SERVERS_0` is `servers[0]`. Both copies stay byte-equal | 4, 8 |
+| D75 | C4, c5, n15 | TOML decoding is bounded by `MaxKeys`, not linear. `MaxKeys` above 50,000 is `ErrInvalidOption`; godoc states the cost (about 0.1 s at 10,000 keys). The pre-pass checks every key with its line number, detects duplicate keys and tables, and caps depth at 64, so go-toml never sees a document the pre-pass rejects. The go-toml >= v2.4.3 floor is defense in depth (deep-nesting overflow near 1.04M `[`), not a tested behavior | 8 |
+| D76 | C3, c12, c14, a6 | Footprint: the module list is compared with a checked-in allowlist (`config/footprint.allow`), and an empty list passes; one package pattern (`./...`) everywhere. Release pin: `go -C config mod edit -json` runs on its own line under `set -e`, and only its output goes to `jq -e`, so a failing `mod edit` fails the release. A compile-only test imports `go-toml/v2/unstable`. RED 12.1 adds the validator module first, so it fails on missing doger symbols, never on module resolution | 12 |
+| D77 | A2, A3, C2, a12, c13 | Task order: `ConfigView` is introduced in group 5; the `ConfigSource`+`PropertySource` and typed-nil rows move to group 6; the hcl decoder rows move to group 14; `TestPropertySource_ConfigSourceAtConstruction` moves to group 5, where it fails on the missing `ConfigSource` before the behavior exists; 16.1's compile list includes `SetLogf` | tasks |
+| D78 | a7, a8, a9, a14, a15, a16, c10 | Errors: every panic is printed `panic of type T` (a source panic during a bind too, with `Reason` "panic of type T"); a nil receiver's `ValueFree()` is true in both modules; sentinels are `var ErrX error = &sentinelError{msg}` (a struct, pointer receivers, distinct pointers); `ConfigLoadError.Source` is renamed `SourceType`; violation keys from a `ValidateConfig` nested inside `Validate` are not re-prefixed; a `DecodeFunc`'s unknown `ParseCategory` maps to `ParseCategorySyntax` and its text is never shown | 7, 8, 11 |
+| D79 | c6, c7, c8, c9, c11, n16 | Config module: open with `O_RDONLY\|O_NONBLOCK\|O_NOCTTY` in a `unix`-tagged file and a plain `Open` under `!unix`; `ENXIO` and `EOPNOTSUPP` from open map to `ErrNotRegularFile`. YAML worst case is about 130 MiB per MiB. Each alias expansion counts its expanded nodes against `MaxKeys`, checked during the walk. Built-in parser panics are recovered as a `*ParseError` naming only the panic type. A layer that never settles is left out of the fingerprint. `Decoder` rejects an extension with an inner dot | 8, 10 |
+| D80 | a4, a5, a10, a11, a13 | `unify-constructor` keeps ctx as the first parameter, never an Option (recorded as a constraint on that change). Migration uses `context.Background()`, never nil (SA1012). Call-site counts are 190 `NewWithOpts` and 11 `CloneWithOpts`. Two behavior changes are flagged: an invalid env prefix now fails construction, and a nil `Logf` now means `slog.Default` | 1, Migration |
+| D81 | m7, m8, m10, m12, m13, m14, m15 | A restarted dispatcher starts only after the previous one is done; launchers chain on the previous launcher's done; the stop flag belongs to one watch generation. `BindConfig` checks the phase first (step 0). Rollback restores a replaced default at its original registration index, and is skipped once shutdown has begun. A `duplicateServiceError` at registration maps to `ErrConfigAlreadyBound` | 6, 9 |
 
 ## Risks / Trade-offs
 
 - **[Two API breaks (`NewWithOpts`/`CloneWithOpts` and their `Must` forms take a ctx and return an error; env names) plus one behavior change (options copied, not written)]** → No tag exists and no app is deployed. gopatch rewrites the call sites. The upgrading note lists each break with its migration. `New`/`Clone` call sites are untouched. No tag is cut before `unify-constructor`, so callers migrate once.
 - **[go-playground costs every consumer 7 modules (plus go-playground/assert in the module graph), even without config (D7)]** → The cost is stated plainly. govulncheck runs per module, and trivy ignores are per CVE with an expiry. `InjectorOpts.ConfigValidator` avoids the code path but not the dependency.
 - **[The TOML pre-pass relies on `go-toml/v2/unstable`, which has no compatibility promise]** → Pinned at v2.4.3 or later; the Parser API has been identical from v2.0.8 to v2.4.3. Through MVS a consumer that requires a newer go-toml can change `unstable` under us, and doger's own tests cannot catch that. A compile-only test fails loudly in our CI when the API we use moves.
-- **[Hostile-file memory]** → The `yaml.Node` tree is built before any cap applies; the 1 MiB default keeps it near 60 MiB, and `MaxFileSize` godoc states the cost for anyone who raises it.
+- **[Hostile-file memory]** → The `yaml.Node` tree is built before any cap applies; the 1 MiB default keeps the worst case near 130 MiB (D79), and `MaxFileSize` godoc states the cost for anyone who raises it.
+- **[TOML decoding is superlinear in the number of keys (D75)]** → `MaxKeys` bounds it (default 10,000, about 0.1 s; at most 50,000). Godoc states the cost.
+- **[A clone that copies a released section may not follow reloads (D70)]** → Its rebind failure is reported to the clone's hooks and `Logf`; its handle keeps the last value.
 - **[An owner kept alive by user code (D47, caveat 1)]** → An `OnChange` subscriber that captures a clone keeps it and its entries alive. Documented on `OnChange`.
 - **[A clone dropped without `Shutdown` vetoes until collected (D47, caveat 2)]** → Release on GC is not deterministic. Documented on `Clone`; the supported pattern is `defer clone.Shutdown()`.
 - **[The Spring env mapping exists in two modules]** → One golden table, copied into each module, with a byte-equality test.
@@ -696,14 +737,14 @@ func ValidateConfig(i Injector, v any) error
 var ErrConfigLoadFailed, ErrConfigWatchFailed, ErrConfigConversion, ErrInvalidConfig,
 	ErrInvalidConfigTarget, ErrInvalidConfigSource, ErrInvalidConfigOption,
 	ErrConfigConflict, ErrConfigAlreadyBound error                      // ValueFree() == true
-type ConfigLoadError struct{ Source reflect.Type; Err error }         // Is(ErrConfigLoadFailed), ValueFree
+type ConfigLoadError struct{ SourceType reflect.Type; Err error }     // Is(ErrConfigLoadFailed), ValueFree
 type ConfigBindError struct{ Key string; Type reflect.Type; Reason string; Err error } // Is(ErrConfigConversion), ValueFree
 type ConfigValidationError struct{ Section string; Type reflect.Type; Violations []ConfigViolation; Err error } // Is(ErrInvalidConfig), ValueFree
 type ConfigViolation struct{ Key, Rule, Param string }
 ```
 
 - **BREAKING:** `EnvPropertySource` variable names (Spring mapping, `__` for instances) and prefix normalization (`myapp_` reads `MYAPP_`, `my-app` reads `MY_APP_`). `EnvPropertySource("")` still means no prefix.
-- `HookContainerPanic` gains the points `config-watch`, `config-reload-failed` and `config-on-change`; the hook receives the raw value, which may hold a secret. The godoc of `Logf` no longer says nil means "no logging" for config warnings (they go to `slog.Default()` when `Logf` is unset). The godoc of `ErrStartAfterShutdown` adds `BindConfig`/`BindConfigNamed`.
+- `HookContainerPanic` gains the points `config-watch`, `config-reload-failed` and `config-on-change`; the hook receives the raw value, which may hold a secret. **BEHAVIOR CHANGE (D80):** the godoc of `Logf` no longer says nil means "no logging" for config warnings (they go to `slog.Default()` when `Logf` is unset). The godoc of `ErrStartAfterShutdown` adds `BindConfig`/`BindConfigNamed`.
 
 **Config module `config`.**
 
@@ -721,7 +762,7 @@ func Dir(paths ...string) Option              // no argument or "" = ErrInvalidO
 func File(paths ...string) Option             // no argument or "" = ErrInvalidOption; turns off discovery
 func Name(base string) Option
 func Format(f FileFormat) Option              // "" = by extension; a built-in or a Decoder extension
-func Decoder(ext string, fn DecodeFunc) Option // ext case-insensitive, leading "." optional
+func Decoder(ext string, fn DecodeFunc) Option // ext case-insensitive, leading "." optional; inner "." invalid
 func Profile(name string) Option              // "" = no profile, overrides the variable
 func ProfileEnv(name string) Option
 func EnvPrefix(prefix string) Option          // "" = ErrInvalidOption; default "APP_"
@@ -736,7 +777,7 @@ func DisableWatch() Option
 func PollInterval(d time.Duration) Option     // 0 = DefaultPollInterval; < 0 = ErrInvalidOption
 func StageTimeout(d time.Duration) Option     // 0 = DefaultStageTimeout; < 0 = none
 func MaxFileSize(n int64) Option              // 0 = DefaultMaxFileSize; < 0 = ErrInvalidOption
-func MaxKeys(n int) Option                    // 0 = DefaultMaxKeys; < 0 = ErrInvalidOption
+func MaxKeys(n int) Option                    // 0 = DefaultMaxKeys; < 0 or > 50_000 = ErrInvalidOption
 
 type FileFormat string
 const (YAML FileFormat = "yaml"; TOML FileFormat = "toml"; JSON FileFormat = "json")
@@ -747,7 +788,7 @@ const (LayerBase LayerName = "base"; LayerProfile LayerName = "profile"; LayerDo
 const DefaultPollInterval = 10 * time.Second
 const DefaultStageTimeout = 10 * time.Second
 const DefaultLayerRefresh = time.Minute
-const DefaultMaxFileSize = 1 << 20 // 1 MiB; the YAML node tree costs about 60 MiB at this size
+const DefaultMaxFileSize = 1 << 20 // 1 MiB; the YAML node tree costs up to about 130 MiB at this size
 const DefaultMaxKeys = 10_000
 
 type ParseCategory string
@@ -765,15 +806,16 @@ type OptionError struct{ Option, Reason string }          // Is(ErrInvalidOption
 type ProfileError struct{ Profile string }                // Is(ErrProfileNotFound)
 type AmbiguousFormatError struct{ Files []string }        // Is(ErrAmbiguousFormat)
 var ErrAmbiguousFormat, ErrProfileNotFound, ErrInvalidOption, ErrFileTooLarge,
-	ErrNotRegularFile, ErrUnknownFormat, ErrWatching error // type sentinelError string
+	ErrNotRegularFile, ErrUnknownFormat, ErrWatching error // &sentinelError{msg}: distinct pointers
 ```
 
 Defaults are as in the proposal's Defaults & Control table; every one is overridable by the field or option named there.
 
 **Migration for consumers** (every API break, flagged):
-- **BREAKING** `doger.NewWithOpts(o, pkgs...)` becomes `root, err := doger.NewWithOpts(ctx, o, pkgs...)`, or `doger.MustNewWithOpts(ctx, o, pkgs...)` in tests; pass `context.Background()` (or nil) where no context is at hand.
+- **BREAKING** `doger.NewWithOpts(o, pkgs...)` becomes `root, err := doger.NewWithOpts(ctx, o, pkgs...)`, or `doger.MustNewWithOpts(ctx, o, pkgs...)` in tests; pass `context.Background()` where no context is at hand (never nil: staticcheck SA1012).
 - **BREAKING** `root.CloneWithOpts(o)` becomes `clone, err := root.CloneWithOpts(ctx, o)`, or `root.MustCloneWithOpts(ctx, o)`.
 - **BEHAVIOR CHANGE** Code that read defaults back from its own `*InjectorOpts` after construction, edited the struct afterwards, or expected `root.Add*Hook` to append to it must use the container instead (no repository code does).
+- **BEHAVIOR CHANGE** An `EnvPropertySource` with an invalid prefix in `InjectorOpts.PropertySource` now fails construction with `ErrInvalidConfigSource`; it used to miss every lookup (D80).
 - **BREAKING** Rename env variables, for example `DOGER_REDIS_POOL__SIZE` to `DOGER_REDIS_POOLSIZE` and `DOGER_REDIS___QUEUE_ADDR` to `DOGER_REDIS__QUEUE_ADDR`. Check the variables of dashed extension names.
 - Everything else is new API and breaks nothing.
 
@@ -808,7 +850,7 @@ Task-group dependencies (P1 = groups 1-18, P2 = groups 19-23, 24 = integration o
 ```
 
 1. Land on a branch. It is untagged, so there is no deprecation window, and no tag is cut before `unify-constructor`.
-2. Rewrite call sites with gopatch (about 190 `NewWithOpts` and 12 `CloneWithOpts`; the ctx argument is `context.Background()` in tests and `ctx` where one is in scope): the root, `scheduler/gocron`, `examples/*`, `docs/` and the README. The `http/*` modules have no call sites.
+2. Rewrite call sites with gopatch (190 `NewWithOpts` and 11 `CloneWithOpts`, D80; the ctx argument is `context.Background()` in tests and `ctx` where one is in scope; the patch adds the `context` import and either handles `err` or uses the `Must` form in tests): the root, `scheduler/gocron`, `examples/*`, `docs/` and the README. The `http/*` modules have no call sites.
 3. Build and test every workspace module. Run the `GOWORK=off` job.
 4. Rollback is a revert; there is no persistent state.
 
@@ -870,7 +912,7 @@ Task-group dependencies (P1 = groups 1-18, P2 = groups 19-23, 24 = integration o
 - root: `ExampleNewWithOpts_config`, `ExampleBindConfig`, `ExampleBindConfigNamed`, `ExampleResolveConfig`, `ExampleConfigValue_OnChange`, `ExampleStaticConfig`, `ExampleBindProperties`, `ExampleValidateConfig`, `ExampleMapSource`, `ExampleEnvPropertySource` (rewritten);
 - config: `ExampleNew`, `ExampleNew_overrides`, `ExampleLayer`, `ExampleDecoder`.
 
-**Scenario map.** Every `#### Scenario:` in `specs/*/spec.md` and its one test (264 scenarios, 264 tests). File names without a `config/` prefix are in the root package. Examples rows run as named subtests.
+**Scenario map.** Every `#### Scenario:` in `specs/*/spec.md` and its one test (276 scenarios, 276 tests). File names without a `config/` prefix are in the root package. Examples rows run as named subtests.
 
 | Capability | Scenario | Test | Kind | Group |
 |---|---|---|---|---|
@@ -1004,6 +1046,7 @@ Task-group dependencies (P1 = groups 1-18, P2 = groups 19-23, 24 = integration o
 | config-files | Every file spelling binds the same field | `config/integration_test.go: TestResolveConfig_FileSpellings` | unit, table | 18 |
 | config-files | Compile-time contract checks | `config/source_test.go: TestSource_NotAValidator` | build + unit | 23 |
 | config-files | Dependency footprint | `CI: footprint step (go list -deps)` | CI step | 1 |
+| config-files | Discovery finds a file for an added decoder | `config/files_test.go: TestFiles_DecoderDiscovery` | unit (t.Chdir, not parallel) | 14 |
 | config-reload | The source adopts only what the root accepts | `config_reload_test.go: TestConfigWatch_CommitDecision` | unit, table | 20 |
 | config-reload | A nil view is a staging failure | `config_reload_test.go: TestConfigWatch_NilViewIsStagingFailure` | unit, table | 20 |
 | config-reload | Overlapping changed calls are serialized | `config_reload_test.go: TestConfigWatch_ChangedSerialized` | race | 20 |
@@ -1055,6 +1098,11 @@ Task-group dependencies (P1 = groups 1-18, P2 = groups 19-23, 24 = integration o
 | config-reload | A poll applies the Load size limit | `config/watch_test.go: TestFiles_PollSizeLimit` | synctest | 23 |
 | config-reload | Hostile files | `config/watch_test.go: TestFiles_HostileYAML` | unit + fuzz seeds | 23 |
 | config-reload | A panic during a poll is a staging error | `config/watch_test.go: TestFiles_PollRecoversLayerPanic` | synctest | 23 |
+| config-reload | An owner released twice leaves the others in place | `config_reload_test.go: TestConfigReload_DoubleReleaseIdempotent` | unit, -race | 22 |
+| config-reload | A clone of a removed section re-adds it | `config_reload_test.go: TestConfigReload_CloneReaddsRemovedEntry` | unit, table | 22 |
+| config-reload | A veto from a section that left during the reload does not block | `config_reload_test.go: TestConfigReload_DepartedVetoIgnored` | synctest | 22 |
+| config-reload | A rejected view is re-offered when its vetoing section leaves | `config_reload_test.go: TestConfigReload_RejectedViewReoffered` | synctest, table | 22 |
+| config-reload | Restarts never overlap start cycles | `config_reload_test.go: TestConfigReload_RestartCyclesNeverOverlap` | synctest, goleak | 19 |
 | config-sources | Which types are sources | `config_source_test.go: TestConfigSource_Contract` | unit, table | 5 |
 | config-sources | Property reads go to the installed source | `config_source_test.go: TestConfigSource_IsPropertySource` | unit, table | 5 |
 | config-sources | The installed source is not a service | `config_source_test.go: TestConfigSource_NotAService` | unit, table | 5 |
@@ -1098,6 +1146,9 @@ Task-group dependencies (P1 = groups 1-18, P2 = groups 19-23, 24 = integration o
 | config-validation | Invalid values to validate | `config_validate_test.go: TestValidateConfig_InvalidTarget` | unit, table | 12 |
 | config-validation | Validator panics | `config_validate_test.go: TestValidate_PanicRecovered` | unit, table | 12 |
 | config-validation | Concurrent binds validate under -race | `config_validate_test.go: TestValidate_Concurrent` | race | 12 |
+| config-validation | A malformed tag parameter panics only when a value reaches it | `config_validate_test.go: TestBind_MalformedTagParam` | unit, table | 12 |
+| config-validation | A reload that reaches a malformed parameter is rejected | `config_reload_test.go: TestConfigReload_MalformedTagParamRejected` | synctest | 21 |
+| config-validation | A nested ValidateConfig is not re-prefixed | `config_validate_test.go: TestValidateConfig_NestedNotRePrefixed` | unit | 12 |
 | container-construction | Construction outcome | `root_scope_test.go: TestNewWithOpts_ConstructionOutcome` | unit, table | 5 |
 | container-construction | Options unchanged after construction | `root_scope_test.go: TestNewWithOpts_OptionsNotWritten` | unit, table | 5 |
 | container-construction | The root and the caller's options stay apart | `root_scope_test.go: TestNewWithOpts_OptionsNotAliased` | unit, table | 5 |
@@ -1114,11 +1165,13 @@ Task-group dependencies (P1 = groups 1-18, P2 = groups 19-23, 24 = integration o
 | container-construction | Registering on the default root | `root_scope_test.go: TestDefaultRootScope_Usable` | unit (not parallel, unique names) | 5 |
 | container-construction | The default root reads the environment | `root_scope_test.go: TestDefaultRootScope_ReadsEnv` | unit (t.Setenv, not parallel) | 5 |
 | container-construction | Duplicate registration in a package | `root_scope_test.go: TestNew_PackagePanicPropagates` | unit, table | 5 |
+| container-construction | A construction rejected by its options runs no package | `root_scope_test.go: TestNewWithOpts_OptionFailureRunsNoPackage` | unit, table | 6 |
+| container-construction | Copied config handles follow the clone's source | `root_scope_test.go: TestCloneWithOpts_RebindsCopiedHandles` | unit, table | 22 |
 | extension-properties | Invalid keys are not looked up | `properties_test.go: TestProperties_InvalidKeys` | unit (existing, extended) | 2 |
 | extension-properties | Source selection | `properties_test.go: TestPropertySource_Selection` | unit (existing, rewritten) | 5 |
 | extension-properties | A source registered after the first read is not used | `properties_test.go: TestPropertySource_LateServiceIgnored` | unit (existing, variable renamed) | 3 |
 | extension-properties | Registering the interface name after the first read panics | `properties_test.go: TestPropertySource_LateSameNamePanics` | unit (existing, passes on arrival) | 5 |
-| extension-properties | An installed config source is decided before any package runs | `properties_test.go: TestPropertySource_ConfigSourceAtConstruction` | unit, table | 6 |
+| extension-properties | An installed config source is decided before any package runs | `properties_test.go: TestPropertySource_ConfigSourceAtConstruction` | unit, table | 5 |
 | extension-properties | Index and map-key suffixes | `properties_test.go: TestProperties_KeySuffixes` | unit, table | 2 |
 | extension-properties | Key to variable mapping | `properties_test.go: TestEnvPropertySource_Mapping` | unit (existing, rewritten; golden table) | 3 |
 | extension-properties | Nested, instance and index keys use different variables | `properties_test.go: TestEnvPropertySource_Distinct` | unit (existing, rewritten) | 3 |
@@ -1135,6 +1188,7 @@ Task-group dependencies (P1 = groups 1-18, P2 = groups 19-23, 24 = integration o
 | extension-properties | Environment source keys | `properties_test.go: TestEnvPropertySource_Keys` | unit (t.Setenv, prefix TKEYS_) | 4 |
 | extension-properties | Keys through an extension view | `properties_test.go: TestProperties_Keys` | unit, table | 4 |
 | extension-properties | Views that cannot list keys | `properties_test.go: TestProperties_KeysUnavailable` | unit, table | 4 |
+| extension-properties | The golden table's mode column | `properties_test.go: TestEnvPropertySource_GoldenModes` | unit, table (ext rows; file rows in group 15's config test) | 3 |
 | health-check-execution | New starts no goroutine | `health_run_test.go: TestNew_NoHealthGoroutine` | goleak (existing, extended; new rows pass on arrival) | 7 |
 | module-identity | Workspace module paths mirror their directories | `module_identity_test.go: TestModuleIdentity_WorkspaceModules` | unit (existing, row added) | 1 |
 | toolchain-support | Module go directives declare 1.27 | `toolchain_test.go: TestToolchain_GoDirective` | unit (existing, row added) | 1 |

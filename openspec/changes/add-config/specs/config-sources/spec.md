@@ -52,9 +52,9 @@ When the consumer invokes "*redis.Client" from root
 Then the recorded result is ("from-config", true)
 
 Examples:
-  | read                                        |
-  | x.Properties().Lookup("addr")               |
-  | doger.ExtensionProperties(i).Lookup("addr") |
+  | read                                                                  |
+  | x.Properties().Lookup("addr")                                         |
+  | p, _ := doger.ExtensionProperties(i), then p.Lookup("addr")           |
 ```
 
 #### Scenario: The installed source is not a service
@@ -292,14 +292,14 @@ Examples:
 <!-- cases: N/A 10 compatibility: new API -->
 
 ### Requirement: A failed load fails construction
-When `Load` returns an error or panics, the constructor SHALL return a nil root and a `*ConfigLoadError{Source reflect.Type; Err error}` matching `ErrConfigLoadFailed`, whose `Unwrap` returns the cause so `errors.Is` and `errors.As` reach it. A panic SHALL be recovered; an error panic value SHALL be the cause, and its text SHALL be shown only when it is value-free; any other value SHALL be described by type only.
+When `Load` returns an error or panics, the constructor SHALL return a nil root and a `*ConfigLoadError{SourceType reflect.Type; Err error}` matching `ErrConfigLoadFailed`, whose `Unwrap` returns the cause so `errors.Is` and `errors.As` reach it. A panic SHALL be recovered; an error panic value SHALL be the cause, and its text SHALL be shown only when it is value-free; any other value SHALL be described by type only.
 
 #### Scenario: Load errors and panics
 ```gherkin
 Given a ConfigSource src of type "*app.Vault" whose Load <fails>
 When the consumer calls doger.NewWithOpts(context.Background(), &doger.InjectorOpts{ConfigSource: src})
 Then the returned root is nil
-And errors.Is(err, doger.ErrConfigLoadFailed) is true and errors.As(err, &loadErr) gives loadErr.Source.String() == "*app.Vault"
+And errors.Is(err, doger.ErrConfigLoadFailed) is true and errors.As(err, &loadErr) gives loadErr.SourceType.String() == "*app.Vault"
 And err.Error() is "<text>"
 And <match>
 
@@ -355,7 +355,7 @@ Examples:
   | doger.ErrConfigLoadFailed                                               | ok, true            |
   | doger.ErrInvalidConfigSource                                            | ok, true            |
   | doger.ErrConfigConflict                                                 | ok, true            |
-  | &doger.ConfigLoadError{Source: reflect.TypeFor[*app.Vault](), Err: errors.New("token s3cret-9f2c71d04ab8")} | ok, true |
+  | &doger.ConfigLoadError{SourceType: reflect.TypeFor[*app.Vault](), Err: errors.New("token s3cret-9f2c71d04ab8")} | ok, true |
   | (*doger.ConfigLoadError)(nil)                                           | ok, true, no panic  |
   | doger.ErrServiceNotFound                                                | not ok              |
   | &doger.StartError{}                                                     | not ok              |
