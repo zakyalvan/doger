@@ -132,11 +132,13 @@ else
 	fail "$sib_dir requires $sib_dep ${have:-(none)}, want $version"
 fi
 
-# test-only requirements: testify and goleak in no released module;
+# test-only requirements: testify, goleak and the SQL drivers in no
+# released module;
 # clockwork only where non-test code uses it (clock/clockwork and
 # scheduler/gocron), which "runtime dependency that must stay" checks
 for dir in $released; do
-	for dep in github.com/stretchr/testify go.uber.org/goleak github.com/jonboulle/clockwork; do
+	for dep in github.com/stretchr/testify go.uber.org/goleak github.com/jonboulle/clockwork \
+		github.com/jackc/pgx/v5 github.com/go-sql-driver/mysql; do
 		if [ "$dep" = github.com/jonboulle/clockwork ] &&
 			{ [ "$dir" = clock/clockwork ] || [ "$dir" = scheduler/gocron ]; }; then
 			continue

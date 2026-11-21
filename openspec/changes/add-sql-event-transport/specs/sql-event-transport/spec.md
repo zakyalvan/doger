@@ -28,7 +28,7 @@ Examples:
 <!-- cases: N/A 10 compatibility: the oldest supported engine versions are rows -->
 
 ### Requirement: Send writes one delivery per registered group
-`Send` SHALL store the envelope and one pending delivery for each group registered for its destination at the time of the write, in one transaction. With no group registered it SHALL store nothing and return nil. A payload over `MaxPayloadBytes` SHALL fail with an error matching `ErrPayloadTooLarge` for which `doger.IsPermanentError` is true.
+`Send` SHALL store the envelope and one pending delivery for each group registered for its destination at the time of the write, in one transaction. With no group registered it SHALL store nothing and return nil. A delivered envelope SHALL equal the sent one, except that a nil payload SHALL be stored and delivered as an empty one and a zero `PublishedAt` SHALL be delivered as the zero `time.Time`. A payload over `MaxPayloadBytes` SHALL fail with an error matching `ErrPayloadTooLarge` for which `doger.IsPermanentError` is true.
 
 #### Scenario: Deliveries per group
 ```gherkin
@@ -43,6 +43,22 @@ Examples:
   | none                       | 100 B    | nil                                                       | no event and no delivery                     |
   | "mail"                     | 1 MiB    | nil                                                       | 1 pending delivery of "e1" for "mail"        |
   | "mail"                     | 1 MiB + 1 B | an error matching ErrPayloadTooLarge, permanent        | no event and no delivery                     |
+  | "mail"                     | 0 B (empty) | nil                                                    | 1 pending delivery of "e1" for "mail"        |
+  | "mail"                     | nil      | nil                                                       | 1 pending delivery of "e1" for "mail"        |
+```
+
+#### Scenario: Envelope round trip
+```gherkin
+Given a transport with group "mail" subscribed on "orders.placed"
+When the consumer sends envelope "e1" with <field>
+Then the handler receives an envelope equal to the sent one, with <delivered>
+
+Examples:
+  | field                                   | delivered                               |
+  | every field set                         | every field equal                       |
+  | a zero PublishedAt                      | a zero PublishedAt (IsZero is true)     |
+  | a nil Payload                           | an empty Payload                        |
+  | PublishedAt 1ns after the Unix epoch    | PublishedAt 1ns after the Unix epoch    |
 ```
 
 #### Scenario: Send failures are returned
@@ -59,13 +75,14 @@ Examples:
 ```
 
 <!-- cases: N/A 2 overrides: MaxPayloadBytes is the only option; rows 4-5 are its boundary -->
+<!-- cases: 3 zero values: the empty and nil payload rows, and the zero PublishedAt round trip -->
 <!-- cases: N/A 6 duplicate: a repeated envelope ID is stored again; deduplication is the listener's job (add-event-transport) -->
 <!-- cases: N/A 8 concurrency: covered by "Members of a group compete" -->
 <!-- cases: N/A 9 panics: database errors are returned -->
 <!-- cases: N/A 10 compatibility: new module -->
 
 ### Requirement: Groups start at the latest event and keep waiting events
-`Subscribe` SHALL register its group for the destination, idempotently. A delivery SHALL exist for a group when its registration committed before the send's write ran. A non-ephemeral group SHALL stay registered after its subscription stops, so events sent while no member runs are delivered when one subscribes again.
+`Subscribe` SHALL register its group for the destination, idempotently. A delivery SHALL exist for a group when its registration committed before the send's write ran; this SHALL hold for sends under READ COMMITTED (PostgreSQL's default) and on MySQL at its default REPEATABLE READ. A PostgreSQL outbox transaction at REPEATABLE READ or SERIALIZABLE fans out from its snapshot and MAY also miss a group registered after its snapshot was taken. A non-ephemeral group SHALL stay registered after its subscription stops, so events sent while no member runs are delivered when one subscribes again.
 
 #### Scenario: Registration and history
 ```gherkin
@@ -84,7 +101,7 @@ Examples:
 #### Scenario: Registration racing a send
 ```gherkin
 Given a PostgreSQL 17 database with no group for "orders.placed"
-And a transaction T1 that sent "e1" and has not committed
+And a READ COMMITTED transaction T1 that sent "e1" and has not committed
 When group "mail" registers and commits, then T1 commits, then "e2" is sent
 Then "mail" handles "e2" and does not handle "e1"
 ```
@@ -125,7 +142,7 @@ Examples:
 <!-- cases: N/A 10 compatibility: new module -->
 
 ### Requirement: Leases recover crashed and slow handlers
-A claim SHALL lease a delivery for `Lease(d)` and count an attempt. The handler's context SHALL end when the lease ends. A delivery whose lease expired SHALL be claimable again. An acknowledgement after the lease was lost SHALL be ignored and logged as `ErrLeaseLost`.
+A claim SHALL lease a delivery for `Lease(d)` and count an attempt. The handler's context SHALL end when the lease ends, minus a margin of `min(lease/10, 1s)`. A claim that waited for a worker past its lease SHALL NOT be handed to a handler: it SHALL be released with its attempt uncounted. A delivery whose lease expired SHALL be claimable again. An acknowledgement after the lease was lost SHALL be ignored and logged as `ErrLeaseLost`.
 
 #### Scenario: Lease outcomes
 ```gherkin
@@ -139,6 +156,7 @@ Examples:
   | "i1" claims "e1" and its process stops without acknowledging               | "i2" handles "e1" after the lease expires, with attempt 2                    |
   | "i1" claims "e1" and its handler runs for 1s                               | the handler's context ends after 200ms with context.DeadlineExceeded; "i2" handles "e1"; "i1"'s late acknowledgement is logged as ErrLeaseLost and does not remove "i2"'s claim |
   | "i1" claims "e1" and its handler returns nil after 50ms                    | "e1" is removed and "i2" never handles it                                    |
+  | "i1", with Workers(1) and BatchSize(3), claims "e1", "e2", "e3" and the handler of "e1" runs for 300ms | "e2" and "e3" are released and handled later, each with attempt 1 and a live context |
 ```
 
 #### Scenario: Attempts are visible to the handler
@@ -154,7 +172,7 @@ Then the handler recorded attempts [1, 2, 3]
 <!-- cases: N/A 10 compatibility: new module -->
 
 ### Requirement: Retries, backoff and dead letters
-A handler error SHALL make the delivery visible again after `Backoff` for the attempt. After `MaxAttempts` attempts, or at once for an error where `doger.IsPermanentError` is true, the delivery SHALL be dead-lettered with the error text and not claimed again.
+A handler error SHALL make the delivery visible again after `Backoff` for the attempt. After `MaxAttempts` attempts, or at once for an error where `doger.IsPermanentError` is true, the delivery SHALL be dead-lettered with the error text and not claimed again. The stored error text SHALL be valid UTF-8 without NUL bytes, at most 2 KiB, whatever the handler's error contains. A claimed delivery whose attempt exceeds `MaxAttempts` (its last attempt ended without a result) SHALL be dead-lettered at claim time without reaching the handler. A handler interrupted by stop SHALL keep its attempt counted. `ExponentialBackoff` SHALL treat `Max <= 0` as no cap and SHALL never return a negative delay.
 
 #### Scenario: Retry outcomes
 ```gherkin
@@ -169,6 +187,31 @@ Examples:
   | 1   | returns ErrOutOfStock every time                    | 1    | dead-lettered                                           |
   | 10  | returns doger.PermanentError(ErrBadOrder)           | 1    | dead-lettered with last error containing "bad order"   |
   | 10  | fails twice with ErrOutOfStock, then returns nil    | 3    | removed                                                 |
+  | 10  | returns doger.PermanentError(errors.New("bad payload \xff\xfe")) | 1 | dead-lettered with last error containing "bad payload" |
+  | 10  | returns doger.PermanentError(errors.New("bad\x00payload")) | 1  | dead-lettered with last error containing "badpayload"  |
+  | 2   | returns errors.New("out of \xffstock") every time  | 2    | dead-lettered with last error containing "out of stock" |
+```
+
+#### Scenario: Exhausted attempts at claim
+```gherkin
+Given a transport with MaxAttempts(<max>) and one pending, unleased delivery of "e1" whose attempts are <attempts>
+When a subscription claims it
+Then <outcome>
+
+Examples:
+  | max | attempts | outcome                                                                     |
+  | 3   | 2        | the handler runs once with attempt 3                                        |
+  | 3   | 3        | the delivery is dead-lettered with a last error naming the exhausted attempts; the handler never runs |
+  | 3   | 7        | the delivery is dead-lettered; the handler never runs                       |
+  | 1   | 1        | the delivery is dead-lettered; the handler never runs                       |
+```
+
+#### Scenario: An interrupted attempt counts
+```gherkin
+Given a transport with MaxAttempts(2) and a handler that blocks until its context ends
+When a subscription starts the handler and is stopped with a context that times out after 10ms, twice, and a third subscription starts
+Then after each stop the delivery has 1, then 2, attempts and no lease
+And the third subscription dead-letters the delivery without running a handler
 ```
 
 #### Scenario: The default backoff
@@ -183,6 +226,25 @@ Examples:
   | 2       | 1.8s to 2.2s       |
   | 5       | 14.4s to 17.6s     |
   | 20      | 4m30s to 5m30s     |
+```
+
+#### Scenario: Exponential backoff bounds
+```gherkin
+Given ExponentialBackoff <policy>
+When the consumer asks for the delay of attempt <attempt>
+Then it is <delay>
+
+Examples:
+  | policy                                  | attempt | delay                     |
+  | {Initial: 1s, Factor: 2}                | 1       | 1s                        |
+  | {Initial: 1s, Factor: 2}                | 3       | 4s                        |
+  | {Initial: 1s, Factor: 2, Max: -1s}      | 2       | 2s                        |
+  | {Initial: 1s, Factor: 2, Max: 3s}       | 3       | 3s                        |
+  | {Initial: 1s, Factor: 2}                | 0       | 1s                        |
+  | {}                                      | 1       | 0                         |
+  | {Initial: -1s, Factor: 2}               | 1       | 0                         |
+  | {Initial: 1s, Factor: 10}               | 400     | the largest time.Duration |
+  | {Initial: 1s, Factor: 1, Jitter: 5}     | 1       | never negative            |
 ```
 
 <!-- cases: N/A 3 zero values: MaxAttempts(0) is rejected by New -->
@@ -217,7 +279,7 @@ Examples:
 <!-- cases: N/A 10 compatibility: new module -->
 
 ### Requirement: Ephemeral groups are cleaned up
-An `Ephemeral` subscription SHALL unregister its group and delete its deliveries when it stops. Every subscription SHALL heartbeat its group while running; an ephemeral group without a heartbeat for `EphemeralTTL` SHALL be removed by any running subscription. Non-ephemeral groups SHALL never be removed automatically.
+An `Ephemeral` subscription SHALL unregister its group and delete its deliveries, in one transaction, when it stops. Every subscription SHALL heartbeat its group while running; an ephemeral group without a heartbeat for `EphemeralTTL` SHALL be removed by the maintenance of any transport with a running subscription, and that maintenance SHALL delete the deliveries of groups that are no longer registered. Non-ephemeral groups SHALL never be removed automatically.
 
 #### Scenario: Ephemeral group lifecycle
 ```gherkin
@@ -234,14 +296,22 @@ Examples:
   | an Ephemeral subscription "cache/c" still running                                       | "cache/c" is kept                                   |
 ```
 
+#### Scenario: An ephemeral group stopped during an outbox transaction
+```gherkin
+Given a PostgreSQL 17 database, a transport with EphemeralTTL(1s) and PollInterval(50ms), a running subscription "mail" on another destination, and a running Ephemeral subscription "cache/a" on "orders.placed"
+And a transaction T1 that sent "e1" with SendTx, fanning out to "cache/a"
+When "cache/a" stops and then T1 commits
+Then the delivery of "e1" for "cache/a" and the event "e1" are deleted by the maintenance, and "cache/a" stays unregistered
+```
+
 <!-- cases: N/A 3,4: EphemeralTTL bounds are validated by New -->
 <!-- cases: N/A 5 errors: a failing cleanup is logged and retried on the next poll -->
-<!-- cases: N/A 8 concurrency: several members may clean the same group; deletes are idempotent -->
+<!-- cases: 8 concurrency: an outbox transaction committing after its ephemeral group stopped is a scenario; several transports may clean the same group, deletes are idempotent -->
 <!-- cases: N/A 9 panics: none -->
 <!-- cases: N/A 10 compatibility: new module -->
 
 ### Requirement: Stopping a subscription releases its claims
-The stop function SHALL stop claiming, wait for running handlers until its context ends, and release the leases of deliveries it claimed but did not start, so other members can claim them at once. After every subscription of a transport stopped, the transport SHALL run no goroutine.
+The stop function SHALL stop claiming, wait for running handlers until its context ends, and release the leases of deliveries it claimed but did not start, with their attempt uncounted, so other members can claim them at once. Once its context ended it SHALL cancel the handlers' contexts and return within 100ms more, even if a handler ignores its context. After every subscription of a transport stopped and its handlers returned, the transport SHALL run no goroutine.
 
 #### Scenario: Stop outcomes
 ```gherkin
@@ -254,6 +324,14 @@ Examples:
   | ctx                                 | outcome                                                                                       |
   | context.Background()                | stop returns after the running handler finished; "i2" handles the other 7 within 1s, not after 30s |
   | a context that times out after 10ms | stop returns within 1s; the running handler's context was cancelled; "i2" handles all 8 within 1s once the lease is released |
+```
+
+#### Scenario: A handler ignoring its context
+```gherkin
+Given a transport with group "mail" and a handler that blocks, ignoring its context, until the test releases it
+And the handler is running
+When stop is called with a context that times out after 50ms
+Then stop returns an error matching context.DeadlineExceeded within 2s, before the handler is released
 ```
 
 #### Scenario: No goroutine after stop
@@ -269,7 +347,7 @@ Then goleak reports no goroutine started by the transport
 <!-- cases: N/A 10 compatibility: new module -->
 
 ### Requirement: Delivered rows are removed
-An acknowledged delivery SHALL be deleted at once unless `KeepDelivered(d)` is set, in which case it SHALL be marked delivered and deleted after `d`. An event with no remaining delivery SHALL be deleted.
+An acknowledged delivery SHALL be deleted at once unless `KeepDelivered(d)` is set, in which case it SHALL be marked delivered and deleted after `d`. An event with no remaining delivery SHALL be deleted. The table-wide maintenance SHALL run once per transport, not once per subscription, so a stale group is warned about at most once an hour per transport.
 
 #### Scenario: Retention
 ```gherkin
@@ -282,6 +360,18 @@ Examples:
   | no option            | no event and no delivery                  |
   | KeepDelivered(1h)    | the event and 1 delivered delivery        |
   | KeepDelivered(1s)    | no event and no delivery                  |
+```
+
+#### Scenario: One stale-group warning per transport
+```gherkin
+Given a transport with a recording logger and PollInterval(20ms), and group "removed" on "orders.placed" whose pending delivery was created 48h ago
+When <n> subscriptions of the transport run for more than 1s
+Then the stale-group warning was logged exactly once
+
+Examples:
+  | n |
+  | 1 |
+  | 3 |
 ```
 
 <!-- cases: N/A 3,4: KeepDelivered(0) means the default (row 1) -->

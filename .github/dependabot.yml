@@ -9,9 +9,10 @@ updates:
   # covers the whole workspace and touches every module. Keep the framework
   # dependencies out of that run: they live only in the http/* adapters and
   # examples/*, which get their own per-directory runs below. Otherwise each
-  # framework bump arrives twice (repo-wide and per module). The scheduler
-  # and clock adapters get per-directory runs too, so every go.work module
-  # is covered (checked by scripts/check-workflows.sh).
+  # framework bump arrives twice (repo-wide and per module). The same holds
+  # for the SQL drivers (pgx, go-sql-driver/mysql) of events/sql. The scheduler,
+  # clock and events adapters get per-directory runs too, so every go.work
+  # module is covered (checked by scripts/check-workflows.sh).
   #
   # Dependabot never edits go.work. If an update raises a module's go
   # directive above the one in go.work, every go command in the workspace
@@ -26,10 +27,14 @@ updates:
       - dependency-name: github.com/labstack/echo/v4
       - dependency-name: github.com/go-chi/chi/v5
       - dependency-name: github.com/gofiber/fiber/v2
+      # the SQL drivers live only in events/sql, covered by its own run
+      - dependency-name: github.com/jackc/pgx/v5
+      - dependency-name: github.com/go-sql-driver/mysql
 
   - package-ecosystem: gomod
     directories:
       - /http/**
+      - /events/**
       - /scheduler/**
       - /clock/**
       - /examples/**

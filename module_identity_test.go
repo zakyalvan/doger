@@ -153,6 +153,8 @@ func TestModuleIdentity_WorkspaceModules(t *testing.T) {
 	want := map[string]string{
 		".":                            modulePath,
 		"clock/clockwork":              modulePath + "/clock/clockwork",
+		"events/sql":                   modulePath + "/events/sql",
+		"events/sqltx":                 modulePath + "/events/sqltx",
 		"examples/dag":                 modulePath + "/examples/dag",
 		"examples/eager-loading":       modulePath + "/examples/eager-loading",
 		"examples/event-driven":        modulePath + "/examples/event-driven",

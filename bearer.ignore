@@ -1,0 +1,8 @@
+{
+  "101dee6af44f59e541cf9f70ecf344a3_0": {
+    "author": "doger",
+    "comment": "Makefile:14 default DSNs for make test-sql: the fixed password of the throwaway local containers in events/sql/compose.yaml, bound to 127.0.0.1; not a real credential",
+    "false_positive": true,
+    "ignored_at": "2026-11-21T12:04:37Z"
+  }
+}

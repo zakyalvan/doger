@@ -36,6 +36,25 @@ root := doger.NewWithOpts(&doger.InjectorOpts{EventTransport: transport})
 
 The in-memory transport delivers one event per group, round robin within a group, starts a new group at the latest event, and retries a failing handler up to `MemoryMaxAttempts(n)` times (default 3) before dropping and logging the event. It keeps nothing across restarts.
 
+## SQL transport {#sql-transport}
+
+The `events/sql` module (package `eventsql`) is the supported transport for production: PostgreSQL 13+ or MySQL 8.0+ carries the events, through the `*sql.DB` your application already opens, with a transactional outbox. It depends on `doger` and `events/sqltx` only; you bring the driver.
+
+1. Create its three tables with your migration tool, from the reference DDL that `postgres.DDL("doger_")` or `mysql.DDL("doger_")` returns (review it like any migration). `transport.EnsureSchema(ctx)` creates them in development and tests; `CheckSchema(ctx)` fails with `ErrSchemaMissing` when they are absent.
+2. Make it the container's transport:
+
+   ```go
+   transport, err := eventsql.New(db, postgres.Dialect()) // or mysql.Dialect()
+   if err != nil {
+       return err
+   }
+   root := doger.NewWithOpts(&doger.InjectorOpts{EventTransport: transport})
+   ```
+
+3. Publish inside `sqltx.InTx(ctx, db, fn)`: with `ExternalizeAuto`, the event is written in that transaction and delivered once it commits.
+
+Each send stores the event once and a delivery row per group registered for its destination, so a new group starts at the latest event and a durable group keeps the events sent while no member runs. Members claim deliveries with a lease and `FOR UPDATE SKIP LOCKED`: one member of a `DeliverOnce` group handles each event, every `DeliverAll` group gets a copy, and a crashed member's claims return when the lease expires (`Lease`, 30s). A failing handler is retried with exponential backoff (1s to 5m) up to `MaxAttempts` (10), then dead-lettered, at once for a `PermanentError`; `ListDeadLetters`, `Resubmit` and `DropGroup` are the operator's tools. Ephemeral groups are removed when their subscription stops, or `EphemeralTTL` (5m) after a crash. A group registered after an outbox transaction wrote its event does not receive that event; this holds under READ COMMITTED, while a PostgreSQL outbox transaction at REPEATABLE READ or SERIALIZABLE can also miss a group registered after its snapshot. Every default (`PollInterval`, `BatchSize`, `Workers`, `TablePrefix`, `KeepDelivered`, `MaxPayloadBytes`, `Backoff`, `Logger`) is an option of `New`; see the module README for the full table and the operations runbook.
+
 ## Externalization strategies {#strategies}
 
 `Publish` first runs the in-process listeners, then hands the event to the transport. When is decided per publish by the first of `PublishExternalize(s)`, the type's `EventExternalize(s)` and `InjectorOpts.EventExternalize`:
@@ -53,7 +72,7 @@ An outbox with no transaction fails with `ErrNoTransaction` unless `InjectorOpts
 
 ## Transactions {#transactions}
 
-Core knows no transaction type. A `TxSource` finds the `Tx` of a context, and `Detach` returns a context without it. It comes from `InjectorOpts.TxSource`, a root service named `doger.NameOf[doger.TxSource]()`, or the transport's own `TxSource()`; a different one configured next to a `TxEventSender` fails `Start` with `ErrTxSourceConflict`.
+Core knows no transaction type. A `TxSource` finds the `Tx` of a context, and `Detach` returns a context without it. It comes from `InjectorOpts.TxSource`, a root service named `doger.NameOf[doger.TxSource]()`, or the transport's own `TxSource()`; a different one configured next to a `TxEventSender` fails `Start` with `ErrTxSourceConflict`. The shared `events/sqltx` module binds a `database/sql` transaction: `sqltx.InTx(ctx, db, fn)` (or `BeginTx`, or `BindTx` for a transaction another library began), with `sqltx.Source()` as the `TxSource`; the [SQL transport](#sql-transport) uses it for its outbox.
 
 Listeners can wait for the transaction too: `ListenerTxPhase(TxPhaseAfterCommit)`, `TxPhaseAfterRollback` or `TxPhaseAfterCompletion` runs them from the transaction's callbacks with the detached context, their errors going to `HookEventError`. Without a transaction they run at once, or are skipped with `ListenerTxFallback(TxFallbackSkip)`.
 
@@ -108,5 +127,5 @@ Keep `doger` out of the domain:
 
 - **Domain events** are plain structs raised by aggregates; **integration events** are the ones registered with a wire name and externalized. They can be the same type, or an application listener can translate one into the other.
 - The **application layer** declares its own port, `type EventPublisher interface { Publish(ctx context.Context, events ...any) error }`, and the use case publishes through it. `doger.PublisherFor(root)` satisfies it: it publishes in order and stops at the first error.
-- The **unit of work** binds the transaction into `ctx`, through the `TxSource` the transport uses, so `ExternalizeAuto` picks the outbox without the use case knowing. Publish inside the unit of work: an event published after it returned is outside the transaction.
+- The **unit of work** binds the transaction into `ctx` (for `database/sql`, `sqltx.InTx`), so `ExternalizeAuto` picks the outbox without the use case knowing. Publish inside the unit of work: an event published after it returned is outside the transaction.
 - **Remote listeners are driving adapters**: they translate an incoming event into a call of a use case, like an HTTP handler does for a request.

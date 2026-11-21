@@ -56,6 +56,31 @@ jobs:
         verbose: true
       if: matrix.os == 'ubuntu-latest' && matrix.go == 'stable'
 
+  # events/sql against real databases: make test-sql starts the
+  # containers of events/sql/compose.yaml (the same images and the raised
+  # max_connections as locally; service containers cannot pass server
+  # arguments) and runs the tests with DOGER_SQL_REQUIRE=1, which turns a
+  # missing database into a failure instead of a skip
+  sql-integration:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: Set up Go
+      uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+      with:
+        go-version-file: go.work
+        cache-dependency-path: '**/go.sum'
+
+    - name: Integration tests
+      run: make test-sql
+
+    - name: Stop the databases
+      if: always()
+      run: make test-sql-down
+
   # the release post-processing (scripts/release-steps.sh, shared with
   # release.yml) on a copy, published to a local file proxy and consumed by
   # clean GOWORK=off modules; plus the workflow and policy checks

@@ -1,4 +1,4 @@
-.PHONY: build test watch-test bench watch-bench coverage tools lint lint-fix modules test-all lint-all vuln govulncheck-install audit outdated weight doc
+.PHONY: build test test-sql test-sql-down watch-test bench watch-bench coverage tools lint lint-fix modules test-all lint-all vuln govulncheck-install audit outdated weight doc
 
 build:
 	go build -v ./...
@@ -6,6 +6,20 @@ build:
 # root module only, for fast local runs; test-all covers the workspace
 test:
 	go test -race ./...
+# integration tests of events/sql against PostgreSQL 17 and 13 and MySQL
+# 8.4 and 8.0 in Docker (events/sql/compose.yaml); the containers keep
+# running for the next run until make test-sql-down. Point the DSN
+# variables at other servers to test those instead.
+SQL_COMPOSE := events/sql/compose.yaml
+SQL_POSTGRES_DSN ?= postgres://postgres:doger@127.0.0.1:54317/doger?sslmode=disable postgres://postgres:doger@127.0.0.1:54313/doger?sslmode=disable
+SQL_MYSQL_DSN ?= root:doger@tcp(127.0.0.1:33084)/doger root:doger@tcp(127.0.0.1:33080)/doger
+
+test-sql:
+	docker compose -f $(SQL_COMPOSE) up -d --wait
+	cd events/sql && DOGER_SQL_REQUIRE=1 DOGER_SQL_POSTGRES_DSN="$(SQL_POSTGRES_DSN)" DOGER_SQL_MYSQL_DSN="$(SQL_MYSQL_DSN)" go test -race -count=1 ./...
+test-sql-down:
+	docker compose -f $(SQL_COMPOSE) down -v
+
 watch-test:
 	reflex -t 50ms -s -- sh -c 'gotest -race ./...'
 

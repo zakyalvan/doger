@@ -13,9 +13,9 @@
 **Transport**
 - `eventsql.New(db, dialect, opts...) (*Transport, error)` returns a `doger.EventTransport` that is also a `doger.TxEventSender`.
 - Dialects `postgres.Dialect()` (PostgreSQL 13+) and `mysql.Dialect()` (MySQL 8.0+), in packages `events/sql/postgres` and `events/sql/mysql`. They hold SQL text only and import no driver. The dialect is passed explicitly; there is no driver detection.
-- Storage: a group registry and one delivery row per registered group of the destination, written in the same statement as the event. New groups therefore start at the latest event, as `add-event-transport` requires.
+- Storage: a group registry and one delivery row per registered group of the destination, written in the same transaction as the event (the event insert, an `INSERT ... SELECT` fan-out from the registry, and the delete of an event no group receives). New groups therefore start at the latest event, as `add-event-transport` requires.
 - Consumers claim rows with a lease and `FOR UPDATE SKIP LOCKED`, so members of a `DeliverOnce` group compete and every group gets its own copy. A crash releases a claim when its lease expires.
-- Retries with exponential backoff and jitter; dead-lettering after the last attempt or at once for `doger.PermanentError`; admin functions to list and resubmit dead letters and to drop a group.
+- Retries with exponential backoff and jitter; dead-lettering after the last attempt (also at claim time for a delivery whose attempts a crash used up) or at once for `doger.PermanentError`; admin functions to list and resubmit dead letters and to drop a group.
 - Ephemeral `DeliverAll` groups are removed when their subscription stops, and by a heartbeat-based reaper after a crash.
 
 **Transactions (`sqltx`) and the outbox**
@@ -27,7 +27,7 @@
 - Table names come from a validated prefix (`TablePrefix`, default `doger_`), so no unvalidated identifier reaches SQL.
 
 **Tests and CI**
-- The module passes `eventtransporttest.Run`, including `WithTx`, against real PostgreSQL and MySQL. Integration tests read DSNs from the environment; a new CI job runs them against service containers, and `make test-sql` runs them locally with Docker Compose.
+- The module passes `eventtransporttest.Run`, including `WithTx`, against real PostgreSQL and MySQL. Integration tests read DSNs from the environment; `make test-sql` runs them with Docker Compose, locally and in a new CI job.
 
 **Out of scope:** SQLite and other engines (no `SKIP LOCKED`), `LISTEN/NOTIFY` push delivery (needs a driver-specific API), ordering guarantees, and exactly-once delivery.
 
@@ -39,13 +39,13 @@
 - `sql-event-schema`: dialects, table-name validation, reference DDL and `EnsureSchema`.
 
 ### Modified Capabilities
-- None. Requires `add-event-transport` to be archived first; the module implements its `event-transport` contract without changing it.
+- None. The changes are stacked: this one builds on `add-event-transport`, which is implemented in the same working tree but not yet archived, and must be archived first. The module implements its `event-transport` contract without changing it.
 
 ## Impact
 
-- Code: new module `events/sqltx` (`tx.go`, `context.go`); new module `events/sql` (`transport.go`, `claim.go`, `schema.go`, `admin.go`, `options.go`), packages `events/sql/postgres` and `events/sql/mysql`; two `go.work` entries; `scripts/release-steps.sh` module list if it is not derived from `go.work`. `events/sql` requires `events/sqltx` at the same release version.
-- Dependencies of the published modules: doger (and `sqltx` for `events/sql`) only. `sqltx` has no test-only dependency (fake driver). `events/sql` test-only: `github.com/jackc/pgx/v5` (its `stdlib` driver) and `github.com/go-sql-driver/mysql`, dropped from the released `go.mod` by the existing release step.
-- CI: new job `sql-integration` (ubuntu, service containers `postgres:17` and `mysql:8.4`); `Makefile` target `test-sql` with `events/sql/compose.yaml`.
+- Code: new module `events/sqltx` (`tx.go`, `context.go`); new module `events/sql` (`transport.go`, `send.go`, `outbox.go`, `subscribe.go`, `maintenance.go`, `lease.go`, `backoff.go`, `rows.go`, `dialect.go`, `schema.go`, `admin.go`, `options.go`), packages `events/sql/postgres` and `events/sql/mysql`; two `go.work` entries; `scripts/release-steps.sh` module list if it is not derived from `go.work`. `events/sql` requires `events/sqltx` at the same release version.
+- Dependencies of the published modules: doger (and `sqltx` for `events/sql`) only. `sqltx` test-only: `github.com/stretchr/testify` and `go.uber.org/goleak` (it uses a fake driver, no database). `events/sql` test-only: `github.com/jackc/pgx/v5` (its `stdlib` driver) and `github.com/go-sql-driver/mysql`, dropped from the released `go.mod` by the existing release step.
+- CI: new job `sql-integration` (ubuntu) running `make test-sql`, which starts `events/sql/compose.yaml` (`postgres:17.12-alpine`, `postgres:13.23-alpine`, `mysql:8.4.13`, `mysql:8.0.46`, raised `max_connections`); Dependabot's root run ignores `pgx` and `go-sql-driver/mysql`, which the `events/**` run covers.
 - Docs: module README, a section in the "Event transports" guide, `Example*` tests.
 - API: new modules, no change to doger's exported API.
 
@@ -61,7 +61,7 @@
 | Handlers per subscription | 4 | `Workers(n)` |
 | Lease (and handler deadline) | 30s | `Lease(d)` |
 | Max attempts before dead letter | 10 | `MaxAttempts(n)` |
-| Backoff | Exponential from 1s, ×2, capped at 5m, ±10% jitter | `Backoff(policy)` |
+| Backoff | `DefaultBackoff()`: exponential from 1s, ×2, capped at 5m, ±10% jitter | `Backoff(policy)` with a `BackoffPolicy`, e.g. `ExponentialBackoff{...}` (`Max <= 0`: no cap) or `FixedBackoff(d)` |
 | Permanent handler error | Dead-lettered at once | Listener returns a non-permanent error to retry instead |
 | Ephemeral group lifetime | Removed on stop; reaped 5m after its last heartbeat | `EphemeralTTL(d)` |
 | Durable (`DeliverOnce`, stable `DeliverAll`) groups | Kept while no instance runs, so events wait | `(*Transport).DropGroup(ctx, destination, group)` |

@@ -1,0 +1,63 @@
+# Databases for the integration tests of events/sql: `make test-sql` (from
+# the repository root) starts them, exports DOGER_SQL_POSTGRES_DSN and
+# DOGER_SQL_MYSQL_DSN, and runs the module's tests. Each test creates and
+# drops a schema (PostgreSQL) or a database (MySQL) of its own.
+# Stop them with `make test-sql-down`.
+name: doger-events-sql
+
+services:
+  postgres17:
+    image: postgres:17.12-alpine
+    command: ["postgres", "-c", "max_connections=300"]
+    environment:
+      POSTGRES_PASSWORD: doger
+      POSTGRES_DB: doger
+    ports: ["127.0.0.1:54317:5432"]
+    tmpfs: [/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d doger"]
+      interval: 1s
+      timeout: 5s
+      retries: 60
+
+  postgres13:
+    image: postgres:13.23-alpine
+    command: ["postgres", "-c", "max_connections=300"]
+    environment:
+      POSTGRES_PASSWORD: doger
+      POSTGRES_DB: doger
+    ports: ["127.0.0.1:54313:5432"]
+    tmpfs: [/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d doger"]
+      interval: 1s
+      timeout: 5s
+      retries: 60
+
+  mysql84:
+    image: mysql:8.4.13
+    command: ["--max-connections=500"]
+    environment:
+      MYSQL_ROOT_PASSWORD: doger
+      MYSQL_DATABASE: doger
+    ports: ["127.0.0.1:33084:3306"]
+    tmpfs: [/var/lib/mysql]
+    healthcheck:
+      test: ["CMD-SHELL", "mysql -h 127.0.0.1 -uroot -pdoger -e 'SELECT 1'"]
+      interval: 2s
+      timeout: 5s
+      retries: 90
+
+  mysql80:
+    image: mysql:8.0.46
+    command: ["--max-connections=500"]
+    environment:
+      MYSQL_ROOT_PASSWORD: doger
+      MYSQL_DATABASE: doger
+    ports: ["127.0.0.1:33080:3306"]
+    tmpfs: [/var/lib/mysql]
+    healthcheck:
+      test: ["CMD-SHELL", "mysql -h 127.0.0.1 -uroot -pdoger -e 'SELECT 1'"]
+      interval: 2s
+      timeout: 5s
+      retries: 90

@@ -5,6 +5,9 @@ use (
 
 	./clock/clockwork
 
+	./events/sql
+	./events/sqltx
+
 	./examples/dag
 	./examples/eager-loading
 	./examples/event-driven

@@ -49,6 +49,8 @@ func TestToolchain_GoDirective(t *testing.T) {
 		"http/std/go.mod",
 		"scheduler/gocron/go.mod",
 		"clock/clockwork/go.mod",
+		"events/sql/go.mod",
+		"events/sqltx/go.mod",
 		"examples/dag/go.mod",
 		"examples/eager-loading/go.mod",
 		"examples/event-driven/go.mod",

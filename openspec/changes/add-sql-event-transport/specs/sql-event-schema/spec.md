@@ -99,7 +99,7 @@ Examples:
 <!-- cases: N/A 10 compatibility: new module; later schema changes will ship as new DDL versions with an upgrading note -->
 
 ### Requirement: EnsureSchema creates missing tables
-`(*Transport).EnsureSchema(ctx)` SHALL create any missing table and index and leave existing ones and their rows unchanged. `(*Transport).CheckSchema(ctx)` SHALL return nil when the three tables exist and an error matching `ErrSchemaMissing` naming the missing tables otherwise.
+`(*Transport).EnsureSchema(ctx)` SHALL create any missing table and index and leave existing ones and their rows unchanged, under a session lock it SHALL release afterwards, discarding the connection when the release fails. `(*Transport).CheckSchema(ctx)` SHALL return nil when the three tables exist and an error matching `ErrSchemaMissing` naming the missing tables otherwise.
 
 #### Scenario: EnsureSchema and CheckSchema
 ```gherkin
@@ -122,6 +122,19 @@ Examples:
 Given an empty PostgreSQL 17 database
 When 5 transports call EnsureSchema concurrently
 Then every call returns nil and CheckSchema returns nil
+```
+
+#### Scenario: Releasing the schema lock
+```gherkin
+Given a transport on a fake driver whose schema lock statement returns 1
+When the consumer calls EnsureSchema and the unlock statement <unlock>
+Then EnsureSchema returns nil and the connection <connection>
+
+Examples:
+  | unlock                 | connection                                              |
+  | returns 1              | goes back to the pool                                   |
+  | fails with an error    | is closed instead of pooled, so its session lock ends   |
+  | returns 0              | is closed instead of pooled, so its session lock ends   |
 ```
 
 <!-- cases: N/A 4 boundaries: no numeric input -->

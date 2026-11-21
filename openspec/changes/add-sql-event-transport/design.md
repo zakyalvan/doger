@@ -2,7 +2,7 @@
 
 ## Context
 
-See proposal.md (Why) and the three specs. The contract is `add-event-transport` (archived first): `EventTransport` (`Send`, `Subscribe` returning a stop function), `TxEventSender` (`SendTx`, `TxSource`), the handler's return value as the acknowledgement (nil ack, error retry, `doger.IsPermanentError` dead-letter), groups named by doger (`DeliverOnce` shared, `DeliverAll` per instance, `Ephemeral` for generated instance IDs), new groups starting at the latest event, and the `eventtransporttest` suite.
+See proposal.md (Why) and the three specs. The contract is `add-event-transport` (implemented in the same stacked working tree, not yet archived): `EventTransport` (`Send`, `Subscribe` returning a stop function), `TxEventSender` (`SendTx`, `TxSource`), the handler's return value as the acknowledgement (nil ack, error retry, `doger.IsPermanentError` dead-letter), groups named by doger (`DeliverOnce` shared, `DeliverAll` per instance, `Ephemeral` for generated instance IDs), new groups starting at the latest event, and the `eventtransporttest` suite.
 
 Repository constraints:
 - Separate modules follow `scheduler/gocron`: own `go.mod` at Go 1.27, listed in `go.work`, released by `scripts/release-steps.sh`, which already drops test-only requirements from the released `go.mod` and pins released siblings to the release version (`events/sql` requires `events/sqltx`).
@@ -26,14 +26,16 @@ Repository constraints:
 ### D1. Storage model: fan-out at write over a group registry
 ```
 doger_event_groups      (destination, group_name, ephemeral, heartbeat_at)        PK (destination, group_name)
-doger_events            (id, destination, event_type, version, content_type,
-                         payload, headers, published_at)                          PK id (envelope ID)
-doger_event_deliveries  (seq, event_id, group_name, state, attempts,
-                         visible_after, lease_owner, lease_token, lease_until,
-                         last_error, delivered_at)                               PK seq; UNIQUE (event_id, group_name)
-                         index (group_name, state, visible_after, seq)
+doger_events            (event_key, id, destination, event_type, version,
+                         content_type, payload, headers, published_at,
+                         created_at)                                              PK event_key (random 128-bit hex)
+doger_event_deliveries  (seq, event_key, destination, group_name, state,
+                         attempts, visible_after, lease_owner, lease_token,
+                         lease_until, last_error, created_at, delivered_at)       PK seq; UNIQUE (event_key, group_name)
+                         index (destination, group_name, state, visible_after, seq); index (lease_token)
 ```
-- `Send` runs, in one transaction (its own, or the caller's for `SendTx`): `INSERT` into events, then `INSERT INTO deliveries SELECT ... FROM groups WHERE destination = ?`. With no group, the event row is deleted in the same statement batch (PostgreSQL: a CTE that inserts the event only `WHERE EXISTS` a group; MySQL: insert, then delete when the second insert affected 0 rows).
+- The primary key of an event is a random `event_key`, not the envelope ID: the same envelope ID sent twice (a retried publish) is two rows, never a key conflict. `id` keeps the envelope ID; `published_at` is Unix nanoseconds (`BIGINT`, 0 for a zero `PublishedAt`, which reads back as the zero `time.Time`); `created_at` is the database time. A nil payload is stored as an empty one (`payload` is `NOT NULL`).
+- `Send` runs, in one transaction (its own, or the caller's for `SendTx`), three statements: `INSERT` into events, then `INSERT INTO deliveries SELECT ... FROM groups WHERE destination = ?`, then, when that fan-out affected 0 rows, `DELETE` of the event. They commit together, so no reader sees an event without its deliveries. Both engines use the same steps.
 - **Why not a log plus per-group offsets** (watermill-sql): offsets give ordering and cheap fan-out, but a group's single offset serializes its members (watermill locks the offset row with `FOR UPDATE`), so `DeliverOnce` members do not run in parallel; per-message retries, attempts and dead letters need extra tables anyway; and a new group must be seeded at the head explicitly. Fan-out rows make every delivery independently claimable, retriable and dead-letterable, and "start at latest" is a consequence of the data model rather than a rule each code path must remember.
 - **Why not one row per destination with a `processed_by` set** (msgin-style queue): it supports one group per queue; multiple groups need multiple queues the publisher must know about, which the topic/log model of `add-event-transport` rules out.
 - Cost: a payload stored once, one small delivery row per group. Write amplification grows with the number of groups per destination, which is small in practice (one per listener, plus one per instance for `DeliverAll`).
@@ -42,20 +44,22 @@ doger_event_deliveries  (seq, event_id, group_name, state, attempts,
 A group must see every event whose write runs after the group's registration committed. The `INSERT ... SELECT` reads the registry at statement time under READ COMMITTED (PostgreSQL default; MySQL 8 InnoDB `INSERT ... SELECT` takes shared next-key locks on the scanned registry rows, which serializes it against a concurrent registration of that destination). Consequences, pinned by the scenario "Registration racing a send":
 - An outbox transaction that wrote before a registration committed does not reach that group, even if it commits later. This matches "the group starts at the latest event": the event was written before the group existed.
 - No event can be half fanned out: deliveries of one event come from one statement.
+- The guarantee holds under READ COMMITTED (PostgreSQL's default), and on MySQL at its default REPEATABLE READ, where the shared locks make a registration wait. A PostgreSQL outbox transaction at REPEATABLE READ or SERIALIZABLE fans out from its snapshot, so it can also miss a group registered after the snapshot was taken but before the event was written; the README and the guide say so.
+- An ephemeral group that stops while an outbox transaction that fanned out to it is open (PostgreSQL: the fan-out takes no lock on the registry) leaves a delivery of a group that no longer exists once that transaction commits. Stop removes the group and its deliveries in one transaction, and the maintenance (D5) deletes the deliveries whose group is not registered (`ListOrphanDeliveries`, then `DeleteOrphanDelivery` by `seq`, rechecking the group, so the delete locks one row).
 Considered: `SERIALIZABLE` sends. Rejected: it would impose the isolation level on the caller's outbox transaction.
 
 ### D3. Claiming
-- PostgreSQL: `UPDATE deliveries SET lease_owner=$owner, lease_token=$token, lease_until=now()+$lease, attempts=attempts+1 WHERE seq IN (SELECT seq FROM deliveries WHERE group_name=$g AND state='pending' AND visible_after<=now() AND (lease_until IS NULL OR lease_until<now()) ORDER BY seq LIMIT $n FOR UPDATE SKIP LOCKED) RETURNING ...` joined to events.
-- MySQL: the same `SELECT ... FOR UPDATE SKIP LOCKED` and `UPDATE` in one short transaction (no `RETURNING`).
+- Both engines run the same three steps in one short READ COMMITTED transaction (no `RETURNING`, which MySQL lacks): `ClaimSelect` (`SELECT seq ... WHERE destination=? AND group_name=? AND state='pending' AND visible_after<=now AND (lease_until IS NULL OR lease_until<now) ORDER BY seq LIMIT n FOR UPDATE SKIP LOCKED`), `ClaimMark` per selected `seq` (owner, token, `lease_until`, `attempts+1`), and `ClaimLoad` (the rows with the claim's token joined to their events, with the lease's remaining microseconds by the database clock).
+- A claimed delivery whose attempt exceeds `MaxAttempts` (its last attempt ended without a result: the member crashed) is dead-lettered in the same transaction with a last error naming the exhausted attempts, and never reaches the handler.
 - Persisted times use the database clock (`now()`, `UTC_TIMESTAMP(6)`), so lease expiry is free of app-to-DB clock skew. The app clock only drives polling.
 - `lease_token` is a random 128-bit value per claim. Ack (`DELETE ... WHERE seq=? AND lease_token=?`), nack and dead-letter updates check it; 0 rows affected means the lease was lost (`ErrLeaseLost`, logged, never retried).
 - Attempts count at claim time, so a crash still counts. `AttemptFromContext(ctx)` exposes the attempt to handlers.
-- The handler context gets a deadline at `lease_until` (computed from the claim's returned DB time minus a 1s margin), so a slow handler is cancelled before another member can claim the row.
+- The handler context gets a deadline at the lease end (the remaining lease returned by `ClaimLoad`, added to the local clock) minus a margin of `min(lease/10, 1s)`, so a slow handler is cancelled before another member can claim the row.
 
 ### D4. Retry, backoff, dead letters
-- Nack: `state='pending', visible_after=now()+backoff(attempts), lease_*=NULL, last_error=$err` (error text truncated to 2 KiB).
-- Dead letter: `state='dead'` when `attempts >= MaxAttempts` or `doger.IsPermanentError(err)`.
-- `Backoff` is an interface `Delay(attempt int) time.Duration`. Default `ExponentialBackoff{Initial: 1s, Factor: 2, Max: 5m, Jitter: 0.1}`; `FixedBackoff(d)` for tests. Jitter uses `math/rand/v2` (not security-relevant).
+- Nack: `state='pending', visible_after=now()+backoff(attempts), lease_*=NULL, last_error=$err`. The error text is made storable on every engine: valid UTF-8 (`strings.ToValidUTF8`), NUL bytes removed (PostgreSQL rejects both in `text`), at most 2 KiB. Otherwise the settling update fails and even a permanent error would be retried every lease.
+- Dead letter: `state='dead'` when `attempts >= MaxAttempts` or `doger.IsPermanentError(err)`, and at claim time when the attempt exceeds `MaxAttempts` (D3).
+- `BackoffPolicy` is an interface `Delay(attempt int) time.Duration`, set with the `Backoff(policy)` option. `DefaultBackoff()` returns `ExponentialBackoff{Initial: 1s, Factor: 2, Max: 5m, Jitter: 0.1}`; `FixedBackoff(d)` for tests. `ExponentialBackoff` treats `Max <= 0` as no cap (up to the largest `time.Duration`) and never returns a negative delay. Jitter uses `math/rand/v2` (not security-relevant).
 - Admin: `ListDeadLetters`, `Resubmit` (`state='pending', attempts=0, visible_after=now()`), `DropGroup` (delete deliveries and the registry row in one transaction).
 
 ### D5. Subscription runtime
@@ -63,19 +67,25 @@ Considered: `SERIALIZABLE` sends. Rejected: it would impose the isolation level 
 Subscribe(ctx, sub, h):
   upsert group (destination, group, ephemeral, heartbeat=now())
   start poller goroutine + Workers(n) worker goroutines, joined by a WaitGroup
+  start a heartbeat goroutine; join the transport's maintenance loop
 poller loop:
-  claim up to min(BatchSize, free workers) --> send to workers (unbuffered channel)
+  wait for a free worker, then claim up to BatchSize --> hand each to a worker as one is free
+    (a claim that waited past its lease is skipped and released, its attempt uncounted)
   batch full ? poll again now : wait PollInterval (time.NewTimer + Reset) or ctx.Done
-  every PollInterval*10: heartbeat own group; reap ephemeral groups older than EphemeralTTL;
-                         delete delivered rows older than KeepDelivered and orphan events
+heartbeat, every min(PollInterval*10, EphemeralTTL/3): upsert own group
+maintenance, one loop per transport while >= 1 subscription runs, same interval:
+  reap ephemeral groups older than EphemeralTTL; delete delivered rows older than
+  KeepDelivered, deliveries of unregistered groups, and orphan events; hourly stale-group warning
 stop(ctx):
-  cancel poller --> release leases of claimed-but-not-started deliveries
-  wait workers or ctx.Done (then cancel handler contexts and wait for them to return)
-  if ephemeral: delete deliveries + registry row
+  cancel poller --> release leases of claimed-but-not-started deliveries (attempt uncounted)
+  wait workers or ctx.Done; then cancel handler contexts and wait at most 100ms more
+  if ephemeral: delete registry row + deliveries in one transaction
 ```
-- Claimed rows never wait in a buffer longer than a lease: the poller claims only as many rows as workers are free, so "claimed but not started" is at most one batch, released on stop.
-- Cleanup piggybacks on running subscriptions, so the transport owns no goroutine of its own and needs no `Close`. Several members may clean concurrently; deletes are idempotent.
-- Every goroutine selects on its context; `stop` returns only after all of them exit (goleak-checked).
+- Claim sizing follows the scenario "Stop outcomes" (`Workers(1)`, 8 claimed): once one worker is free the poller claims up to `BatchSize`, and the claimed rows wait for the workers. Trade-off: with several members, a member can hold a batch its workers handle one by one while another member's workers idle, and a claim can wait past its lease. Waiting past the lease is safe (the claim is skipped and released, never handed to a handler with an ended context), and the README advises sizing `BatchSize` to `Workers` for fair sharing. Claiming `min(BatchSize, free workers)` was considered and rejected because it contradicts that scenario.
+- A handler interrupted by stop keeps its attempt (it ran) and is made claimable at once (a nack with no delay): a handler that always hangs until stopped is dead-lettered eventually. Only claims that never started are released with their attempt uncounted.
+- `stop` honors the `EventTransport` contract ("returns once the handlers in flight returned, or once its context ended"): after its context ends it cancels the handler contexts and waits at most 100ms (`stopGrace`) for them, so a handler ignoring its context cannot hang the shutdown; that handler's goroutines exit when it returns.
+- The table-wide maintenance runs once per transport, not once per subscription (N scans and N stale-group warnings per hour before). It is reference-counted by the running subscriptions: the first starts it, the last one's goroutines stop it. The transport therefore needs no `Close`. Several transports may clean concurrently; deletes are idempotent.
+- Every goroutine selects on its context; once every subscription stopped and its handlers returned, no goroutine remains (goleak-checked).
 
 ### D6. Transactions without hooks: the shared `sqltx` module
 `*sql.Tx` exposes no commit callbacks, and doger's `Tx` needs `OnCommit`/`OnRollback`. Options considered:
@@ -112,15 +122,15 @@ var ErrNilDB, ErrForeignTransaction error
 - `FromDB(ctx, db)` is the one same-database check for every SQL-based adapter (this transport, watermill `wmsql`, msgin), so they all return `sqltx.ErrForeignTransaction` instead of three different errors. `SendTx` is `FromDB(ctx, t.db)` plus the write; `eventsql` declares no error of its own for it (nothing is released, so no alias is kept). `BindTx` takes the `*sql.DB` from the caller because a `*sql.Tx` does not expose it; a wrong value cannot be detected and is documented, as msgin documents the same invariant.
 
 ### D7. Dialects and identifiers
-- `type Dialect interface { Name() string; Statements(t Tables) Statements; DDL(t Tables) []string; SchemaLockSQL() (lock, unlock string) }` where `Statements` is a struct of prepared SQL strings (send, claim, ack, nack, dead, release, heartbeat, reap, cleanup, admin). Exported so other engines with `SKIP LOCKED` (for example MariaDB 10.6+) can be added outside the module.
+- `type Dialect interface { Name() string; Statements(t Tables) Statements; DDL(t Tables) []string; SchemaLockSQL() (lock, unlock string) }` where `Statements` is a struct of SQL strings (`TableExists`, send, claim, ack, nack, dead, release, heartbeat, reap, cleanup including `ListOrphanDeliveries`/`DeleteOrphanDelivery`, admin) and `Tables` comes from `NewTables(prefix)`, which validates the prefix. Exported so other engines with `SKIP LOCKED` (for example MariaDB 10.6+) can be added outside the module.
 - Identifiers: the prefix is validated (regex and length in the spec) before any SQL is built, then each identifier is quoted by the dialect (`"..."` for PostgreSQL, backticks for MySQL). Values always travel as bind parameters.
-- `EnsureSchema` serializes concurrent callers with `pg_advisory_xact_lock(hashtext(prefix))` on PostgreSQL and `GET_LOCK(prefix, 10)` on MySQL, then runs `CREATE ... IF NOT EXISTS`. `CHECK` constraints are avoided for MySQL 8.0.15 and older compatibility; `state` is a short `VARCHAR`.
+- `EnsureSchema` serializes concurrent callers with a session lock on one pooled connection: `pg_advisory_lock(hashtext($1))` / `pg_advisory_unlock(hashtext($1))` on PostgreSQL and `GET_LOCK(LEFT(CONCAT(COALESCE(DATABASE(), ''), '.', ?), 64), 10)` / `RELEASE_LOCK(...)` on MySQL (the lock name `doger_schema:<prefix>`, qualified by the database because MySQL lock names are server-wide), then runs `CREATE ... IF NOT EXISTS`. When the release fails or does not return 1, the connection is discarded (`conn.Raw` returning `driver.ErrBadConn`) instead of going back to the pool still holding the lock. `CHECK` constraints are avoided for MySQL 8.0.15 and older compatibility; `state` is a short `VARCHAR`.
 - The reference DDL is a starting point for the consumer's migration, reviewed by them against their data volumes; the module never alters a schema in production code paths.
 
 ### D8. Test infrastructure
 - Integration tests live in the module (package `eventsql_test`) and import `github.com/jackc/pgx/v5/stdlib` and `github.com/go-sql-driver/mysql` as test-only requirements, which the existing release step removes from the published `go.mod`.
 - DSNs come from `DOGER_SQL_POSTGRES_DSN` and `DOGER_SQL_MYSQL_DSN`. Unset, the tests skip, unless `DOGER_SQL_REQUIRE=1`, which turns a missing DSN into a failure. Each test creates its own schema (PostgreSQL) or database (MySQL) with a random name and drops it after, so tests run in parallel.
-- CI: a new `sql-integration` job on ubuntu with service containers `postgres:17`, `postgres:13`, `mysql:8.4`, `mysql:8.0` and `DOGER_SQL_REQUIRE=1`. The existing matrix keeps running the unit tests on all three OSes.
+- CI: a new `sql-integration` job on ubuntu runs `make test-sql`, so CI uses `events/sql/compose.yaml` exactly as developers do: `postgres:17.12-alpine`, `postgres:13.23-alpine`, `mysql:8.4.13`, `mysql:8.0.46`, with `max_connections` raised to 300 (PostgreSQL) and 500 (MySQL), which service containers cannot pass, and `DOGER_SQL_REQUIRE=1`. The existing matrix keeps running the unit tests on all three OSes.
 - Local: `make test-sql` brings up `events/sql/compose.yaml` with the same images, exports the DSNs and runs `go test -race ./...` in the module.
 - *Alternative: testcontainers-go.* Rejected for now: a heavy test-only dependency tree, Docker access from inside tests on macOS and Windows runners, and slower startup per package. The env-DSN approach also lets users point the suite at a managed database.
 - Unit tests that need no engine (options, prefix validation, backoff, the `Tx` wrapper's callback logic, statement building) use a minimal fake `database/sql/driver` in `fakedriver_test.go`.
@@ -148,9 +158,9 @@ New modules `github.com/kartaladev/doger/events/sqltx` (package `sqltx`) and `gi
 | `Transport.EnsureSchema(ctx)`, `CheckSchema(ctx)` | methods | never called implicitly |
 | `Transport.ListDeadLetters(ctx, dest, group, limit) ([]DeadLetter, error)`, `Resubmit(ctx, ids ...string)`, `DropGroup(ctx, dest, group)` | methods | n/a |
 | `AttemptFromContext(ctx) (int, bool)` | func | n/a |
-| `TablePrefix`, `PollInterval`, `BatchSize`, `Workers`, `Lease`, `MaxAttempts`, `Backoff`, `EphemeralTTL`, `KeepDelivered`, `MaxPayloadBytes`, `Logger` | `Option` | `doger_`, 1s, 16, 4, 30s, 10, exponential 1s..5m ±10%, 5m, 0 (delete), 1 MiB, `slog.Default()` |
-| `Backoff` interface, `ExponentialBackoff`, `FixedBackoff(d)` | policy | exponential |
-| `Dialect`, `Tables`, `Statements` | SPI | n/a |
+| `TablePrefix`, `PollInterval`, `BatchSize`, `Workers`, `Lease`, `MaxAttempts`, `Backoff`, `EphemeralTTL`, `KeepDelivered`, `MaxPayloadBytes`, `Logger` | `Option` | `doger_`, 1s, 16, 4, 30s, 10, `DefaultBackoff()`, 5m, 0 (delete), 1 MiB, `slog.Default()` |
+| `BackoffPolicy` interface, `DefaultBackoff()`, `ExponentialBackoff` (`Max <= 0`: no cap; never negative), `FixedBackoff(d)` | policy | `DefaultBackoff()`: exponential 1s..5m ±10% |
+| `Dialect`, `Tables`, `NewTables(prefix)`, `Statements` (incl. `TableExists`, `ListOrphanDeliveries`, `DeleteOrphanDelivery`) | SPI | n/a |
 | `postgres.Dialect()`, `postgres.DDL(prefix)`, `mysql.Dialect()`, `mysql.DDL(prefix)` | funcs | n/a |
 | `ErrNilDB`, `ErrNilDialect`, `ErrInvalidOption`, `ErrInvalidTableName`, `ErrSchemaMissing`, `ErrPayloadTooLarge`, `ErrLeaseLost` | sentinels | n/a |
 
@@ -168,6 +178,7 @@ Each scenario maps to one Go test; `Examples` rows run as named subtests. Engine
 | DDL applied by a migration tool | `integration_schema_test.go: TestDDL_Conformance/<engine>` | integration |
 | EnsureSchema and CheckSchema | `integration_schema_test.go: TestEnsureSchema/<row>` | integration |
 | Concurrent EnsureSchema | `integration_schema_test.go: TestEnsureSchema_Concurrent` | integration, race |
+| A failed unlock discards the connection | `schema_test.go: TestEnsureSchema_Unlock/<row>` | table-driven, fake driver |
 
 **`specs/sql-event-transport/spec.md`**
 
@@ -175,20 +186,27 @@ Each scenario maps to one Go test; `Examples` rows run as named subtests. Engine
 |---|---|---|
 | Conformance on each engine | `integration_conformance_test.go: TestConformance/<engine>` | conformance, race, goleak |
 | Deliveries per group | `integration_send_test.go: TestSend_DeliveriesPerGroup/<row>` | integration |
+| Envelope round trip | `integration_send_test.go: TestSend_RoundTrip/<row>` | integration |
 | Send failures are returned | `integration_send_test.go: TestSend_Failures/<row>` | integration |
 | Registration and history | `integration_groups_test.go: TestGroups_History/<row>` | integration |
-| Registration racing a send | `integration_groups_test.go: TestGroups_RegistrationRace` | integration, two connections |
+| Registration racing a send | `integration_tx_test.go: TestGroups_RegistrationRace` | integration, two connections, PostgreSQL |
 | Two instances | `integration_compete_test.go: TestCompete_TwoInstances` | integration, race |
 | Workers bound handler concurrency | `integration_compete_test.go: TestCompete_Workers/<row>` | integration |
-| Lease outcomes | `integration_lease_test.go: TestLease/<row>` | integration |
+| Lease outcomes | `integration_lease_test.go: TestLease/<row>` (incl. `skipped_claims`) | integration |
 | Attempts are visible to the handler | `integration_lease_test.go: TestLease_AttemptInContext` | integration |
 | Retry outcomes | `integration_retry_test.go: TestRetry/<row>` | integration |
+| Exhausted attempts at claim | `integration_retry_test.go: TestRetry_ExhaustedAtClaim/<row>` | integration |
+| An interrupted attempt counts | `integration_retry_test.go: TestRetry_InterruptedAttemptCounts` | integration |
 | The default backoff | `backoff_test.go: TestExponentialBackoff_Default/<row>` | table-driven, seeded jitter |
+| Exponential backoff bounds | `backoff_test.go: TestExponentialBackoff_Delay/<row>` | table-driven |
 | Admin operations | `integration_admin_test.go: TestAdmin/<row>` | integration |
 | Ephemeral group lifecycle | `integration_groups_test.go: TestGroups_Ephemeral/<row>` | integration |
+| An ephemeral group stopped during an outbox transaction | `integration_groups_test.go: TestGroups_EphemeralStopDuringOutbox` | integration, PostgreSQL |
 | Stop outcomes | `integration_stop_test.go: TestStop/<row>` | integration, goleak |
+| A handler ignoring its context | `integration_stop_test.go: TestStop_HandlerIgnoresContext` | integration |
 | No goroutine after stop | `integration_stop_test.go: TestStop_NoGoroutine` | goleak |
 | Retention | `integration_retention_test.go: TestRetention/<row>` | integration |
+| One stale-group warning per transport | `integration_retention_test.go: TestRetention_StaleGroupWarning/<row>` | integration |
 
 **`specs/sql-transactions/spec.md`** (module `events/sqltx`, all unit tests on a fake `database/sql/driver`; no database needed)
 
