@@ -46,7 +46,7 @@ And ListInvokedServices of the root is empty
 <!-- cases: N/A 10 compatibility: new API; the no-listener scenario pins that existing containers are unaffected -->
 
 ### Requirement: Publish argument handling
-`Publish` SHALL return an error matching `ErrInvalidEvent` without calling any listener when the event is nil or a nil value of a pointer, map, slice, channel or function type, including such a value held in an interface. A nil injector SHALL mean `DefaultRootScope`, and a nil context SHALL reach listeners as `context.Background()`.
+`Publish` SHALL return an error matching `ErrInvalidEvent` without calling any listener when the event is nil or a nil value of a pointer, map, slice, channel or function type, including such a value held in an interface. A nil injector SHALL return an error matching `ErrNilInjector` without calling any listener, and a nil context SHALL reach listeners as `context.Background()`.
 
 #### Scenario: Publish rejects or normalizes zero arguments
 ```gherkin
@@ -62,7 +62,7 @@ Examples:
   | DomainEvent  | a new root       | context.Background() | the root  | DomainEvent((*OrderPlaced)(nil))  | ErrInvalidEvent | 0     |
   | Tags         | a new root       | context.Background() | the root  | Tags(nil)                         | ErrInvalidEvent | 0     |
   | Tags         | a new root       | context.Background() | the root  | Tags{}                            | nil             | 1     |
-  | OrderPlaced  | DefaultRootScope | context.Background() | nil       | OrderPlaced{ID: "42"}             | nil             | 1     |
+  | OrderPlaced  | a new root       | context.Background() | nil       | OrderPlaced{ID: "42"}             | ErrNilInjector  | 0     |
   | OrderPlaced  | a new root       | nil                  | the root  | OrderPlaced{ID: "42"}             | nil             | 1     |
   | OrderPlaced  | a new root       | context.Background() | the root  | OrderPlaced{}                     | nil             | 1     |
 ```
@@ -75,7 +75,7 @@ Examples:
 <!-- cases: N/A 10 compatibility: new API -->
 
 ### Requirement: AsListener declares a listener service
-`AsListener[E]()` SHALL opt a registration into receiving events of type `E` through `Listener[E]`'s `OnEvent(context.Context, E) error`. A concrete registered type that does not implement it SHALL panic at registration, before the service is stored, with "DI: service `<name>` does not implement Listener[<E>]". Repeating it for one `E` SHALL register one listener.
+`AsListener[E]()` SHALL opt a registration into receiving events of type `E` through `Listener[E]`'s `OnEvent(context.Context, E) error`. A concrete registered type that does not implement it SHALL panic at registration, before the service is stored, with "doger: service `<name>` does not implement Listener[<E>]". Repeating it for one `E` SHALL register one listener.
 
 #### Scenario: AsListener validates the registered type
 ```gherkin
@@ -87,7 +87,7 @@ Examples:
   | registered  | name     | options                                              | outcome                                                                                              |
   | *Mailer     | *Mailer  | AsListener[OrderPlaced]()                            | succeeds and 1 event is delivered per publish                                                        |
   | *Mailer     | *Mailer  | AsListener[OrderPlaced](), AsListener[OrderPlaced]() | succeeds and 1 event is delivered per publish                                                        |
-  | *Auditor    | *Auditor | AsListener[OrderPlaced]()                            | panics with "DI: service `*Auditor` does not implement Listener[doger.OrderPlaced]" and stores nothing |
+  | *Auditor    | *Auditor | AsListener[OrderPlaced]()                            | panics with "doger: service `*Auditor` does not implement Listener[doger.OrderPlaced]" and stores nothing |
   | Notifier    | mailer   | AsListener[OrderPlaced]()                            | succeeds; the instance is checked at first dispatch                                                  |
 ```
 
@@ -161,8 +161,8 @@ Then registration <outcome>
 Examples:
   | registered | method             | outcome                                                                              |
   | *Mailer    | (*Mailer).OnPlaced | succeeds                                                                             |
-  | *Auditor   | (*Mailer).OnPlaced | panics with "DI: service `*Auditor` is not of type *doger.Mailer required by ListenMethod" |
-  | *Mailer    | nil                | panics with "DI: ListenMethod requires a non-nil method for service `*Mailer`"       |
+  | *Auditor   | (*Mailer).OnPlaced | panics with "doger: service `*Auditor` is not of type *doger.Mailer required by ListenMethod" |
+  | *Mailer    | nil                | panics with "doger: ListenMethod requires a non-nil method for service `*Mailer`"       |
 ```
 
 <!-- cases: N/A 4 boundaries: one or many methods are covered by the first scenario -->
@@ -171,7 +171,7 @@ Examples:
 <!-- cases: N/A 10 compatibility: new option -->
 
 ### Requirement: Listen registers a function listener
-`Listen[E](i, fn, opts...)` SHALL register `fn` in the scope of `i` and return a stop function. The first call of stop SHALL unregister it and return true; later calls SHALL return false. A nil `fn` SHALL panic with "DI: Listen requires a non-nil function". A nil injector SHALL mean `DefaultRootScope`.
+`Listen[E](i, fn, opts...)` SHALL register `fn` in the scope of `i` and return a stop function. The first call of stop SHALL unregister it and return true; later calls SHALL return false. A nil `fn` SHALL panic with "doger: Listen requires a non-nil function". A nil injector SHALL panic with an error matching `ErrNilInjector`. Listen on a scope no event can reach anymore (a child scope whose shutdown began, or a root whose shutdown completed) SHALL panic with an error matching `ErrPublishAfterShutdown` instead of registering an unreachable listener.
 
 #### Scenario: Stop unregisters a function listener
 ```gherkin
@@ -195,8 +195,10 @@ Then <outcome>
 
 Examples:
   | setup                       | injector | fn                  | outcome                                                       |
-  | a root scope                | the root | nil                 | it panics with "DI: Listen requires a non-nil function"       |
-  | DefaultRootScope            | nil      | a recording func    | a publish on DefaultRootScope calls the function once         |
+  | a root scope                | the root | nil                 | it panics with "doger: Listen requires a non-nil function"       |
+  | a root scope                | nil      | a recording func    | it panics with an error matching ErrNilInjector               |
+  | a child scope "req" shut down | "req"  | a recording func    | it panics with an error matching ErrPublishAfterShutdown      |
+  | a root scope shut down      | the root | a recording func    | it panics with an error matching ErrPublishAfterShutdown      |
 ```
 
 <!-- cases: N/A 4 boundaries: 0, 1 and 2 stops are in the table -->
@@ -306,7 +308,7 @@ Examples:
 ```gherkin
 Given a root scope
 When the consumer registers "*Mailer" with AsListener[OrderPlaced](ListenerFilter(func(e OrderCancelled) bool { return true }))
-Then registration panics with "DI: ListenerFilter for doger.OrderCancelled cannot apply to listener of doger.OrderPlaced"
+Then registration panics with "doger: ListenerFilter for doger.OrderCancelled cannot apply to listener of doger.OrderPlaced"
 ```
 
 <!-- cases: N/A 4 boundaries: 100 vs 150 covers the predicate boundary -->
@@ -354,7 +356,7 @@ And a publish through the root after Extend returned calls "x" once
 <!-- cases: N/A 10 compatibility: new API -->
 
 ### Requirement: Fail-fast is the default error mode
-By default the first synchronous listener error SHALL stop dispatch, and `Publish` SHALL return a `*ListenerError` holding the listener ID, the event type and the cause, matchable with `errors.As` and unwrapping to the cause, with the message "DI: listener `<id>` failed on event `<type>`: <cause>".
+By default the first synchronous listener error SHALL stop dispatch, and `Publish` SHALL return a `*ListenerError` holding the listener ID, the event type and the cause, matchable with `errors.As` and unwrapping to the cause, with the message "doger: listener `<id>` failed on event `<type>`: <cause>".
 
 #### Scenario: First error stops dispatch
 ```gherkin
@@ -364,7 +366,7 @@ When the consumer publishes OrderPlaced{ID: "1"}
 Then listeners "a" and "b" ran and "c" did not
 And errors.As finds a *ListenerError with Listener "b" and EventType doger.OrderPlaced
 And the error matches ErrOutOfStock
-And its message is "DI: listener `b` failed on event `doger.OrderPlaced`: out of stock"
+And its message is "doger: listener `b` failed on event `doger.OrderPlaced`: out of stock"
 ```
 
 #### Scenario: A typed-nil error is an error
@@ -508,7 +510,7 @@ Then "x" ran within 1s with value "trace"="t1" and a context whose Err is nil
 <!-- cases: N/A 10 compatibility: new option -->
 
 ### Requirement: Errors with no caller go to HookEventError
-Errors and recovered panics of async and lifecycle listeners SHALL be passed to `InjectorOpts.HookEventError(ctx, root, err)` as a `*ListenerError`. When it is unset they SHALL be logged with `Logf`, or with the standard `log` package when `Logf` is unset. A panic in the hook SHALL be recovered and logged the same way.
+Errors and recovered panics of async and lifecycle listeners SHALL be passed to `InjectorOpts.HookEventError(ctx, root, err)` as a `*ListenerError`. When it is unset they SHALL be logged with `InjectorOpts.Logger` at Error level, or with the standard `log` package when `Logger` is unset. A panic in the hook SHALL be recovered and logged the same way.
 
 #### Scenario: Where an async error goes
 ```gherkin
@@ -519,8 +521,8 @@ Then Publish returned nil and <observed>
 
 Examples:
   | config                                       | behavior                 | observed                                                                                          |
-  | no Logf and no HookEventError                | returns ErrOutOfStock    | the standard log output contains "DI: listener `x` failed on event `doger.OrderPlaced`: out of stock" |
-  | a recording Logf and no HookEventError       | returns ErrOutOfStock    | Logf received that message and the standard log output is empty                                   |
+  | no Logger and no HookEventError              | returns ErrOutOfStock    | the standard log output contains "doger: listener `x` failed on event `doger.OrderPlaced`: out of stock" |
+  | a recording Logger and no HookEventError     | returns ErrOutOfStock    | Logger received an Error record with that message and the standard log output is empty           |
   | a recording HookEventError                   | returns ErrOutOfStock    | the hook received a *ListenerError for "x" matching ErrOutOfStock, and nothing was logged          |
   | a recording HookEventError                   | panics with "kaboom"     | the hook received a *ListenerError for "x" containing "kaboom"                                     |
   | a HookEventError that panics with "hookfail" | returns ErrOutOfStock    | the standard log output contains "hookfail" and the process keeps running                          |
@@ -529,7 +531,7 @@ Examples:
 <!-- cases: N/A 3,4: no input values beyond the configuration -->
 <!-- cases: N/A 6 duplicate: one hook per root -->
 <!-- cases: N/A 8 concurrency: the hook may be called from executor goroutines concurrently; documented -->
-<!-- cases: N/A 10 compatibility: Logf keeps its meaning; only event errors fall back to the standard log -->
+<!-- cases: N/A 10 compatibility: Logger keeps its meaning; only event errors fall back to the standard log -->
 
 ### Requirement: Default executor is bounded
 The default executor SHALL run at most `InjectorOpts.EventAsyncParallelism` deliveries at once, defaulting to `runtime.GOMAXPROCS(0) * 4` read when the root is created. When it is full, `Publish` SHALL wait until a slot frees or its context ends; a done context SHALL fail even when a slot is free. That failure SHALL be a `*ListenerError` matching the context's error.
@@ -619,7 +621,7 @@ Examples:
   | n | outcome                                                              |
   | 1 | 1 task runs at once                                                  |
   | 3 | 3 tasks run at once                                                  |
-  | 0 | NewBoundedEventExecutor panics with "DI: NewBoundedEventExecutor requires n > 0" |
+  | 0 | NewBoundedEventExecutor panics with "doger: NewBoundedEventExecutor requires n > 0" |
 ```
 
 <!-- cases: N/A 6 duplicate: one executor per root -->
@@ -627,7 +629,7 @@ Examples:
 <!-- cases: N/A 10 compatibility: new option -->
 
 ### Requirement: Container lifecycle events
-The root SHALL publish `ContainerStarting`, `ContainerStarted`, `ContainerReady`, `ContainerFailed{Err}`, `ContainerClosing` and `ContainerClosed{Report}`, each with `Root`, on the hook's goroutine right after the container hooks of the same point. `ContainerStarting` SHALL be published only after every Starting hook passed.
+The root SHALL publish `ContainerStarting`, `ContainerStarted`, `ContainerReady`, `ContainerFailed{Err}`, `ContainerClosing` and `ContainerClosed{Report}`, each with `Root`, on the hook's goroutine right after the container hooks of the same point. `ContainerStarting` SHALL be published only after every Starting hook passed. Lifecycle events SHALL reach service listeners also in a container that has no function listener. For a panic `Start` re-raises, `ContainerFailed` SHALL be published before the re-panic. `ContainerClosed` is published once async deliveries are no longer accepted, so its async listeners SHALL run inline, before `Shutdown` returns.
 
 #### Scenario: Lifecycle events follow their hooks
 ```gherkin
@@ -648,6 +650,21 @@ Given a root scope R with a Starter failing ErrBoom and function listeners recor
 When the consumer calls Start and then Shutdown
 Then the ContainerFailed event has Root R and an Err matching ErrBoom
 And the ContainerClosed event has Root R and the *ShutdownReport that Shutdown returned
+```
+
+#### Scenario: Lifecycle events reach a container's only listener
+```gherkin
+Given a root scope whose only listener is <listener>
+And a recording HookEventError
+When the consumer <operation>
+Then the listener was called 1 time <when>
+And the hook received no error
+
+Examples:
+  | listener                                                        | operation                                   | when                       |
+  | a lazy service with AsListener[ContainerStarted]()              | calls Start and then Shutdown               | during Start               |
+  | an async function listener for ContainerClosed                  | calls Shutdown                              | before Shutdown returns    |
+  | a function listener for ContainerFailed                         | calls Start while a HookBeforeInvocation panics with "hook-boom" | before Start re-panics with "hook-boom", with Root R and an Err containing "hook-boom" |
 ```
 
 <!-- cases: N/A 3,4: lifecycle events carry no consumer input -->
@@ -687,7 +704,7 @@ Then Start returns an error wrapping ErrNo and no service was built
 <!-- cases: N/A 8 concurrency: published on the lifecycle goroutine -->
 
 ### Requirement: Shutdown drains async deliveries
-Root shutdown SHALL, after publishing `ContainerClosing`, stop accepting async submissions, wake publishers waiting for a slot with `ErrPublishAfterShutdown`, wait for in-flight deliveries, and only then shut services down. If the shutdown context ends first, those deliveries' contexts SHALL be cancelled and the report SHALL hold an error matching the context's error.
+Root shutdown SHALL, after publishing `ContainerClosing`, stop accepting async submissions, wake publishers waiting for a slot with `ErrPublishAfterShutdown`, wait for in-flight deliveries, and only then shut services down. If the shutdown context ends first, those deliveries' contexts SHALL be cancelled with cause `ErrPublishAfterShutdown`, `Shutdown` SHALL NOT wait for them beyond its context, and the report SHALL hold an error matching the context's error. A shutdown called with the context of an async delivery (an async listener shutting its container down) SHALL NOT wait for that delivery.
 
 #### Scenario: In-flight deliveries finish before services shut down
 ```gherkin
@@ -695,13 +712,34 @@ Given a lazy service "*DB" implementing Shutdowner that records "db-closed"
 And a function listener for OrderPlaced with ListenerAsync() that waits for "release" or its context's end and records "delivered" or "cancelled"
 And one delivery is in flight
 When the consumer calls ShutdownWithContext with <ctx> while "release" is <release>
-Then the record is <record>
+Then the record is, or soon becomes, <record>
 And the report <report>
 
 Examples:
   | ctx                          | release                  | record                       | report                                          |
   | context.Background()         | closed after 10ms        | ["delivered", "db-closed"]   | has no error                                    |
-  | a context timing out at 20ms | never closed             | ["cancelled", "db-closed"]   | holds an error matching context.DeadlineExceeded |
+  | a context timing out at 20ms | never closed             | ["cancelled"]                | holds an error matching context.DeadlineExceeded |
+```
+A shutdown context that ended skips the Shutdown of the services it then reaches, so "db-closed" is not recorded once the drain used the whole context; the cancelled delivery records "cancelled" on its own, possibly after `Shutdown` returned.
+
+#### Scenario: Shutdown honours its deadline
+```gherkin
+Given a root scope with an async function listener for OrderPlaced that ignores its context and waits for "release"
+And one delivery is in flight
+When the consumer calls ShutdownWithContext with a context timing out at 20ms
+Then ShutdownWithContext returns within 500ms with a report matching context.DeadlineExceeded
+```
+
+#### Scenario: An async listener shuts its own container or scope down
+```gherkin
+Given a root scope with an async function listener for OrderPlaced in <scope> that calls ShutdownWithContext on <scope> with its own context
+When the consumer publishes OrderPlaced{ID: "1"} through <scope>
+Then that ShutdownWithContext returns within 1s with a report that has no error
+
+Examples:
+  | scope           |
+  | the root        |
+  | child "req"     |
 ```
 
 #### Scenario: Waiting publishers are released at shutdown
@@ -712,13 +750,13 @@ Then the waiting Publish returns an error matching ErrPublishAfterShutdown withi
 ```
 
 <!-- cases: N/A 3 zero values: a nil shutdown context is normalized as for every shutdown -->
-<!-- cases: N/A 4 boundaries: before and after the deadline are the two rows -->
+<!-- cases: N/A 4 boundaries: before and after the deadline are the two rows; the deadline also bounds the wait after the abort -->
 <!-- cases: N/A 6 duplicate: a second Shutdown drains nothing -->
 <!-- cases: N/A 9 panics: delivery panics are recovered as usual -->
 <!-- cases: N/A 10 compatibility: containers without async listeners skip the drain -->
 
 ### Requirement: Scope shutdown drains its listeners
-Shutting a child scope down SHALL, before its services shut down, wait for in-flight async deliveries to listeners of that scope and its descendants, bounded by the shutdown context, and SHALL then stop those listeners from being reached.
+Shutting a child scope down SHALL, before its services shut down, wait for in-flight async deliveries to listeners of that scope and its descendants, bounded by the shutdown context, and SHALL then stop those listeners from being reached. From the moment its shutdown begins, an async delivery to a listener of that scope or its descendants SHALL be refused with an error matching `ErrPublishAfterShutdown`, also for a `Publish` that passed its scope check before, so that no delivery runs after `Shutdown` returned.
 
 #### Scenario: Child scope drain
 ```gherkin
@@ -729,21 +767,51 @@ When the consumer shuts "req" down while "release" is closed after 10ms
 Then the record is ["delivered", "conn-closed"]
 ```
 
+#### Scenario: A delivery admitted after the scope shutdown began is refused
+```gherkin
+Given a child scope "req" with an async function listener for OrderPlaced whose ListenerFilter blocks until "release"
+And a Publish through "req" is running that filter
+When the consumer shuts "req" down and then closes "release"
+Then that Publish returns an error matching ErrPublishAfterShutdown
+And the listener never runs
+```
+
 <!-- cases: N/A 3,4,5,6: as for root drain -->
 <!-- cases: N/A 8 concurrency: deliveries to other scopes are not waited for -->
 <!-- cases: N/A 9 panics: as for other async deliveries -->
 <!-- cases: N/A 10 compatibility: scopes without async listeners shut down as before -->
 
 ### Requirement: Publishing after shutdown
-After root shutdown stopped accepting async submissions, `Publish` SHALL return an error matching `ErrPublishAfterShutdown` for each reached async listener and still deliver to synchronous ones, skipping service listeners not built or already removed. After the root is closed every `Publish` SHALL fail that way, except that `ContainerClosed` SHALL reach function listeners.
+After root shutdown stopped accepting async submissions, `Publish` SHALL return an error matching `ErrPublishAfterShutdown` for each reached async listener and still deliver to synchronous ones, in either `EventErrorMode`: a refused async delivery SHALL NOT stop a fail-fast dispatch. It SHALL skip service listeners not built, already removed, or that can no longer be resolved because they were shut down; an error a reached listener returns SHALL never be skipped, even when it matches `ErrShutdown`. After the root is closed every `Publish` SHALL fail that way, except that `ContainerClosed` SHALL reach function listeners.
 
 #### Scenario: Publishing during and after shutdown
 ```gherkin
 Given a root scope with a synchronous function listener "s", an async function listener "a", a built service listener "*Built" and a never-built lazy service listener "*Lazy", all for OrderPlaced
-And a lazy service "*DB" implementing Shutdowner, built, that publishes OrderPlaced{ID: "1"} from its Shutdown and records the result
+And a lazy service "*DB" implementing Shutdowner, built, depending on "*Built", that publishes OrderPlaced{ID: "1"} from its Shutdown and records the result
 When the consumer shuts the root down and then publishes OrderPlaced{ID: "2"}
-Then the result recorded by "*DB" matches ErrPublishAfterShutdown, "s" ran once and "*Lazy" was never built
+Then the result recorded by "*DB" matches ErrPublishAfterShutdown, "s" ran once, "*Built" received 1 event and "*Lazy" was never built
 And the second Publish returns an error matching ErrPublishAfterShutdown
+```
+
+#### Scenario: Synchronous listeners run after an async refusal
+```gherkin
+Given a root scope with EventErrorMode <mode>, an async function listener registered before a synchronous function listener "s", both for OrderPlaced
+And a built service "*DB" that publishes OrderPlaced{ID: "1"} from its Shutdown and records the result
+When the consumer shuts the root down
+Then the result recorded by "*DB" matches ErrPublishAfterShutdown and "s" ran once
+
+Examples:
+  | mode          |
+  | EventFailFast |
+  | EventContinue |
+```
+
+#### Scenario: A listener error matching ErrShutdown is returned during shutdown
+```gherkin
+Given a root scope with a built service listener "*Mailer" for OrderPlaced whose OnEvent returns an error wrapping ErrShutdown with "mailer closing"
+And a built service "*DB" depending on "*Mailer" that publishes OrderPlaced{ID: "1"} from its Shutdown and records the result
+When the consumer shuts the root down
+Then the result recorded by "*DB" is a *ListenerError matching ErrShutdown and containing "mailer closing"
 ```
 
 #### Scenario: ContainerClosed reaches function listeners only
@@ -788,7 +856,7 @@ And the provider of "*Mailer" was called 1 time and Mailer received 100 events
 <!-- cases: N/A 10 compatibility: new API -->
 
 ### Requirement: Clone copies listeners
-`RootScope.Clone()` and `CloneWithOpts` SHALL copy service listener bindings with their registrations and function listeners as the same function. Stopping or adding a listener on one SHALL NOT affect the other. A clone SHALL get its own default executor; an executor set in `InjectorOpts` SHALL be shared, since the caller owns it.
+`RootScope.Clone()` and `CloneWithOpts` SHALL copy service listener bindings with their registrations and function listeners as the same function. Stopping or adding a listener on one SHALL NOT affect the other. A clone SHALL get its own default executor; an executor set in `InjectorOpts` that the clone keeps SHALL be shared, and only the container it was supplied to SHALL call its `Shutdown`: a clone's shutdown never does, so shutting a clone down leaves the source's async deliveries working.
 
 #### Scenario: Clone delivers to its own listeners
 ```gherkin
@@ -815,12 +883,19 @@ Examples:
   | InjectorOpts.EventExecutor set to E        | goes through E, which received one Shutdown call from the original |
 ```
 
+#### Scenario: Shutting a clone down leaves a supplied executor running
+```gherkin
+Given a root scope with InjectorOpts.EventExecutor set to NewBoundedEventExecutor(2) and an async listener
+When the consumer clones it and shuts the clone down
+Then an async publish on the original is delivered within 1s
+```
+
 <!-- cases: N/A 3,4,5,9: clone takes no input -->
 <!-- cases: N/A 8 concurrency: clones share no mutable event state -->
 <!-- cases: N/A 10 compatibility: clone keeps copying everything it copied before -->
 
 ### Requirement: Event options are validated
-`New` and `NewWithOpts` SHALL panic with "DI: invalid EventErrorMode <n>" for an `EventErrorMode` other than `EventFailFast` and `EventContinue`. `EventAsyncParallelism` 0 SHALL mean the default. The zero `InjectorOpts` SHALL give every documented default.
+`New` and `NewWithOpts` SHALL panic with "doger: invalid EventErrorMode <n>" for an `EventErrorMode` other than `EventFailFast` and `EventContinue`. `EventAsyncParallelism` 0 SHALL mean the default. The zero `InjectorOpts` SHALL give every documented default.
 
 #### Scenario: Option validation
 ```gherkin
@@ -832,7 +907,7 @@ Examples:
   | field                 | value         | outcome                                         |
   | EventErrorMode        | EventFailFast | the root fails fast                             |
   | EventErrorMode        | EventContinue | the root runs every listener                    |
-  | EventErrorMode        | 99            | it panics with "DI: invalid EventErrorMode 99"  |
+  | EventErrorMode        | 99            | it panics with "doger: invalid EventErrorMode 99"  |
   | EventAsyncParallelism | 0             | the root uses GOMAXPROCS(0) * 4                 |
   | EventAsyncParallelism | 1             | the root runs 1 async delivery at once          |
   | (none)                | zero value    | fail fast, default executor, log fallback       |

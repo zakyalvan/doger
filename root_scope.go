@@ -63,6 +63,7 @@ func NewWithOpts(opts *InjectorOpts, packages ...func(Injector)) *RootScope {
 		opts = &InjectorOpts{}
 	}
 
+	validateEventOptions(opts)
 	opts = opts.clone() // never write the caller's value
 	opts.initDefaults()
 
@@ -114,6 +115,10 @@ type RootScope struct {
 	// ext holds the installed extensions; nil until the first Extend, so a
 	// container without extensions holds none.
 	ext atomic.Pointer[extensionRegistry]
+
+	// events holds the container's event state; nil until first used, so a
+	// container without events holds none.
+	events atomic.Pointer[rootEvents]
 
 	kindsMu sync.Mutex
 	kinds   []kindEntry // kind handlers, in order of first Handle; copied before written, as it may be shared
@@ -312,6 +317,7 @@ func (s *RootScope) ShutdownWithContext(ctx context.Context) *ShutdownReport {
 	runObserverHooksWith(s, "container", "closed", s.hooks.containerClosed.load(), &first, func(hook func(context.Context, *RootScope, *ShutdownReport)) {
 		hook(ctx, s, report)
 	})
+	s.publishLifecycle(ctx, ContainerClosed{Root: s, Report: report})
 
 	s.dispatchShutdownPanics(first, panics)
 
@@ -360,12 +366,15 @@ func (s *RootScope) shutdownAsWinner(ctx context.Context, ticket closeTicket, fi
 
 	// pointClosing
 	s.runObserverHooks(ctx, "closing", s.hooks.containerClosing.load(), first)
+	s.publishLifecycle(ctx, ContainerClosing{Root: s})
+	drainErr := s.drainEvents(ctx)
 
 	// services and scope hooks get a context marked with this root, so a
 	// re-entrant ShutdownWithContext with it returns at once
 	report = s.self.shutdownWithContext(context.WithValue(ctx, rootShutdownKey{}, s), first)
-	if startErr != nil {
-		report.Errors[newServiceDescription(s.ID(), s.Name(), "")] = startErr
+	s.eventState().closed.Store(true)
+	if err := joinErrors([]error{startErr, drainErr}); err != nil {
+		report.Errors[newServiceDescription(s.ID(), s.Name(), "")] = err
 		report.Succeed = false
 	}
 
@@ -868,10 +877,18 @@ func (s *RootScope) Clone() *RootScope {
 // resolve from its own scopes. An installation still running when the clone
 // is taken is not copied, nor is its partly built private scope, so the
 // clone can install that extension itself.
+//
+// Events: service listeners come with their registrations, and function
+// listeners are copied as the same functions; stopping or adding a listener
+// on one container leaves the other unchanged. The clone gets its own
+// default executor, while an InjectorOpts.EventExecutor the clone keeps is
+// shared: the clone's shutdown never calls its Shutdown, so shutting a
+// clone down leaves the source's async deliveries working.
 func (s *RootScope) CloneWithOpts(opts *InjectorOpts) *RootScope {
 	clone := NewWithOpts(opts)
 	s.cloneWithExtensions(clone)
 	s.copyKindsTo(clone)
+	s.copyEventsTo(clone)
 
 	// Read after copying: every copied wrapper got its index before it was
 	// stored, so later registrations in the clone come after all of them.
@@ -891,6 +908,21 @@ func (s *RootScope) copyKindsTo(clone *RootScope) {
 	clone.kindsMu.Lock()
 	clone.kinds = kinds
 	clone.kindsMu.Unlock()
+}
+
+// copyEventsTo continues the function listener sequence of s in clone, so
+// the listeners clone registers get IDs the copied ones do not have. Each
+// scope's function listeners were copied with the scope tree; plan caches
+// and the default executor are per container and never copied. An
+// InjectorOpts.EventExecutor clone shares with s is borrowed: the clone's
+// shutdown never shuts it down, only the container it was supplied to.
+func (s *RootScope) copyEventsTo(clone *RootScope) {
+	if events := s.events.Load(); events != nil {
+		clone.eventState().funcSeq.Store(events.funcSeq.Load())
+	}
+	if supplied := s.opts.EventExecutor; supplied != nil && sameInstance(clone.opts.EventExecutor, supplied) {
+		clone.eventState().borrowedExecutor = true
+	}
 }
 
 // cloneWithExtensions gives clone the scope tree and the extensions of s,
@@ -918,6 +950,7 @@ func (s *RootScope) copyExtensionsTo(clone *RootScope, registry *extensionRegist
 	}
 
 	cloned := clone.extensionRegistry()
+	cloned.installs = registry.installs
 	for id, entry := range registry.entries {
 		if entry.state == extensionInstalling {
 			continue

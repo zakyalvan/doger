@@ -42,7 +42,7 @@ Durable, transaction-bound delivery (Spring Modulith's event publication registr
 
 ## Impact
 
-- Code: new `event.go`, `event_listener.go`, `event_dispatch.go`, `event_executor.go`; `options.go` (listener bindings in `serviceOptions`, as kinds); `scope.go` (per-scope function listeners and plan cache, dropped at scope shutdown); `root_scope.go` (lazily allocated event state, clone); `root_start.go` and the shutdown path (lifecycle events, drain); `injector.go` (`EventErrorMode`, `EventExecutor`, `EventAsyncParallelism`, `HookEventError`, copied by `copy()`).
+- Code: new `event.go`, `event_listener.go`, `event_dispatch.go`, `event_executor.go`; `options.go` (listener bindings in `serviceOptions`, as kinds); `scope.go` (per-scope function listeners and plan cache, dropped at scope shutdown); `root_scope.go` (lazily allocated event state, clone); `di.go` (a registration declaring listeners allocates the event state); `root_start.go` and the shutdown path (lifecycle events, drain); `injector.go` (`EventErrorMode`, `EventExecutor`, `EventAsyncParallelism`, `HookEventError`, copied by `copy()`).
 - API: additive. No exported API breaks. Existing containers see no behavior change until a listener is registered; publishing a lifecycle event nobody listens to costs one check.
 - Dependencies: no new module dependencies. Builds on `add-extensions` (archived) for extension-scope reach.
 - Examples/docs: rewrite `examples/event-driven` on the new API; an "Events" guide; `Example*` tests for defaults and overrides; an upgrading note (no breaks).
@@ -58,7 +58,7 @@ Durable, transaction-bound delivery (Spring Modulith's event publication registr
 | Filter | None | `ListenerFilter(pred)` |
 | Scope reach | Publishing scope, ancestors, extension scopes | `PublishLocal()` |
 | Listener error | Fail fast; `Publish` returns `*ListenerError` | `InjectorOpts.EventErrorMode = EventContinue` |
-| Errors with no caller | Logged through `Logf`, or the standard `log` package when `Logf` is unset | `InjectorOpts.HookEventError` |
+| Errors with no caller | Logged through `Logger`, or the standard `log` package when `Logger` is unset | `InjectorOpts.HookEventError` |
 | Async concurrency | `runtime.GOMAXPROCS(0) * 4` deliveries, blocking backpressure | `InjectorOpts.EventAsyncParallelism`, or `InjectorOpts.EventExecutor` |
 | Async at shutdown | Drained, bounded by the shutdown context | The executor's `Shutdown` |
 | Lifecycle events | Published after the hooks | Ignore them; hooks stay available |

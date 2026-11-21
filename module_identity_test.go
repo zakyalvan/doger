@@ -641,6 +641,9 @@ func TestModuleIdentity_AllSentinelsPrefixed(t *testing.T) {
 				"ErrRequiredExtensionDisabled": ErrRequiredExtensionDisabled,
 				"ErrExtensionCycle":            ErrExtensionCycle,
 				"ErrExtensionConflict":         ErrExtensionConflict,
+				"ErrInvalidEvent":              ErrInvalidEvent,
+				"ErrInvalidListener":           ErrInvalidListener,
+				"ErrPublishAfterShutdown":      ErrPublishAfterShutdown,
 			},
 		},
 		{

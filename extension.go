@@ -1,6 +1,7 @@
 package doger
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -316,6 +317,7 @@ type extensionEntry struct {
 	viaRequire bool     // installed by Require only
 	scope      *Scope   // the private scope; nil when flat
 	exports    []string // the published names of its exports
+	installSeq uint64   // installed only: the order it was installed in, from 1
 }
 
 // extensionRegistry holds the extensions of a container.
@@ -325,6 +327,8 @@ type extensionRegistry struct {
 	scopes   map[string]extensionID // private scope names, installing and installed
 	waits    waitsFor               // the waits-for graph of the sessions
 	sessions atomic.Uint64          // the last session ID
+	installs uint64                 // the last installSeq given; guarded by mu
+	changes  atomic.Uint64          // counts the installations that ended, for event plans
 
 	source propertySourceDecision // the container's property source, decided at the first property read
 }
@@ -332,38 +336,75 @@ type extensionRegistry struct {
 // extensionRegistry returns the registry of the container, created on first
 // use, so a container without extensions holds none.
 func (s *RootScope) extensionRegistry() *extensionRegistry {
-	if registry := s.ext.Load(); registry != nil {
-		return registry
-	}
-	s.ext.CompareAndSwap(nil, &extensionRegistry{
-		entries: map[extensionID]*extensionEntry{},
-		scopes:  map[string]extensionID{},
-		waits:   waitsFor{},
+	return loadOrInit(&s.ext, func() *extensionRegistry {
+		return &extensionRegistry{
+			entries: map[extensionID]*extensionEntry{},
+			scopes:  map[string]extensionID{},
+			waits:   waitsFor{},
+		}
 	})
-
-	return s.ext.Load()
 }
 
 // extensionScopes returns the private scopes of the extensions installed in
 // the container, ordered by name; none without extensions.
 func (s *RootScope) extensionScopes() []*Scope {
+	scopes := entryScopes(s.installedEntries())
+	slices.SortFunc(scopes, func(a, b *Scope) int { return strings.Compare(a.name, b.name) })
+
+	return scopes
+}
+
+// installedEntries returns the entries of the extensions installed in the
+// container with a private scope, in no particular order; none without
+// extensions. Extensions still installing are not listed.
+func (s *RootScope) installedEntries() []*extensionEntry {
 	registry := s.ext.Load()
 	if registry == nil {
 		return nil
 	}
 
 	registry.mu.Lock()
-	scopes := []*Scope{}
+	defer registry.mu.Unlock()
+
+	entries := []*extensionEntry{}
 	for _, entry := range registry.entries {
 		if entry.state == extensionInstalled && entry.scope != nil {
-			scopes = append(scopes, entry.scope)
+			entries = append(entries, entry)
 		}
 	}
-	registry.mu.Unlock()
 
-	slices.SortFunc(scopes, func(a, b *Scope) int { return strings.Compare(a.name, b.name) })
+	return entries
+}
+
+// entryScopes returns the private scopes of entries, in the same order.
+func entryScopes(entries []*extensionEntry) []*Scope {
+	scopes := make([]*Scope, len(entries))
+	for i, entry := range entries {
+		scopes[i] = entry.scope
+	}
 
 	return scopes
+}
+
+// extensionsVersion counts the changes of the installed extensions, so an
+// event plan built at one version still holds at the same version.
+func (s *RootScope) extensionsVersion() uint64 {
+	registry := s.ext.Load()
+	if registry == nil {
+		return 0
+	}
+
+	return registry.changes.Load()
+}
+
+// installedExtensionScopes returns the private scopes of the extensions
+// installed in the container, in installation order; none without
+// extensions. Extensions still installing are not listed.
+func (s *RootScope) installedExtensionScopes() []*Scope {
+	entries := s.installedEntries()
+	slices.SortFunc(entries, func(a, b *extensionEntry) int { return cmp.Compare(a.installSeq, b.installSeq) })
+
+	return entryScopes(entries)
 }
 
 // claim is what a request does with its extension identity.
@@ -758,11 +799,7 @@ func rollbackInstall(root *RootScope, plan installPlan, scope *Scope, appliedExp
 func extendAndExport(ext Extension, x *ExtensionContext) (err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			if recoveredErr, ok := recovered.(error); ok {
-				err = fmt.Errorf("panic: %w", recoveredErr)
-			} else {
-				err = fmt.Errorf("panic: %v", recovered)
-			}
+			err = panicAsError(recovered)
 		}
 	}()
 
@@ -786,6 +823,8 @@ func (r *extensionRegistry) release(entry *extensionEntry, req installRequest, o
 	switch outcome {
 	case extensionInstalled:
 		entry.state, entry.value, entry.plan, entry.viaRequire = outcome, req.ext, req.plan, req.viaRequire
+		r.installs++
+		entry.installSeq = r.installs
 		entry.exports = x.applied
 		if !req.plan.flat {
 			entry.scope = x.scope
@@ -801,6 +840,7 @@ func (r *extensionRegistry) release(entry *extensionEntry, req installRequest, o
 			delete(r.scopes, req.plan.scopeName)
 		}
 	}
+	r.changes.Add(1)
 	r.mu.Unlock()
 
 	close(entry.done)

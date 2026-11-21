@@ -1,0 +1,31 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/kartaladev/doger/bench
+cpu: Apple M4 Pro
+BenchmarkPublish/0-listeners-14         	 1000000	      1884 ns/op	     721 B/op	       4 allocs/op
+BenchmarkPublish/0-listeners-14         	 1000000	      1823 ns/op	     721 B/op	       4 allocs/op
+BenchmarkPublish/0-listeners-14         	  648835	      1961 ns/op	     721 B/op	       4 allocs/op
+BenchmarkPublish/0-listeners-14         	 1000000	      2093 ns/op	     721 B/op	       4 allocs/op
+BenchmarkPublish/0-listeners-14         	  632937	      2077 ns/op	     721 B/op	       4 allocs/op
+BenchmarkPublish/1-listeners-14         	  534469	      2294 ns/op	     841 B/op	       6 allocs/op
+BenchmarkPublish/1-listeners-14         	  759301	      2317 ns/op	     841 B/op	       6 allocs/op
+BenchmarkPublish/1-listeners-14         	  438646	      2689 ns/op	     841 B/op	       6 allocs/op
+BenchmarkPublish/1-listeners-14         	 1000000	      2146 ns/op	     841 B/op	       6 allocs/op
+BenchmarkPublish/1-listeners-14         	 1000000	      1897 ns/op	     841 B/op	       6 allocs/op
+BenchmarkPublish/10-listeners-14        	  150060	      8704 ns/op	    2683 B/op	      25 allocs/op
+BenchmarkPublish/10-listeners-14        	  179473	      6580 ns/op	    2682 B/op	      25 allocs/op
+BenchmarkPublish/10-listeners-14        	  166351	      7773 ns/op	    2682 B/op	      25 allocs/op
+BenchmarkPublish/10-listeners-14        	  201886	      6604 ns/op	    2682 B/op	      25 allocs/op
+BenchmarkPublish/10-listeners-14        	  179736	      7184 ns/op	    2682 B/op	      25 allocs/op
+BenchmarkPublish/100-listeners-14       	   23154	     61869 ns/op	   19918 B/op	     164 allocs/op
+BenchmarkPublish/100-listeners-14       	   22658	     52288 ns/op	   19920 B/op	     164 allocs/op
+BenchmarkPublish/100-listeners-14       	   21729	     51965 ns/op	   19926 B/op	     164 allocs/op
+BenchmarkPublish/100-listeners-14       	   21088	     62675 ns/op	   19930 B/op	     164 allocs/op
+BenchmarkPublish/100-listeners-14       	   19046	     53267 ns/op	   19946 B/op	     165 allocs/op
+BenchmarkPublish/nested-scopes-14       	  631102	      2634 ns/op	     889 B/op	      18 allocs/op
+BenchmarkPublish/nested-scopes-14       	 1000000	      2145 ns/op	     889 B/op	      18 allocs/op
+BenchmarkPublish/nested-scopes-14       	  412605	      2848 ns/op	     889 B/op	      18 allocs/op
+BenchmarkPublish/nested-scopes-14       	  894026	      2559 ns/op	     889 B/op	      18 allocs/op
+BenchmarkPublish/nested-scopes-14       	  641965	      2698 ns/op	     889 B/op	      18 allocs/op
+PASS
+ok  	github.com/kartaladev/doger/bench	38.715s

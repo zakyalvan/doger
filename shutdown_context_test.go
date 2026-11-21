@@ -951,6 +951,21 @@ func TestShutdownContext_SelfShutdownUnbounded(t *testing.T) {
 // TestShutdownContext_HealthHookRepanicDuringShutdown.
 const healthChildEnv = "DOGER_HEALTH_REPANIC_CHILD"
 
+// waitHealthDeliveryIdle waits until no goroutine delivers health
+// transitions of root and none is queued.
+func waitHealthDeliveryIdle(root *RootScope) {
+	m := &root.health
+	for {
+		m.mu.Lock()
+		idle := !m.delivering && len(m.transitions) == 0
+		m.mu.Unlock()
+		if idle {
+			return
+		}
+		runtime.Gosched()
+	}
+}
+
 func TestShutdownContext_HealthHookRepanicDuringShutdown(t *testing.T) {
 	if os.Getenv(healthChildEnv) == "1" {
 		scheduler := &manualScheduler{}
@@ -965,7 +980,12 @@ func TestShutdownContext_HealthHookRepanicDuringShutdown(t *testing.T) {
 					if armed.Load() {
 						panic("health-hook-boom")
 					}
-					once.Do(func() { close(firstChange) })
+					once.Do(func() {
+						close(firstChange)
+						// keeps this delivering goroutine busy after the
+						// signal, as a preemption here would
+						time.Sleep(50 * time.Millisecond)
+					})
 				},
 			},
 		})
@@ -976,6 +996,10 @@ func TestShutdownContext_HealthHookRepanicDuringShutdown(t *testing.T) {
 		}
 		scheduler.runRound()
 		<-firstChange // the round's change was delivered
+		// the round's goroutine still holds the delivery until its loop
+		// ends; the shutdown's change must find no delivery running, or that
+		// goroutine delivers it instead of the caller
+		waitHealthDeliveryIdle(root)
 		armed.Store(true)
 		func() {
 			defer func() { fmt.Printf("RECOVERED:%v\n", recover()) }() // HookContainerPanic re-panics on the caller

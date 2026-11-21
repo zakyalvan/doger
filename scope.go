@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"maps"
 	"reflect"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -96,6 +97,11 @@ type Scope struct {
 	// closed is set, under mu as a writer, once the scope's shutdown began;
 	// it is never cleared (see checkOpen)
 	closed atomic.Bool
+
+	// events is the event state of the scope (function listeners, in-flight
+	// async deliveries); nil until first used, so scopes without events
+	// keep their size
+	events atomic.Pointer[scopeEvents]
 }
 
 // scopeClosing is the shutdown state of a child scope.
@@ -558,7 +564,7 @@ func (s *Scope) shutdownWithContext(ctx context.Context, first *hookPanic) (repo
 		// once the shutdown completed, the parent forgets the scope, and its
 		// name can be used again
 		defer s.parentScope.detachChildScope(s)
-		waitErr = s.waitForStartingRun(ctx)
+		waitErr = joinErrors([]error{s.waitForStartingRun(ctx), s.closeEvents(ctx)})
 	}
 
 	if s.exportCount() > 0 {
@@ -584,6 +590,29 @@ func (s *Scope) shutdownWithContext(ctx context.Context, first *hookPanic) (repo
 	report.ShutdownTime = s.clock().Since(start)
 	report.Succeed = len(report.Errors) == 0
 	return report
+}
+
+// closeEvents ends the event listeners of the child scope s, which is
+// closed for publishing: it waits for the async deliveries in flight to
+// listeners of s and its descendants, bounded by ctx, then drops the
+// function listeners of s; its service listeners go with its services. It
+// returns an error when ctx ended first.
+func (s *Scope) closeEvents(ctx context.Context) error {
+	state := s.events.Load()
+	if state == nil {
+		return nil
+	}
+
+	var err error
+	if !s.awaitInflight(ctx) {
+		err = drainTimeoutError(ctx)
+	}
+
+	s.mu.Lock()
+	state.setFuncsLocked(nil)
+	s.mu.Unlock()
+
+	return err
 }
 
 // scopeCloseRun is a running shutdown of a child scope: concurrent
@@ -1056,11 +1085,30 @@ func (s *Scope) clone(root *RootScope, parent *Scope) *Scope {
 		s.rootScope.hooks.onAfterRegistration(clone, name)
 	}
 
+	s.copyFuncListenersTo(clone)
+
 	for name, index := range childScopes {
 		clone.childScopes[name] = index.clone(root, clone)
 	}
 
 	return clone
+}
+
+// copyFuncListenersTo gives clone, a new scope, the function listeners of
+// s: the same functions, in a list of its own, so stopping or adding one on
+// either side leaves the other unchanged.
+func (s *Scope) copyFuncListenersTo(clone *Scope) {
+	state := s.events.Load()
+	if state == nil {
+		return
+	}
+
+	s.mu.RLock()
+	funcs := state.funcs
+	s.mu.RUnlock()
+	if len(funcs) > 0 {
+		clone.eventState().setFuncsLocked(slices.Clone(funcs)) // clone is not shared yet
+	}
 }
 
 /**********************************

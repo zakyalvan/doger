@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"sync/atomic"
 	"time"
 
 	typetostring "github.com/samber/go-type-to-string"
@@ -146,6 +147,26 @@ func contains[T comparable](list []T, elem T) bool {
 	return slices.Contains(list, elem)
 }
 
+// applyOptions applies opts to target in order, skipping nil ones.
+func applyOptions[T any, O ~func(*T)](target *T, opts []O) {
+	for _, opt := range opts {
+		if opt != nil {
+			opt(target)
+		}
+	}
+}
+
+// loadOrInit returns the value of p, storing the one init returns first
+// when p holds none. Concurrent callers all get the value stored first.
+func loadOrInit[T any](p *atomic.Pointer[T], init func() *T) *T {
+	if value := p.Load(); value != nil {
+		return value
+	}
+	p.CompareAndSwap(nil, init())
+
+	return p.Load()
+}
+
 func coalesce[T comparable](v ...T) T {
 	return cmp.Or(v...)
 }
@@ -275,4 +296,14 @@ func typeCanCastToType(fromType reflect.Type, toType reflect.Type) bool {
 	}
 
 	return false
+}
+
+// sameInstance reports whether a and b are the same value; values of a
+// type that cannot be compared are never the same.
+func sameInstance(a, b any) bool {
+	if a == nil || b == nil || !reflect.TypeOf(a).Comparable() || !reflect.TypeOf(b).Comparable() {
+		return false
+	}
+
+	return a == b
 }

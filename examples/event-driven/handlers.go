@@ -1,80 +1,45 @@
 package main
 
 import (
+	"context"
 	"fmt"
 )
 
-// UserEventHandler handles user-related events.
+// UserEventHandler listens to UserCreatedEvent through its OnEvent method:
+// it is registered with doger.AsListener[UserCreatedEvent]().
 type UserEventHandler struct {
 	Logger *Logger
 }
 
-func (h *UserEventHandler) Handle(event Event) error {
-	h.Logger.Log(fmt.Sprintf("UserEventHandler: Processing event %s", event.Type))
-
-	switch event.Type {
-	case EventUserCreated:
-		if userData, ok := event.Data.(UserCreatedEvent); ok {
-			h.Logger.Log(fmt.Sprintf("User created: ID=%s, Username=%s, Email=%s",
-				userData.UserID, userData.Username, userData.Email))
-		}
-	case "user.updated":
-		h.Logger.Log("User updated event received")
-	}
-
+func (h *UserEventHandler) OnEvent(_ context.Context, e UserCreatedEvent) error {
+	h.Logger.Log(fmt.Sprintf("User created: ID=%s, Username=%s, Email=%s", e.UserID, e.Username, e.Email))
 	return nil
 }
 
-func (h *UserEventHandler) GetEventType() string {
-	return EventUserCreated
-}
-
-// OrderEventHandler handles order-related events.
-type OrderEventHandler struct {
+// Notifier listens to two event types, one method each: it is registered
+// with doger.ListenMethod((*Notifier).OnOrderCreated) and
+// doger.ListenMethod((*Notifier).OnPaymentProcessed).
+type Notifier struct {
 	Logger *Logger
 }
 
-func (h *OrderEventHandler) Handle(event Event) error {
-	h.Logger.Log(fmt.Sprintf("OrderEventHandler: Processing event %s", event.Type))
-
-	switch event.Type {
-	case EventOrderCreated:
-		if orderData, ok := event.Data.(OrderCreatedEvent); ok {
-			h.Logger.Log(fmt.Sprintf("Order created: ID=%s, UserID=%s, Amount=%.2f",
-				orderData.OrderID, orderData.UserID, orderData.Amount))
-		}
-	case "order.canceled":
-		h.Logger.Log("Order canceled event received")
-	}
-
+func (n *Notifier) OnOrderCreated(_ context.Context, e OrderCreatedEvent) error {
+	n.Logger.Log(fmt.Sprintf("Notify: order %s created for user %s, amount %.2f", e.OrderID, e.UserID, e.Amount))
 	return nil
 }
 
-func (h *OrderEventHandler) GetEventType() string {
-	return EventOrderCreated
+func (n *Notifier) OnPaymentProcessed(_ context.Context, e PaymentProcessedEvent) error {
+	n.Logger.Log(fmt.Sprintf("Notify: payment %s for order %s is %s", e.PaymentID, e.OrderID, e.Status))
+	return nil
 }
 
-// PaymentEventHandler handles payment-related events.
-type PaymentEventHandler struct {
+// Analytics records every payment off the publisher's goroutine: it is
+// registered with doger.ListenerAsync(), and root shutdown waits for it.
+type Analytics struct {
 	Logger *Logger
 }
 
-func (h *PaymentEventHandler) Handle(event Event) error {
-	h.Logger.Log(fmt.Sprintf("PaymentEventHandler: Processing event %s", event.Type))
-
-	switch event.Type {
-	case EventPaymentProcessed:
-		if paymentData, ok := event.Data.(PaymentProcessedEvent); ok {
-			h.Logger.Log(fmt.Sprintf("Payment processed: ID=%s, OrderID=%s, Amount=%.2f, Status=%s",
-				paymentData.PaymentID, paymentData.OrderID, paymentData.Amount, paymentData.Status))
-		}
-	case "payment.failed":
-		h.Logger.Log("Payment failed event received")
-	}
-
+func (a *Analytics) OnEvent(_ context.Context, e PaymentProcessedEvent) error {
+	a.Logger.Log(fmt.Sprintf("Analytics: recorded payment of %.2f", e.Amount))
 	return nil
-}
-
-func (h *PaymentEventHandler) GetEventType() string {
-	return EventPaymentProcessed
 }

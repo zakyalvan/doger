@@ -6,11 +6,11 @@ See proposal.md (Why) and `specs/events/spec.md`. The parts of today's code that
 
 - **Lazy services.** Services are built on first invocation (`service_lazy.go` `instanceOrBuild` holds the wrapper's mutex for the whole provider call). Spring finds `@EventListener` methods by building every singleton; doger must not.
 - **Opt-ins live on the registration.** `serviceOptions` (`options.go:10`) already carries `starter`, `kinds`, `order`, `isDefault`; `Start` reads them from the wrapper (`newStartCandidate`). Overrides (`di.go` `override`) and `AsDefault` replacement or yielding (`registerReplaced`, `registerSkipped`) swap or skip the wrapper, so anything stored with the wrapper follows those rules for free.
-- **Cycle detection is per invocation chain.** `virtualScope` (`virtual_scope.go:45`) records the invoker chain; `ErrCircularDependency` already exists (`errors.go:15`). Resolving a service "by name from its own scope" would drop that chain.
+- **Cycle detection has two layers.** `virtualScope` (`virtual_scope.go`) records the invoker chain inside providers, and the build wait-for graph (`build_state.go` `buildWaits`, keyed by goroutine id) records which goroutine owns each build in flight and which build each goroutine waits for; either returns `ErrCircularDependency` (`errors.go`) instead of blocking.
 - **`Ordered` / `WithOrder`** affect collections only, and `Ordered` is read from a built instance, so neither is used for listener order.
 - **Container hooks** fire at fixed points of `Start` and `Shutdown` (`root_start.go`, the close path); Closed hooks run after the close phase is `closeClosed`.
 - **Extensions** (`add-extensions`, archived) keep installed entries in `root.ext` (`atomic.Pointer[extensionRegistry]`, nil until the first `Extend`); scope names can be overridden (`ExtendScopeName`) or carry an instance (`ext:<name>/<instance>`), so names are not a reliable way to find them.
-- **Logging.** `InjectorOpts.Logf` defaults to a no-op (`injector.go:271`), so an error routed only to `Logf` is silent with zero configuration.
+- **Logging.** `InjectorOpts.Logger` defaults to a discarding `*slog.Logger`, so an error routed only to `Logger` is silent with zero configuration.
 - **Clone.** `CloneWithOpts` copies the scope tree, then kind entries; `Clone()` passes `s.opts.copy()`, which copies option fields by value.
 - **RootScope size.** New root state follows the `ext` pattern: a lazily allocated pointer, so containers that never use events keep their size class.
 
@@ -47,11 +47,11 @@ See proposal.md (Why) and `specs/events/spec.md`. The parts of today's code that
 |     |     +-----> scope.funcListeners (Listen)                (D2)          |
 |     |     +-----> root.ext installed entries -> ext scopes    (D4)          |
 |     |                                                                      |
-|     +-- sync ---> listener (built lazily, via the caller's chain) (D6)     |
+|     +-- sync ---> listener (built lazily, build wait-for graph)    (D6)     |
 |     +-- async --> EventExecutor (bounded default, inline when nested) (D8) |
 |                                                                            |
 |  Start/Shutdown --> lifecycle events after each hook (D9)                  |
-|  errors with no caller --> HookEventError -> Logf -> log (D10)             |
+|  errors with no caller --> HookEventError -> Logger -> log (D10)           |
 +----------------------------------------------------------------------------+
 ```
 
@@ -73,8 +73,9 @@ Publish(ctx, i, event)
    +-- for each listener in plan:
           ctx done?            -> stop, return ctx.Err()
           filter false?        -> skip (not built)
-          async?               -> executor.Submit (D8)
-          else                 -> resolve with caller's chain (D6)
+          async?               -> admit (D7), executor.Submit (D8)
+                                  refused by a shutdown -> collect, go on
+          else                 -> resolve from its own scope (D6)
                                   OnEvent / method(inst, ctx, e)
                                   error|panic -> *ListenerError -> mode (D5)
 ```
@@ -141,8 +142,9 @@ Worked example for a publish through `req` (child of root), extension `x` instal
 ```
 
 ### D5. Errors
-- `type ListenerError struct { Listener string; EventType reflect.Type; Err error }`, message ``DI: listener `<id>` failed on event `<type>`: <cause>``, `Unwrap() error`.
+- `type ListenerError struct { Listener string; EventType reflect.Type; Err error }`, message ``doger: listener `<id>` failed on event `<type>`: <cause>``, `Unwrap() error`.
 - `EventErrorMode`: `EventFailFast` (zero value, following the `PlacementPrivate` precedent for a safe zero default) and `EventContinue` (`errors.Join` in listener order). `String()` is provided. Other values panic in `New`/`NewWithOpts`.
+- An async delivery refused because a shutdown began (`ErrPublishAfterShutdown`) does not stop a fail-fast dispatch: the refusal is collected, the synchronous listeners after it still run, and `Publish` returns the refusals joined with any other error.
 - Panics are recovered into `*ListenerError` (`%w` for errors, `%v` otherwise), also for filter predicates.
 - Context: checked before dispatch and between listeners; a done context stops dispatch with `ctx.Err()`.
 
@@ -154,22 +156,27 @@ Worked example for a publish through `req` (child of root), extension `x` instal
 ```
 
 ### D6. Resolving listeners without deadlocks
-- A service listener is resolved through the publisher's injector chain: dispatch wraps the reached scope in a `virtualScope` whose parent is the caller's virtual scope (when `i` is one). Invoking the listener's service then runs the existing cycle check, so publishing from a provider whose event reaches the service being built (directly or through the listener's dependencies) returns `ErrCircularDependency` instead of re-entering `instanceOrBuild`'s mutex on the same goroutine.
+- A service listener is resolved from its own scope, with its invocation hooks and no `virtualScope` of the publisher. Deadlock safety comes from the build wait-for graph: a build records its owner goroutine, and a goroutine about to wait for a build in flight first checks whether that build's owner, directly or through the builds it waits for, waits for it. So publishing from a provider whose event reaches the service being built (directly, through the listener's dependencies, or across goroutines) returns `ErrCircularDependency` instead of blocking. This also covers a publisher that is not inside a provider's injector chain, which a `virtualScope` chain would miss.
+- *Alternative:* wrapping the reached scope in a `virtualScope` chained to the caller's. Rejected: it only sees re-entry along one invocation chain on one goroutine, and a publisher holding the root injector carries no chain at all.
 - The resolution records **no DAG edge**: a publisher does not depend on its listeners, and an edge would distort shutdown order.
 - Nested `Publish` from a listener is plain recursion: dispatch holds no lock while user code runs (plans are immutable snapshots).
 
 ### D7. Lifetime and shutdown interaction
 - Scope shutdown first marks the scope closed for publishing, drains async deliveries addressed to listeners of that scope and its descendants, then clears its function listeners and lets service shutdown remove wrappers as today. Dispatch wraps each async task so it increments an in-flight counter on the listener's scope before `Submit` and decrements it when the task ends; the scope drain waits for its own and its descendants' counters to reach zero, bounded by the shutdown context. This works with any `EventExecutor`, since it does not rely on the executor's own `Shutdown`.
-- During root service shutdown, a synchronous dispatch skips service listeners that are not built yet or already removed (never building a service mid-shutdown), and still calls function listeners.
+- **Admission under the scope locks.** An async delivery is counted in flight in the listener's scope and each ancestor at admission, each child scope checked under its own lock, the one that marks it closed. A delivery is therefore either counted before that scope's drain waits, or refused with `ErrPublishAfterShutdown`; a `Publish` that passed its scope check before the shutdown began, then ran a slow filter, cannot deliver after `Shutdown` returned. The root's own intake keeps `intakeMu` for the same ordering at root shutdown.
+- **Self-shutdown.** Each async delivery's context carries an unexported marker (its scope, its parent delivery, an ended flag). A drain called with such a context waits for at most the deliveries that context carries in that scope, and the bounded executor's `Shutdown` called with one of its task contexts does not wait for the calling task. An async listener may thus shut its own scope or the container down with its context. Without that context it would wait for itself (no goroutine id is read per delivery to detect it); documented on `ListenerAsync`.
+- **Deadline.** When the shutdown context ends first, the drain cancels the deliveries' contexts and returns at once: it never waits past the caller's deadline. Cancelled deliveries end on their own afterwards.
+- During root service shutdown, a synchronous dispatch skips service listeners that are not built yet or already removed, or whose resolution fails with `ErrShutdown` because they were shut down meanwhile (never building a service mid-shutdown), and still calls function listeners. An error a reached listener returns is never skipped, even when it matches `ErrShutdown`.
+- **Listen on a closed scope** panics with an error matching `ErrPublishAfterShutdown`, checked under the scope's lock, instead of registering a listener no event can reach; the existing `Listen` argument errors panic too.
 
 ### D8. Async delivery and executors
 - `type EventExecutor interface { Submit(ctx context.Context, task func(context.Context)) error; Shutdown(ctx context.Context) error }`. `Shutdown` matches `http.Server.Shutdown` and lets an executor also be a doger `ShutdownerWithContextAndError`.
-- **Default:** `NewBoundedEventExecutor(n uint) *BoundedEventExecutor` (panics for `n == 0`), a semaphore of `n` slots plus a `sync.WaitGroup`. The root uses `InjectorOpts.EventAsyncParallelism`, 0 meaning `runtime.GOMAXPROCS(0) * 4` read at creation.
+- **Default:** `NewBoundedEventExecutor(n uint) *BoundedEventExecutor` (panics for `n == 0`), a semaphore of `n` slots plus a counter of running tasks whose waiters share one channel per bound, so a `Shutdown` that times out leaves no goroutine behind. The root uses `InjectorOpts.EventAsyncParallelism`, 0 meaning `runtime.GOMAXPROCS(0) * 4` read at creation.
   - `Submit` selects on a free slot, `ctx.Done()` and the executor's closing channel; a done `ctx` fails first even with a free slot (checked before the select), so the outcome is deterministic.
   - **Nested submissions:** each task's context carries an unexported marker. A `Submit` whose context carries the marker of the same executor and finds no free slot runs the task inline on the caller's goroutine. That rules out the "every slot waits for itself" deadlock (spec "Async listener publishing to an async listener").
   - The task context is `context.WithoutCancel(publishCtx)` wrapped in `context.WithCancelCause`, cancelled with `ErrPublishAfterShutdown` when a drain deadline passes.
 - **Errors:** a `Submit` error or panic becomes a `*ListenerError` returned by `Publish`; the task's own errors and panics go to `HookEventError` (D10).
-- *Overrides:* `InjectorOpts.EventExecutor` replaces the default. An executor given in options is owned by the caller and shared by clones (D11).
+- *Overrides:* `InjectorOpts.EventExecutor` replaces the default. An executor given in options belongs to the container it was given to; clones share it but never shut it down (D11).
 
 ```
  publisher goroutine                 BoundedEventExecutor (n slots)
@@ -184,13 +191,14 @@ Worked example for a publish through `req` (child of root), extension `x` instal
                                      task ctx = WithCancelCause(
                                        WithoutCancel(publishCtx))
  Shutdown(ctx) ------------------->  close intake, wake waiters,
-                                     wait WaitGroup or ctx end
+                                     wait running tasks or ctx end
                                        -> cancel tasks with cause
 ```
 
 ### D9. Lifecycle events
 - Types `ContainerStarting`, `ContainerStarted`, `ContainerReady`, `ContainerFailed{Err error}`, `ContainerClosing`, `ContainerClosed{Report *ShutdownReport}`, each with `Root *RootScope`.
-- Each is published right after the hooks of the same point, on that goroutine, through an internal path that: always uses continue mode; sends every error, panic and build failure to `HookEventError`; ignores the closed check for `ContainerClosed`; and costs one nil check on the root's event state when no listener exists.
+- Each is published right after the hooks of the same point, on that goroutine, through an internal path that: always uses continue mode; sends every error, panic and build failure to `HookEventError`; ignores the closed check for `ContainerClosed`; and costs one nil check on the root's event state when no listener exists. The event state is allocated by the first `Listen` and by the first registration declaring a listener binding, so a container whose only lifecycle listener is a service is reached too.
+- `ContainerClosed` is published after the async intake closed, so its async listeners run inline on the shutdown goroutine, before `Shutdown` returns, instead of being refused and reported on every shutdown.
 - `ContainerStarting` follows the Starting hooks, so a vetoed `Start` publishes only `ContainerFailed`. A listener service built for `ContainerStarting` is the pipeline's first instantiation; a failed build is reported, not a veto.
 - On a re-raised pipeline panic (`failAndRepanic`), `ContainerFailed` is published with the Failed hooks, before the re-panic.
 
@@ -212,16 +220,18 @@ Worked example for a publish through `req` (child of root), extension `x` instal
 
 ### D10. Errors with no caller
 - `InjectorOpts.HookEventError func(ctx context.Context, root *RootScope, err error)` receives async and lifecycle failures as `*ListenerError` (named like the other `Hook*` fields).
-- Default when unset: `Logf` with the error message; when `Logf` is also unset, the standard `log` package. This is the one place the library logs without `Logf`; it keeps zero-config failures visible, and either field silences or redirects it. A panic in the hook is recovered and logged the same way.
+- Default when unset: `Logger` at Error level with the error message; when `Logger` is also unset, the standard `log` package. This is the one place the library logs without `Logger`; it keeps zero-config failures visible, and either field silences or redirects it. A panic in the hook is recovered and logged the same way.
 
 ### D11. Clone
-`CloneWithOpts` copies wrappers with their `serviceOptions` (so service bindings come along) and copies each scope's function listeners as the same functions. Plan caches and the default executor are per root and never copied; an `EventExecutor` set in `InjectorOpts` is shared, since `copy()` copies the field and the caller owns it (documented on the field).
+`CloneWithOpts` copies wrappers with their `serviceOptions` (so service bindings come along) and copies each scope's function listeners as the same functions. Plan caches and the default executor are per root and never copied. An `EventExecutor` set in `InjectorOpts` is shared, since the options copy carries the field; the clone marks it borrowed, so the clone's shutdown never calls its `Shutdown`: only the container it was supplied to does. Shutting a clone down thus leaves the source's async deliveries working (documented on the field).
 
 ## Risks / Trade-offs
 
-- [The standard `log` fallback logs outside `Logf`] → only for event failures with no caller, documented on `HookEventError`; setting `Logf` or the hook redirects it.
+- [The standard `log` fallback logs outside `Logger`] → only for event failures with no caller, documented on `HookEventError`; setting `Logger` or the hook redirects it.
+- [An async listener shutting its container down without passing its context waits for itself] → documented on `ListenerAsync`; passing the delivery context is enough.
+- [Async `ContainerClosed` listeners run on the shutdown goroutine] → documented on `ContainerClosed`; they are inline only because nothing else could run them then.
 - [Inline execution of nested async tasks when the executor is full turns them synchronous] → only on that task's goroutine and only when full; documented on `NewBoundedEventExecutor`.
-- [A listener that ignores its context can outlive `Shutdown` after a drain timeout] → the report holds the deadline error; documented. goleak tests use listeners that honor the context.
+- [A listener that ignores its context can outlive `Shutdown` after a drain timeout] → `Shutdown` honours its deadline and the report holds the deadline error; documented. goleak tests release such listeners before the suite ends.
 - [Building a listener service at `ContainerStarting` instantiates before discovery] → documented; listen to `ContainerStarted` to avoid it.
 - [Unbounded recursive `Publish` overflows the stack] → not detected, as with recursive calls; documented.
 - [Plan invalidation by version counters on every reached scope costs a few loads per publish] → measured by `BenchmarkPublish`; still far cheaper than rebuilding.
@@ -242,7 +252,7 @@ Additive only. **No exported API breaks.** `Ordered` and `WithOrder` keep their 
 | `ErrInvalidEvent`, `ErrInvalidListener`, `ErrPublishAfterShutdown` | sentinels | `ErrCircularDependency` reused |
 | `EventErrorMode`: `EventFailFast`, `EventContinue` | enum + `String()` | `InjectorOpts.EventErrorMode` |
 | `EventExecutor`, `NewBoundedEventExecutor(n uint) *BoundedEventExecutor` | interface, constructor | `InjectorOpts.EventExecutor`, `InjectorOpts.EventAsyncParallelism uint` (0 = `GOMAXPROCS*4`) |
-| `InjectorOpts.HookEventError func(ctx, *RootScope, error)` | field | `Logf`, else standard `log` |
+| `InjectorOpts.HookEventError func(ctx, *RootScope, error)` | field | `Logger`, else standard `log` |
 | `ContainerStarting`, `ContainerStarted`, `ContainerReady`, `ContainerFailed`, `ContainerClosing`, `ContainerClosed` | event types | Published after their hooks |
 
 ## Test Strategy
@@ -261,7 +271,7 @@ Each scenario maps to one Go test; `Examples` rows run as named subtests. Everyt
 | One service listens to several event types | `event_listener_test.go: TestListenMethod_MultipleEvents` | unit |
 | ListenMethod validates its input | `event_listener_test.go: TestListenMethod_Registration/<row>` | table-driven |
 | Stop unregisters a function listener | `event_listener_test.go: TestListen_Stop/<row>` | table-driven |
-| Listen argument handling | `event_listener_test.go: TestListen_Arguments/<row>` | table-driven |
+| Listen argument handling | `event_test.go: TestListen_Arguments/<row>`, `event_listener_test.go: TestListen_ClosedScope/<row>` | table-driven |
 | Default and explicit IDs | `event_listener_test.go: TestListenerID/<row>` | table-driven |
 | Registration changes end a listener | `event_lifetime_test.go: TestListenerLifetime/<row>` | table-driven |
 | Publishing through a shut-down scope | `event_lifetime_test.go: TestPublish_ShutDownScope` | unit |
@@ -294,6 +304,14 @@ Each scenario maps to one Go test; `Examples` rows run as named subtests. Everyt
 | Child scope drain | `event_shutdown_test.go: TestScopeShutdown_Drain` | unit, goleak |
 | Publishing during and after shutdown | `event_shutdown_test.go: TestShutdown_PublishAfter` | unit |
 | ContainerClosed reaches function listeners only | `event_shutdown_test.go: TestShutdown_ClosedFunctionOnly` | unit |
+| Shutdown honours its deadline | `event_shutdown_test.go: TestShutdown_DrainHonoursDeadline` | `testWithTimeout` |
+| An async listener shuts its own container or scope down | `event_shutdown_test.go: TestShutdown_FromAsyncListener/<row>` | table-driven, `testWithTimeout` |
+| A delivery admitted after the scope shutdown began is refused | `event_shutdown_test.go: TestScopeShutdown_RefusesDeliveryAdmittedAfter` | `testWithTimeout` |
+| Synchronous listeners run after an async refusal | `event_shutdown_test.go: TestShutdown_SyncListenersRunAfterAsyncRefusal/<row>` | table-driven |
+| A listener error matching ErrShutdown is returned during shutdown | `event_shutdown_test.go: TestShutdown_ListenerErrorMatchingErrShutdown` | unit |
+| Lifecycle events reach a container's only listener | `event_lifecycle_test.go: TestLifecycleEvents_ServiceListenerOnly`, `TestLifecycleEvents_AsyncClosed`, `TestLifecycleEvents_FailedBeforeRepanic` | unit |
+| Shutting a clone down leaves a supplied executor running | `event_clone_test.go: TestClone_ShutdownLeavesSuppliedExecutor` | `testWithTimeout` |
+| Timed-out executor shutdowns leave no waiter | `event_executor_test.go: TestBoundedEventExecutor_ShutdownTimeoutsLeakNoWaiter` | goroutine count (not parallel) |
 | Concurrent publishers during shutdown | `event_race_test.go: TestPublish_RacingShutdown` | race, `testWithTimeout` |
 | Concurrent publishers and registrations | `event_race_test.go: TestPublish_ConcurrentRegistration` | race, `testWithTimeout` |
 | Clone delivers to its own listeners | `event_clone_test.go: TestClone_Listeners/<row>` | table-driven |

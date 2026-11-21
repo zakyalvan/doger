@@ -324,11 +324,7 @@ type reportQuery struct {
 // newReportQuery returns the query of a read of targets with opts.
 func newReportQuery(targets []healthTarget, prune bool, opts []HealthReportOption) reportQuery {
 	query := reportQuery{targets: targets, prune: prune, tags: map[string]struct{}{}}
-	for _, opt := range opts {
-		if opt != nil {
-			opt(&query)
-		}
-	}
+	applyOptions(&query, opts)
 
 	return query
 }

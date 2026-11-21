@@ -137,16 +137,19 @@ func (s *RootScope) dispatchAfterStart(ctx context.Context, err error, first *ho
 		runObserverHooksWith(s, "container", "failed", s.hooks.containerFailed.load(), first, func(hook func(context.Context, *RootScope, error)) {
 			hook(ctx, s, err)
 		})
+		s.publishLifecycle(ctx, ContainerFailed{Root: s, Err: err})
 		return
 	}
 
 	s.self.log(slog.LevelInfo, "container started")
 	s.runObserverHooks(ctx, "started", s.hooks.containerStarted.load(), first)
+	s.publishLifecycle(ctx, ContainerStarted{Root: s})
 	if s.markReady() {
 		s.self.log(slog.LevelInfo, "container ready")
 		s.startScheduling()
 	}
 	s.runObserverHooks(ctx, "ready", s.hooks.containerReady.load(), first)
+	s.publishLifecycle(ctx, ContainerReady{Root: s})
 }
 
 // hookPanic is the first observer hook panic of one Start or Shutdown.
@@ -420,6 +423,7 @@ func (s *RootScope) runStartPipeline(startCtx context.Context) error {
 	if err := s.runStartingHooks(startCtx); err != nil {
 		return err
 	}
+	s.publishLifecycle(startCtx, ContainerStarting{Root: s})
 
 	if err := checkAbort(startCtx); err != nil {
 		return err

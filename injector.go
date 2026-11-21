@@ -3,6 +3,7 @@ package doger
 import (
 	"context"
 	"log/slog"
+	"runtime"
 	"slices"
 	"sync/atomic"
 	"time"
@@ -557,6 +558,45 @@ type InjectorOpts struct {
 	// Setting this field avoids any ordering constraint with registrations,
 	// and any provider failure. A clone uses the source of its own options.
 	PropertySource PropertySource
+
+	// EventErrorMode is how a synchronous Publish handles listener errors:
+	// EventFailFast (the zero value) stops at the first one and returns it
+	// as a *ListenerError; EventContinue runs every listener and returns
+	// their joined errors. Lifecycle events always run every listener. New
+	// and NewWithOpts panic with "doger: invalid EventErrorMode <n>" for
+	// another value.
+	EventErrorMode EventErrorMode
+
+	// HookEventError receives the failures of listeners that have no caller
+	// to return them to: async deliveries (see ListenerAsync) and lifecycle
+	// events. err is a *ListenerError, for an error, a panic or a listener
+	// that could not be built. It may be called concurrently from executor
+	// goroutines. A panic in it is recovered and logged.
+	//
+	// Default (nil): the error is logged with Logger at Error level, or,
+	// when Logger is unset too, with the standard log package. This is the
+	// one place the container logs without Logger, so that event failures
+	// stay visible with zero configuration; set Logger or this hook to
+	// redirect or silence them.
+	HookEventError func(ctx context.Context, root *RootScope, err error)
+
+	// EventAsyncParallelism caps the async deliveries the default executor
+	// runs at once (see NewBoundedEventExecutor); a publisher finding it
+	// full waits for a slot or for its context's end.
+	// Default: 0, which means runtime.GOMAXPROCS(0) * 4, read when the
+	// container is created. Ignored when EventExecutor is set.
+	EventAsyncParallelism uint
+
+	// EventExecutor runs the async deliveries in place of the default
+	// bounded executor: every async delivery goes through its Submit, a
+	// Submit error or panic fails that delivery's Publish with a
+	// *ListenerError, and root Shutdown calls its Shutdown once, after the
+	// Closing hooks. The container it was supplied to owns it: Clone and
+	// CloneWithOpts copy this field, so a clone shares it, but a clone's
+	// shutdown never calls its Shutdown, whichever container shuts down
+	// first. Default (nil): NewBoundedEventExecutor(EventAsyncParallelism),
+	// one per container, created by its first async delivery.
+	EventExecutor EventExecutor
 }
 
 // clone returns a copy of o that shares no hook slice with it, so neither
@@ -594,6 +634,10 @@ func cloneHooks[T any](s []T) []T {
 	return append([]T{}, s...)
 }
 
+// defaultEventParallelismFactor times GOMAXPROCS is the default
+// EventAsyncParallelism.
+const defaultEventParallelismFactor = 4
+
 // initDefaults replaces unset options with their defaults: a discard
 // logger and the real clock.
 func (o *InjectorOpts) initDefaults() {
@@ -603,6 +647,10 @@ func (o *InjectorOpts) initDefaults() {
 
 	if o.Clock == nil {
 		o.Clock = RealClock()
+	}
+
+	if o.EventAsyncParallelism == 0 {
+		o.EventAsyncParallelism = uint(runtime.GOMAXPROCS(0)) * defaultEventParallelismFactor
 	}
 }
 

@@ -1,38 +1,23 @@
 package main
 
-import (
-	"time"
-)
+// The events this example publishes. Any Go value is an event: listeners
+// are matched by type, so there is no string topic and no `any` payload.
 
-// The event types this example publishes and handles.
-const (
-	EventUserCreated      = "user.created"
-	EventOrderCreated     = "order.created"
-	EventPaymentProcessed = "payment.processed"
-)
-
-// Event represents a generic event.
-type Event struct {
-	Type      string
-	Data      any
-	Timestamp time.Time
-}
-
-// UserCreatedEvent represents a user created event.
+// UserCreatedEvent is published when a user is created.
 type UserCreatedEvent struct {
 	UserID   string
 	Username string
 	Email    string
 }
 
-// OrderCreatedEvent represents an order created event.
+// OrderCreatedEvent is published when an order is created.
 type OrderCreatedEvent struct {
 	OrderID string
 	UserID  string
 	Amount  float64
 }
 
-// PaymentProcessedEvent represents a payment processed event.
+// PaymentProcessedEvent is published when a payment is processed.
 type PaymentProcessedEvent struct {
 	PaymentID string
 	OrderID   string

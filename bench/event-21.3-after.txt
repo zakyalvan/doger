@@ -1,0 +1,31 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/kartaladev/doger/bench
+cpu: Apple M4 Pro
+BenchmarkPublish/0-listeners-14         	31179223	        42.39 ns/op	       1 B/op	       1 allocs/op
+BenchmarkPublish/0-listeners-14         	25141046	        58.02 ns/op	       1 B/op	       1 allocs/op
+BenchmarkPublish/0-listeners-14         	22441108	        47.31 ns/op	       1 B/op	       1 allocs/op
+BenchmarkPublish/0-listeners-14         	30119787	        37.47 ns/op	       1 B/op	       1 allocs/op
+BenchmarkPublish/0-listeners-14         	33064036	        38.19 ns/op	       1 B/op	       1 allocs/op
+BenchmarkPublish/1-listeners-14         	22172504	        56.28 ns/op	       1 B/op	       1 allocs/op
+BenchmarkPublish/1-listeners-14         	19774012	        68.91 ns/op	       1 B/op	       1 allocs/op
+BenchmarkPublish/1-listeners-14         	16731656	        66.76 ns/op	       1 B/op	       1 allocs/op
+BenchmarkPublish/1-listeners-14         	19669309	        62.09 ns/op	       1 B/op	       1 allocs/op
+BenchmarkPublish/1-listeners-14         	19900359	        55.30 ns/op	       1 B/op	       1 allocs/op
+BenchmarkPublish/10-listeners-14        	 1776967	       668.5 ns/op	       1 B/op	       1 allocs/op
+BenchmarkPublish/10-listeners-14        	 1803724	       661.1 ns/op	       1 B/op	       1 allocs/op
+BenchmarkPublish/10-listeners-14        	 1808064	       664.6 ns/op	       1 B/op	       1 allocs/op
+BenchmarkPublish/10-listeners-14        	 1795042	       666.3 ns/op	       1 B/op	       1 allocs/op
+BenchmarkPublish/10-listeners-14        	 1886038	       786.4 ns/op	       1 B/op	       1 allocs/op
+BenchmarkPublish/100-listeners-14       	  108979	     12529 ns/op	      29 B/op	       1 allocs/op
+BenchmarkPublish/100-listeners-14       	  106983	     12388 ns/op	      29 B/op	       1 allocs/op
+BenchmarkPublish/100-listeners-14       	  117919	     10106 ns/op	      27 B/op	       1 allocs/op
+BenchmarkPublish/100-listeners-14       	  141984	      8322 ns/op	      22 B/op	       1 allocs/op
+BenchmarkPublish/100-listeners-14       	  138332	      8416 ns/op	      23 B/op	       1 allocs/op
+BenchmarkPublish/nested-scopes-14       	 5719525	       217.5 ns/op	       1 B/op	       1 allocs/op
+BenchmarkPublish/nested-scopes-14       	 4940308	       250.5 ns/op	       1 B/op	       1 allocs/op
+BenchmarkPublish/nested-scopes-14       	 5078010	       245.8 ns/op	       1 B/op	       1 allocs/op
+BenchmarkPublish/nested-scopes-14       	 5138695	       241.6 ns/op	       1 B/op	       1 allocs/op
+BenchmarkPublish/nested-scopes-14       	 5133823	       249.6 ns/op	       1 B/op	       1 allocs/op
+PASS
+ok  	github.com/kartaladev/doger/bench	31.498s

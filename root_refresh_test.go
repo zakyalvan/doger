@@ -435,7 +435,12 @@ func waitForBlockedPipelineLock(t *testing.T, root *RootScope) {
 	frame := fmt.Sprintf("doger.(*RootScope).startIncremental(%p", root)
 	buf := make([]byte, 1<<20)
 	for {
-		stacks := string(buf[:runtime.Stack(buf, true)])
+		n := runtime.Stack(buf, true)
+		if n == len(buf) { // truncated: the goroutine may be past the end
+			buf = make([]byte, 2*len(buf))
+			continue
+		}
+		stacks := string(buf[:n])
 		for stack := range strings.SplitSeq(stacks, "\n\n") {
 			if strings.Contains(stack, "sync.(*Mutex).Lock") && strings.Contains(stack, frame) {
 				return
@@ -443,6 +448,63 @@ func waitForBlockedPipelineLock(t *testing.T, root *RootScope) {
 		}
 		runtime.Gosched()
 	}
+}
+
+// parkDeep parks the calling goroutine depth frames deep until release
+// is closed, so its stack trace is long.
+func parkDeep(depth int, release <-chan struct{}) {
+	if depth > 0 {
+		parkDeep(depth-1, release)
+		return
+	}
+	<-release
+}
+
+func TestWaitForBlockedPipelineLock_ManyGoroutines(t *testing.T) {
+	t.Parallel()
+	testWithTimeout(t, 10*time.Second)
+
+	root := New()
+	require.NoError(t, root.Start())
+	entered := make(chan struct{})
+	var once sync.Once
+	provideLazy(root, "late", &ctxStarter{fn: func(ctx context.Context) error {
+		once.Do(func() { close(entered) })
+		<-ctx.Done()
+		return ctx.Err()
+	}})
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- root.Refresh() }()
+	<-entered
+
+	// goroutines listed before the blocked Refresh, whose traces together
+	// pass any fixed-size stack buffer
+	release := make(chan struct{})
+	var parked sync.WaitGroup
+	for range 2000 {
+		parked.Go(func() { parkDeep(30, release) })
+	}
+	t.Cleanup(func() {
+		close(release)
+		parked.Wait()
+	})
+
+	secondDone := make(chan error, 1)
+	go func() { secondDone <- root.Refresh() }()
+	found := make(chan struct{})
+	go func() {
+		defer close(found)
+		waitForBlockedPipelineLock(t, root)
+	}()
+
+	select {
+	case <-found:
+	case <-time.After(5 * time.Second):
+		t.Error("the blocked Refresh was not found among the goroutines")
+	}
+	root.Shutdown()
+	<-firstDone
+	<-secondDone
 }
 
 func TestRefresh_QueuedBehindShutdown(t *testing.T) {

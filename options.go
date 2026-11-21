@@ -14,8 +14,9 @@ type serviceOptions struct {
 	order           *int // collection order set by WithOrder; nil when unset
 	isDefault       bool // registered with AsDefault: replaceable by an explicit registration
 	healthTags      []string
-	healthTagsSet   bool // WithHealthTags given: healthTags replace the default tag
-	optionalHealth  bool // AsOptionalHealth: a failure degrades instead of failing
+	healthTagsSet   bool              // WithHealthTags given: healthTags replace the default tag
+	optionalHealth  bool              // AsOptionalHealth: a failure degrades instead of failing
+	listeners       []listenerBinding // AsListener and ListenMethod, in declaration order
 }
 
 // ProvideOption attaches an opt-in to a registration. Values come only from
@@ -195,6 +196,7 @@ func validateServiceOptions(name string, service serviceWrapperAny, opts *servic
 	if slices.Contains(opts.healthTags, "") {
 		panic(libErrorf("service `%s` has an empty health tag", name))
 	}
+	validateListenerOpt(name, service.getReflectType(), opts)
 
 	if service.getServiceType() == ServiceTypeTransient {
 		validateTransientOpts(name, opts)
@@ -228,11 +230,11 @@ func validateKindOpt(name string, registered reflect.Type, opts *serviceOptions)
 		}
 		seen[binding.id] = struct{}{}
 
-		switch {
-		case typeCanCastToType(registered, binding.target):
-		case registered.Kind() == reflect.Interface:
+		switch checkRegisteredType(registered, typeCanCastToType(registered, binding.target)) {
+		case registeredTypeSatisfies:
+		case registeredTypeDeferred:
 			binding.deferred = true
-		default:
+		case registeredTypeFails:
 			panic(libErrorf("service `%s` is not assignable to `%s` required by kind `%s`", name, binding.target.String(), binding.id.name))
 		}
 	}
@@ -240,12 +242,40 @@ func validateKindOpt(name string, registered reflect.Type, opts *serviceOptions)
 
 // validateStarterOpt checks AsStarter against the registered type.
 func validateStarterOpt(name string, registered reflect.Type, opts *serviceOptions) {
-	switch {
-	case !opts.starter, typeIsStarter(registered):
-	case registered.Kind() == reflect.Interface:
+	if !opts.starter {
+		return
+	}
+
+	switch checkRegisteredType(registered, typeIsStarter(registered)) {
+	case registeredTypeSatisfies:
+	case registeredTypeDeferred:
 		opts.starterDeferred = true
-	default:
+	case registeredTypeFails:
 		panic(libErrorf("service `%s` does not implement any Starter interface", name))
+	}
+}
+
+// registeredTypeCheck is the outcome of checking a registered type against
+// what an opt-in requires.
+type registeredTypeCheck int
+
+const (
+	registeredTypeSatisfies registeredTypeCheck = iota // the type satisfies the opt-in
+	registeredTypeDeferred                             // an interface type: its instance is checked later
+	registeredTypeFails                                // a concrete type that does not satisfy it
+)
+
+// checkRegisteredType returns the outcome of an opt-in check on registered,
+// given whether the type satisfies the opt-in: an interface type that does
+// not is checked on its instance instead.
+func checkRegisteredType(registered reflect.Type, satisfies bool) registeredTypeCheck {
+	switch {
+	case satisfies:
+		return registeredTypeSatisfies
+	case registered.Kind() == reflect.Interface:
+		return registeredTypeDeferred
+	default:
+		return registeredTypeFails
 	}
 }
 
