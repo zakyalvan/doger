@@ -597,6 +597,70 @@ type InjectorOpts struct {
 	// first. Default (nil): NewBoundedEventExecutor(EventAsyncParallelism),
 	// one per container, created by its first async delivery.
 	EventExecutor EventExecutor
+
+	// TxSource finds the transaction of a publish, for listeners with a
+	// deferred ListenerTxPhase and for transactional externalization. Nil
+	// (default): a root service named NameOf[TxSource]() when registered,
+	// else the TxSource of an EventTransport implementing TxEventSender,
+	// else none, and deferred listeners follow their ListenerTxFallback.
+	// Clone and CloneWithOpts copy this field.
+	TxSource TxSource
+
+	// EventTransport sends externalized events and delivers them to remote
+	// listeners (see EventTransport). Nil (default): a root service named
+	// NameOf[EventTransport]() when registered, built on first use, else
+	// none, and externalized events stay in-process. The caller owns it:
+	// Clone and CloneWithOpts copy this field, so a clone shares it.
+	EventTransport EventTransport
+
+	// EventCodec encodes and decodes the payload of externalized events.
+	// Nil (default): encoding/json, with the content type
+	// "application/json".
+	EventCodec EventCodec
+
+	// EventIDGenerator returns the ID of each externalized event; an empty
+	// ID fails the externalization with an error matching
+	// ErrInvalidEnvelope. Nil (default): a UUIDv7 from the root clock and
+	// crypto/rand. It is called concurrently.
+	EventIDGenerator func() string
+
+	// EventExternalize is the externalization strategy of the externalized
+	// types registered without EventExternalize, when a publish sets none
+	// with PublishExternalize. Default: ExternalizeAuto. New and
+	// NewWithOpts panic with "doger: invalid ExternalizeStrategy <n>" for
+	// another value.
+	EventExternalize ExternalizeStrategy
+
+	// EventOutboxFallback is what an ExternalizeOutbox publish with no
+	// transaction bound does: OutboxFallbackFail (the zero value, the
+	// default) fails it with an *ExternalizeError matching
+	// ErrNoTransaction; OutboxFallbackImmediate sends the event
+	// immediately. New and NewWithOpts panic with "doger: invalid
+	// OutboxFallback <n>" for another value.
+	EventOutboxFallback OutboxFallback
+
+	// EventDestinationMapper maps the destination of each event type, on
+	// send and on subscribe, for example to prefix it per environment. A
+	// mapper returning "" fails that send or subscription with an error
+	// matching ErrInvalidEventType. Nil (default): destinations are used as
+	// registered.
+	EventDestinationMapper func(destination string) string
+
+	// EventGroupPrefix prefixes the group of every remote listener, so two
+	// services whose listeners share default IDs do not share groups.
+	// Default: "".
+	EventGroupPrefix string
+
+	// InstanceID identifies this instance in the groups of DeliverAll
+	// listeners: set a stable one, such as a pod ordinal, so a restarted
+	// instance resumes its group. Default: "", which means a UUIDv7
+	// generated per root, and then DeliverAll subscriptions are ephemeral.
+	InstanceID string
+
+	// EventPropagator carries values such as a trace context across the
+	// transport in envelope headers (see EventPropagator). Nil (default):
+	// no header is propagated.
+	EventPropagator EventPropagator
 }
 
 // clone returns a copy of o that shares no hook slice with it, so neither

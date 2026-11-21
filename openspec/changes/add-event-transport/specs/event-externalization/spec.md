@@ -45,15 +45,15 @@ Examples:
 <!-- cases: N/A 10 compatibility: a type that is not externalized behaves exactly as in add-eventing (first two rows) -->
 
 ### Requirement: No transport keeps externalized events in-process
-When no transport is resolved, `Publish` of an externalized type SHALL deliver to in-process listeners, return nil, and log once per root through `Logf` (or the standard `log` package) that externalized events stay in-process.
+When no transport is resolved, `Publish` of an externalized type SHALL deliver to in-process listeners, return nil, and log once per root, at Warn level through `InjectorOpts.Logger` (or the standard `log` package when `Logger` is unset), that externalized events stay in-process.
 
 #### Scenario: Externalized type without a transport
 ```gherkin
-Given a root scope with no EventTransport, a recording Logf, and RegisterEventType[OrderPlaced](root, "orders.placed", EventExternalized()) returned nil
+Given a root scope with no EventTransport, a recording InjectorOpts.Logger, and RegisterEventType[OrderPlaced](root, "orders.placed", EventExternalized()) returned nil
 And a function listener "local" for OrderPlaced
 When the consumer publishes OrderPlaced{ID: "1"} 3 times
 Then every Publish returns nil and "local" ran 3 times
-And Logf recorded 1 message containing "no EventTransport"
+And the Logger recorded 1 warning containing "no EventTransport"
 ```
 
 <!-- cases: N/A 2,4,5,6: no options or inputs beyond the absent transport -->
@@ -62,7 +62,7 @@ And Logf recorded 1 message containing "no EventTransport"
 <!-- cases: N/A 10 compatibility: new behavior -->
 
 ### Requirement: Externalization strategy precedence
-The strategy for one publish SHALL be the first set of: `PublishExternalize(s)`, the type's `EventExternalize(s)`, `InjectorOpts.EventExternalize`; otherwise `ExternalizeAuto`. `EventExternalized()` SHALL leave the type's strategy unset.
+The strategy for one publish SHALL be the first set of: `PublishExternalize(s)`, the type's `EventExternalize(s)`, `InjectorOpts.EventExternalize`; otherwise `ExternalizeAuto`. `EventExternalized()` SHALL leave the type's strategy unset; `EventExternalize(ExternalizeAuto)` SHALL set it, so it wins over `InjectorOpts.EventExternalize`.
 
 #### Scenario: Which strategy applies
 ```gherkin
@@ -79,6 +79,7 @@ Examples:
   | ExternalizeImmediate   | EventExternalize(ExternalizeAfterCommit)  | with PublishExternalize(ExternalizeOutbox) | with SendTx during Publish            |
   | unset             | EventExternalize(ExternalizeOutbox)       | with PublishExternalize(ExternalizeImmediate) | with Send during Publish           |
   | ExternalizeAfterCommit | EventExternalized()                 | with no option                   | with Send after commit                |
+  | ExternalizeImmediate   | EventExternalize(ExternalizeAuto)   | with no option                   | with SendTx during Publish (the type's Auto wins) |
 ```
 
 <!-- cases: N/A 4 boundaries: enumerated values only; invalid values are covered by "Externalization options are validated" -->
@@ -110,7 +111,7 @@ Examples:
 <!-- cases: N/A 10 compatibility: new behavior -->
 
 ### Requirement: Immediate externalization returns the send error
-Under `ExternalizeImmediate`, `Publish` SHALL call `Send` on the publisher's goroutine after in-process synchronous listeners ran, and SHALL return a send error as an `*ExternalizeError` carrying the event type name, destination and strategy and wrapping the cause.
+Under `ExternalizeImmediate`, `Publish` SHALL call `Send` on the publisher's goroutine after in-process synchronous listeners ran, and SHALL return a send error as an `*ExternalizeError` carrying the event type name, destination and strategy and wrapping the cause. The `Strategy` of every `*ExternalizeError` SHALL be the strategy actually used: `ExternalizeImmediate` when `ExternalizeAuto` found no outbox, when the `OutboxFallbackImmediate` fallback applied, and when `ExternalizeAfterCommit` found no transaction.
 
 #### Scenario: Immediate send outcomes
 ```gherkin
@@ -127,6 +128,20 @@ Examples:
   | panics with "kaboom"             | an *ExternalizeError whose message contains "kaboom"                                                |
 ```
 
+#### Scenario: The error names the strategy used
+```gherkin
+Given a root scope with a TxEventSender transport whose Send returns ErrBrokerDown, InjectorOpts.EventOutboxFallback OutboxFallbackImmediate, and RegisterEventType[OrderPlaced](root, "orders.placed", EventExternalize(<strategy>)) returned nil
+When the consumer publishes OrderPlaced{ID: "1"} with <ctx>
+Then Publish returns an *ExternalizeError matching ErrBrokerDown whose Strategy is <used>
+
+Examples:
+  | strategy               | ctx                                 | used                 |
+  | ExternalizeOutbox      | context.Background()                | ExternalizeImmediate |
+  | ExternalizeAfterCommit | context.Background()                | ExternalizeImmediate |
+  | ExternalizeAuto        | context.Background()                | ExternalizeImmediate |
+  | ExternalizeImmediate   | a context holding transaction "tx1" | ExternalizeImmediate |
+```
+
 #### Scenario: Send honors the publish context
 ```gherkin
 Given a root scope whose transport's Send blocks until its context is done
@@ -141,7 +156,7 @@ Then Publish returns an *ExternalizeError matching context.DeadlineExceeded with
 <!-- cases: N/A 10 compatibility: new behavior -->
 
 ### Requirement: After-commit externalization runs in the commit callback
-Under `ExternalizeAfterCommit` with a transaction bound, `Publish` SHALL register the send with `OnCommit` and return nil for it; the send SHALL run with the detached publish context, and its error or panic SHALL go to `HookEventError` as an `*ExternalizeError`. A rollback SHALL send nothing. Without a transaction it SHALL behave as `ExternalizeImmediate`.
+Under `ExternalizeAfterCommit` with a transaction bound, `Publish` SHALL register the send with `OnCommit` and return nil for it; the send SHALL run with the detached publish context, and its error or panic SHALL go to `HookEventError` as an `*ExternalizeError`. A rollback SHALL send nothing. Without a transaction it SHALL behave as `ExternalizeImmediate`. The envelope SHALL be built during `Publish`, so a codec, ID generator or propagator failure SHALL fail `Publish` with an `*ExternalizeError` and register nothing with the transaction.
 
 #### Scenario: After-commit outcomes
 ```gherkin
@@ -158,6 +173,7 @@ Examples:
   | returns ErrBrokerDown | a context holding transaction "tx1"  | nil                                        | the fake transaction "tx1" commits | 1   | an *ExternalizeError matching ErrBrokerDown           |
   | panics with "kaboom"  | a context holding transaction "tx1"  | nil                                        | the fake transaction "tx1" commits | 1   | an *ExternalizeError whose message contains "kaboom"  |
   | returns ErrBrokerDown | context.Background()                 | an *ExternalizeError matching ErrBrokerDown     | nothing more happens             | 1     | nothing                                          |
+  | returns nil, with a codec whose Marshal returns ErrCodecBroken | a context holding transaction "tx1" | an *ExternalizeError matching ErrCodecBroken | the fake transaction "tx1" commits | 0 | nothing                                |
 ```
 
 #### Scenario: The after-commit send is detached
@@ -245,7 +261,7 @@ Examples:
 <!-- cases: N/A 10 compatibility: new behavior -->
 
 ### Requirement: Externalization follows in-process dispatch outcome
-Externalization SHALL run after in-process synchronous listeners. Under `EventFailFast`, a listener error SHALL stop the externalization and `Publish` SHALL return that error. Under `EventContinue`, the externalization SHALL still run and `Publish` SHALL join its error with the listener errors.
+Externalization SHALL run after in-process synchronous listeners. Under `EventFailFast`, a listener error SHALL stop the externalization and `Publish` SHALL return that error. Under `EventContinue`, the externalization SHALL still run and `Publish` SHALL join its error with the listener errors. An async delivery refused because a shutdown began SHALL NOT stop the externalization in either mode; `Publish` SHALL join the refusals, matching `ErrPublishAfterShutdown`, with its outcome.
 
 #### Scenario: Listener failure and externalize
 ```gherkin
@@ -262,6 +278,19 @@ Examples:
 ```
 
 <!-- cases: N/A 3,4,6: no zero, numeric or duplicate input -->
+#### Scenario: Async refusals do not stop externalization
+```gherkin
+Given a root scope with InjectorOpts.EventErrorMode <mode>, a recording transport, RegisterEventType[OrderPlaced](root, "orders.placed", EventExternalize(ExternalizeImmediate)) returned nil, and an async function listener for OrderPlaced
+And a built Shutdowner service that publishes OrderPlaced{ID: "1"} from its Shutdown
+When the consumer calls Shutdown
+Then that Publish returns an error matching ErrPublishAfterShutdown and the transport received 1 send
+
+Examples:
+  | mode          |
+  | EventFailFast |
+  | EventContinue |
+```
+
 <!-- cases: N/A 8 concurrency: async listeners do not delay or gate the externalization -->
 <!-- cases: N/A 9 panics: a listener panic is a listener error per add-eventing -->
 <!-- cases: N/A 10 compatibility: in-process behavior is unchanged; only the externalization step is added -->
@@ -288,7 +317,7 @@ Examples:
 <!-- cases: N/A 10 compatibility: PublishLocal keeps its add-eventing meaning -->
 
 ### Requirement: Publisher handle for application ports
-`PublisherFor(i)` SHALL return a `*Publisher` whose `Publish(ctx, events...)` publishes each event in order through `Publish(ctx, i, event)` and stops at the first error, returning it. A nil injector SHALL mean `DefaultRootScope`; no events SHALL return nil. It lets an application implement its own publishing port without importing doger in the domain.
+`PublisherFor(i)` SHALL return a `*Publisher` whose `Publish(ctx, events...)` publishes each event in order through `Publish(ctx, i, event)` and stops at the first error, returning it. A nil injector SHALL return an error matching `ErrNilInjector`; no events SHALL return nil. It lets an application implement its own publishing port without importing doger in the domain.
 
 #### Scenario: Publishing through the handle
 ```gherkin
@@ -302,7 +331,7 @@ Examples:
   | root     | returns nil                                  | nothing                                        | nil                                      | 0   | 0     |
   | root     | returns ErrOutOfStock for ID "1"             | OrderPlaced{ID: "1"}, OrderPlaced{ID: "2"}     | a *ListenerError matching ErrOutOfStock  | 1   | 0     |
   | root     | returns nil                                  | OrderPlaced{ID: "1"}, nil                      | an error matching ErrInvalidEvent        | 1   | 1     |
-  | nil      | returns nil (registered on DefaultRootScope) | OrderPlaced{ID: "1"}                           | nil                                      | 1   | 1     |
+  | nil      | returns nil                                  | OrderPlaced{ID: "1"}                           | an error matching ErrNilInjector         | 0   | 0     |
 ```
 
 #### Scenario: The handle satisfies a consumer-defined port

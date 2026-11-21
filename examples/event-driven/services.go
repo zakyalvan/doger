@@ -9,7 +9,7 @@ import (
 )
 
 // Logger represents a logging service, safe for concurrent use since async
-// listeners log too.
+// and remote listeners log too.
 type Logger struct {
 	Level string
 	mu    sync.Mutex
@@ -22,30 +22,9 @@ func (l *Logger) Log(message string) {
 }
 
 // EventPublisher is the publishing port of the application layer: it names
-// no doger type; publisherFor satisfies it with doger.Publish.
+// no doger type; doger.PublisherFor satisfies it.
 type EventPublisher interface {
 	Publish(ctx context.Context, events ...any) error
-}
-
-// publisherFor returns the EventPublisher publishing through injector.
-func publisherFor(injector doger.Injector) EventPublisher {
-	return injectorPublisher{injector: injector}
-}
-
-// injectorPublisher publishes each event with doger.Publish, in order,
-// stopping at the first error.
-type injectorPublisher struct {
-	injector doger.Injector
-}
-
-func (p injectorPublisher) Publish(ctx context.Context, events ...any) error {
-	for _, event := range events {
-		if err := doger.Publish(ctx, p.injector, event); err != nil {
-			return err
-		}
-	}
-
-	return nil
 }
 
 // UserService creates users and publishes UserCreatedEvent.
@@ -60,7 +39,8 @@ func (u *UserService) CreateUser(ctx context.Context, username, email string) er
 	return u.Events.Publish(ctx, UserCreatedEvent{UserID: "user-123", Username: username, Email: email})
 }
 
-// OrderService creates orders and publishes OrderCreatedEvent.
+// OrderService creates orders and publishes OrderCreatedEvent, which also
+// leaves the process for the billing service.
 type OrderService struct {
 	Events EventPublisher
 	Logger *Logger
@@ -84,19 +64,19 @@ func (p *PaymentService) ProcessPayment(ctx context.Context, orderID string, amo
 	return p.Events.Publish(ctx, PaymentProcessedEvent{PaymentID: "payment-" + orderID, OrderID: orderID, Amount: amount, Status: "completed"})
 }
 
-// provideServices registers the application's services in injector.
+// provideServices registers the order service's services in injector.
 func provideServices(injector doger.Injector) {
 	doger.Provide(injector, func(doger.Injector) (*Logger, error) {
 		return &Logger{Level: "INFO"}, nil
 	})
 	doger.Provide(injector, func(i doger.Injector) (*UserService, error) {
-		return &UserService{Events: publisherFor(i), Logger: doger.MustInvoke[*Logger](i)}, nil
+		return &UserService{Events: doger.PublisherFor(i), Logger: doger.MustInvoke[*Logger](i)}, nil
 	})
 	doger.Provide(injector, func(i doger.Injector) (*OrderService, error) {
-		return &OrderService{Events: publisherFor(i), Logger: doger.MustInvoke[*Logger](i)}, nil
+		return &OrderService{Events: doger.PublisherFor(i), Logger: doger.MustInvoke[*Logger](i)}, nil
 	})
 	doger.Provide(injector, func(i doger.Injector) (*PaymentService, error) {
-		return &PaymentService{Events: publisherFor(i), Logger: doger.MustInvoke[*Logger](i)}, nil
+		return &PaymentService{Events: doger.PublisherFor(i), Logger: doger.MustInvoke[*Logger](i)}, nil
 	})
 	doger.Provide(injector, func(i doger.Injector) (*Application, error) {
 		return &Application{

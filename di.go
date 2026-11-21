@@ -209,7 +209,7 @@ func tryProvide[T any, A any](i Injector, name string, valueOrProvider A, servic
 
 	service := serviceCtor(name, valueOrProvider)
 	validateServiceOptions(name, service, options)
-	scope.rootScope.noteListeners(options)
+	scope.rootScope.noteListeners(scope, name, options)
 	service.setOptions(options)
 	wrapped := wrapIfDefault(scope, service, options)
 
@@ -444,7 +444,7 @@ func override[T any, A any](i Injector, name string, valueOrProvider A, serviceC
 	service := serviceCtor(name, valueOrProvider)
 	options := buildServiceOptions(opts)
 	validateServiceOptions(name, service, options)
-	_i.RootScope().noteListeners(options)
+	_i.RootScope().noteListeners(injectorScope(_i), name, options)
 	if options != nil {
 		options.isDefault = false // an override is explicit
 	}

@@ -183,6 +183,12 @@ func newUUID() (string, error) {
 	// version 4 (pseudo-random); see section 4.1.3
 	uuid[6] = uuid[6]&^0xf0 | 0x40
 
+	return formatUUID(uuid), nil
+}
+
+// formatUUID returns the canonical text of uuid: lowercase hex grouped
+// 8-4-4-4-12.
+func formatUUID(uuid [16]byte) string {
 	var buf [36]byte
 	buf[8], buf[13], buf[18], buf[23] = '-', '-', '-', '-'
 	hex.Encode(buf[0:8], uuid[0:4])
@@ -190,7 +196,7 @@ func newUUID() (string, error) {
 	hex.Encode(buf[14:18], uuid[6:8])
 	hex.Encode(buf[19:23], uuid[8:10])
 	hex.Encode(buf[24:36], uuid[10:16])
-	return string(buf[:]), nil
+	return string(buf[:])
 }
 
 // healthCheckResult decides an observed health-check result: once ctx is

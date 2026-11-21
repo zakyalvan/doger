@@ -175,7 +175,7 @@ Then the transport received a Subscription whose Group is the listener's default
 <!-- cases: N/A 10 compatibility: new options -->
 
 ### Requirement: Subscriptions follow the container lifecycle
-`Start` SHALL open one subscription per remote listener after every Starter succeeded and before the Started hooks. A `Subscribe` error SHALL stop the subscriptions already opened and fail `Start` with that error. Shutdown SHALL stop every subscription before the Closing hooks, waiting for handlers in flight up to the shutdown context.
+`Start` SHALL open one subscription per remote listener after every Starter succeeded and before the Started hooks. A `Subscribe` error SHALL stop the subscriptions already opened and fail `Start` with that error. Shutdown SHALL stop every subscription before the Closing hooks, waiting for handlers in flight up to the shutdown context. The stop function `Listen` returns SHALL, for a remote function listener subscribed by `Start`, also stop that listener's subscription, waiting for its handlers in flight; it SHALL NOT be called from that listener.
 
 #### Scenario: Subscriptions open after Starters
 ```gherkin
@@ -205,6 +205,14 @@ And the recorded order is ["handler:r:done", "unsubscribe:r", "hook:closing"]
 And no goroutine leaked
 ```
 
+#### Scenario: Listen's stop closes a remote function listener's subscription
+```gherkin
+Given roots "a" and "b" sharing an in-memory transport, with on "b" stop := Listen(b, fn "r", ListenerID("r"), ListenerDelivery(DeliverOnce)), both started
+And "a" published OrderPlaced{ID: "1"} and "r" ran once
+When the consumer calls stop() and "a" publishes OrderPlaced{ID: "2"}
+Then stop() returned true, "r" still ran only once, and a second stop() returns false
+```
+
 #### Scenario: The shutdown context bounds the wait
 ```gherkin
 Given a started root scope with an in-memory transport and a remote listener "r" that blocks until its context is done
@@ -228,7 +236,7 @@ And Shutdown completed the remaining shutdown steps
 <!-- cases: N/A 10 compatibility: containers without remote listeners open no subscription -->
 
 ### Requirement: Inbound dispatch reaches one listener
-For each delivered envelope, the root SHALL decode the payload to the listener's registered type and call that listener only, building a service listener lazily, with a context holding the propagated headers and `EnvelopeFromContext`. A `ListenerFilter` returning false SHALL acknowledge without building. The handler SHALL return nil on success and the listener's error as a `*ListenerError` otherwise.
+For each delivered envelope, the root SHALL decode the payload to the listener's registered type and call that listener only, building a service listener lazily, with a context holding the propagated headers and `EnvelopeFromContext`. A `ListenerFilter` returning false SHALL acknowledge without building. The handler SHALL return nil on success and the listener's error as a `*ListenerError` otherwise. A service listener SHALL be resolved per delivery by its name in its scope, so a registration replaced after `Start` (for example by `OverrideValue`) is the one called.
 
 #### Scenario: Inbound outcomes
 ```gherkin
@@ -245,6 +253,14 @@ Examples:
   | with ListenerFilter(Total > 100)                     | 500   | 1   | nil                                       |
   | that returns ErrOutOfStock                           | 10    | 1   | a *ListenerError matching ErrOutOfStock   |
   | that panics with "kaboom"                            | 10    | 1   | a *ListenerError whose message contains "kaboom" |
+```
+
+#### Scenario: A replaced service listener receives later deliveries
+```gherkin
+Given roots "a" and "b" sharing a transport, with on "b" ProvideValue(b, listener "old", AsListener[OrderPlaced](ListenerID("n"), ListenerDelivery(DeliverOnce))), both started
+And "a" published OrderPlaced{ID: "1"}
+When the consumer calls OverrideValue(b, listener "new") and "a" publishes OrderPlaced{ID: "2"}
+Then the listeners that ran are ["old", "new"]
 ```
 
 #### Scenario: Lazy service listeners are built on first delivery
@@ -311,7 +327,7 @@ Then "*Mailer" received 100 events, "f" received 100 events, the provider was ca
 <!-- cases: N/A 1-7,9,10: covered by the other requirements; this one is concurrency only -->
 
 ### Requirement: The in-memory transport
-`NewMemoryEventTransport(opts...)` SHALL return an `EventTransport` that delivers within one process: one subscriber per group per event, round robin within a group, each new group starting at the latest event, and redelivery of a non-permanent error up to `MemoryMaxAttempts(n)` attempts (default 3), after which the event and any permanent failure are dropped and logged.
+`NewMemoryEventTransport(opts...)` SHALL return an `EventTransport` that delivers within one process: one subscriber per group per event, round robin within a group, each new group starting at the latest event, and redelivery of a non-permanent error up to `MemoryMaxAttempts(n)` attempts (default 3), after which the event and any permanent failure are dropped and logged. When a stop context ends while an envelope is being handled, the handler context SHALL be cancelled and that envelope SHALL go back to the group like a queued one: to another member, or to a durable group's backlog for its next subscription; it SHALL be dropped and logged only when the group ended.
 
 #### Scenario: Groups in memory
 ```gherkin
@@ -334,6 +350,14 @@ Examples:
   | MemoryMaxAttempts(1)    | returns ErrOutOfStock every time          | 1   | 1    |
   | MemoryMaxAttempts(5)    | fails twice with ErrOutOfStock, then succeeds | 3 | 0   |
   | no option               | returns PermanentError(ErrBadOrder)       | 1   | 1    |
+```
+
+#### Scenario: A stop timeout keeps the in-flight envelope
+```gherkin
+Given an in-memory transport with a durable subscription to group "g" on "orders.placed" whose handler blocks until its context is done
+And envelope "e1" is being handled
+When the consumer stops that subscription with a context that times out after 20ms, then subscribes a new handler to group "g"
+Then the stop returns an error matching context.DeadlineExceeded and the new handler receives "e1"
 ```
 
 #### Scenario: A new group starts at the latest event

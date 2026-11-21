@@ -120,6 +120,15 @@ type RootScope struct {
 	// container without events holds none.
 	events atomic.Pointer[rootEvents]
 
+	// eventTypes is the event type registry: an immutable snapshot replaced
+	// under eventTypesMu, read without a lock; nil until the first
+	// registration.
+	eventTypesMu sync.Mutex
+	eventTypes   atomic.Pointer[eventRegistry]
+
+	// transport holds the transport state; nil until first used
+	transport atomic.Pointer[eventTransportState]
+
 	kindsMu sync.Mutex
 	kinds   []kindEntry // kind handlers, in order of first Handle; copied before written, as it may be shared
 
@@ -363,6 +372,7 @@ func (s *RootScope) shutdownAsWinner(ctx context.Context, ticket closeTicket, fi
 	s.stopScheduling(ctx)
 
 	startErr := waitForStart(ctx, ticket)
+	s.closeSubscriptions(ctx)
 
 	// pointClosing
 	s.runObserverHooks(ctx, "closing", s.hooks.containerClosing.load(), first)
@@ -884,6 +894,12 @@ func (s *RootScope) Clone() *RootScope {
 // default executor, while an InjectorOpts.EventExecutor the clone keeps is
 // shared: the clone's shutdown never calls its Shutdown, so shutting a
 // clone down leaves the source's async deliveries working.
+//
+// Event transports: the clone copies the event type registry and the
+// delivery modes of its listeners, and shares an InjectorOpts.EventTransport
+// it keeps. It resolves a service transport on its own, opens its own
+// subscriptions at its own Start, and generates its own instance ID unless
+// InjectorOpts.InstanceID is set.
 func (s *RootScope) CloneWithOpts(opts *InjectorOpts) *RootScope {
 	clone := NewWithOpts(opts)
 	s.cloneWithExtensions(clone)
@@ -910,13 +926,17 @@ func (s *RootScope) copyKindsTo(clone *RootScope) {
 	clone.kindsMu.Unlock()
 }
 
-// copyEventsTo continues the function listener sequence of s in clone, so
+// copyEventsTo gives clone the event type registry of s, and continues the
+// function listener sequence of s in clone, so
 // the listeners clone registers get IDs the copied ones do not have. Each
 // scope's function listeners were copied with the scope tree; plan caches
 // and the default executor are per container and never copied. An
 // InjectorOpts.EventExecutor clone shares with s is borrowed: the clone's
 // shutdown never shuts it down, only the container it was supplied to.
 func (s *RootScope) copyEventsTo(clone *RootScope) {
+	// a registry snapshot is never written: registrations on either side
+	// publish a new one, so sharing it copies it
+	clone.eventTypes.Store(s.eventTypes.Load())
 	if events := s.events.Load(); events != nil {
 		clone.eventState().funcSeq.Store(events.funcSeq.Load())
 	}

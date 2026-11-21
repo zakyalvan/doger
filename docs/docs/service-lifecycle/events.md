@@ -98,3 +98,7 @@ The root publishes `doger.ContainerStarting`, `ContainerStarted`, `ContainerRead
 ## Shutdown {#shutdown}
 
 Root shutdown, after `ContainerClosing`, stops accepting async deliveries (a publish then fails with `ErrPublishAfterShutdown` for each async listener it reaches, and still runs its synchronous listeners), wakes publishers waiting for a slot, and waits for the deliveries in flight before shutting services down. When the shutdown context ends first, the deliveries' contexts are cancelled with cause `ErrPublishAfterShutdown`, `Shutdown` returns without waiting for them further, and the report holds the context's error. During service shutdown, synchronous publishes still reach function listeners and built service listeners, never building one. A child scope shutdown waits for the async deliveries to its own and its descendants' listeners first, and refuses new ones from the moment it begins. An async listener may shut its own scope or the container down by passing its context to `ShutdownWithContext`: that shutdown does not wait for the calling delivery. Called without that context, it would wait for itself.
+
+## Other processes {#transports}
+
+To deliver events to other processes, or to every instance of a service, see [Event transports](./event-transports.md).

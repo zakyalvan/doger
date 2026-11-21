@@ -80,6 +80,15 @@ func (l *plannedListener) yielded() bool {
 	return l.fn == nil && isYieldedDefaultIn(l.scope, l.wrapper)
 }
 
+// eventType returns the event type the listener is registered for.
+func (l *plannedListener) eventType() reflect.Type {
+	if l.fn != nil {
+		return l.fn.typ
+	}
+
+	return l.binding.typ
+}
+
 // unavailable reports whether the listener is a service listener that
 // root service shutdown must skip: not built, so it is never built
 // mid-shutdown, or no longer registered.
@@ -118,6 +127,25 @@ func (l *plannedListener) resolved() (func(ctx context.Context, event any) error
 // wait-for graph instead of deadlocking.
 func (l *plannedListener) instance() (any, error) {
 	return invokeServiceInstance(l.scope, nil, l.name, l.name, l.scope, l.wrapper)
+}
+
+// current returns the listener as its scope holds it now: for a service
+// listener whose registration was replaced since it was planned, the same
+// binding on the replacing registration. A function listener, or a service
+// listener still registered or removed, is returned as is.
+func (l *plannedListener) current() *plannedListener {
+	if l.fn != nil {
+		return l
+	}
+	wrapper, ok := l.scope.serviceGet(l.name)
+	service, isWrapper := wrapper.(serviceWrapperAny)
+	if !ok || !isWrapper || service == l.wrapper {
+		return l
+	}
+	replaced := *l
+	replaced.wrapper = service
+
+	return &replaced
 }
 
 // matchListeners returns the listeners reached by an event of eventType
@@ -256,7 +284,7 @@ func lessListener(a, b *plannedListener) int {
 // scopeListeners returns the local listeners of s for eventType, at rank.
 func scopeListeners(s *Scope, rank int, eventType reflect.Type) []*plannedListener {
 	return scopeListenersWhere(s, rank, func(opts *listenerOptions, typ reflect.Type) bool {
-		return eventType.AssignableTo(typ)
+		return !opts.remote() && eventType.AssignableTo(typ)
 	})
 }
 

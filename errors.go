@@ -138,6 +138,13 @@ var libSentinels = []error{
 	ErrInvalidExtension, ErrExtensionDisabled, ErrRequiredExtensionDisabled,
 	ErrExtensionCycle, ErrExtensionConflict,
 	ErrInvalidEvent, ErrInvalidListener, ErrPublishAfterShutdown,
+	ErrEventTypeConflict, ErrInvalidEventType,
+	ErrCodecMismatch,
+	ErrNoEventTransport, ErrEventTypeNotFound, ErrListenerGroupConflict,
+	ErrOutboxNotSupported, ErrTxSourceConflict,
+	ErrNoTransaction,
+	ErrInvalidEnvelope,
+	ErrSubscriptionNotSupported,
 }
 
 // isLibMade reports whether the library made err itself: a sentinel, a
@@ -145,7 +152,7 @@ var libSentinels = []error{
 func isLibMade(err error) bool {
 	//nolint:errorlint // one layer on purpose: isLibLed walks the chain and asks about each error in it
 	switch e := err.(type) {
-	case *libError, *ExtensionError, *ServiceError, *ListenerError:
+	case *libError, *ExtensionError, *ServiceError, *ListenerError, *ExternalizeError:
 		return true
 	case *StartError:
 		return !e.unprefixed

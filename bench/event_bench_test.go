@@ -65,3 +65,28 @@ func BenchmarkPublish(b *testing.B) {
 		}
 	})
 }
+
+// BenchmarkPublish_NotExternalized measures Publish of an event whose type
+// is not externalized, in a container with a transport: it must cost what
+// BenchmarkPublish costs, with no new allocation.
+func BenchmarkPublish_NotExternalized(b *testing.B) {
+	for _, registered := range []bool{false, true} {
+		b.Run(fmt.Sprintf("registered=%t", registered), func(b *testing.B) {
+			root := doger.NewWithOpts(&doger.InjectorOpts{EventTransport: doger.NewMemoryEventTransport()})
+			if registered {
+				if err := doger.RegisterEventType[benchEvent](root, "bench.event"); err != nil {
+					b.Fatal(err)
+				}
+			}
+			doger.Listen(root, func(context.Context, benchEvent) error { return nil })
+			ctx := context.Background()
+
+			b.ReportAllocs()
+			for b.Loop() {
+				if err := doger.Publish(ctx, root, benchEvent{ID: 1}); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}

@@ -5,31 +5,53 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/kartaladev/doger"
 )
 
 func main() {
-	if err := run(context.Background(), 2); err != nil {
+	if _, err := run(context.Background(), 4); err != nil {
 		fmt.Println("error:", err)
 		os.Exit(1)
 	}
 }
 
-// run starts the container, runs a journey of orders orders, and shuts the
-// container down, which waits for the async listeners.
-func run(ctx context.Context, orders int) error {
+// run starts the order service and two billing instances, sharing one
+// in-memory event transport as two processes would share a broker, runs a
+// journey of orders orders, and returns which billing instance invoiced
+// each order.
+func run(ctx context.Context, orders int) (map[string][]string, error) {
 	fmt.Println("=== Event-Driven Architecture Example ===")
 
-	injector := newContainer()
-	if err := start(injector); err != nil {
-		return err
+	transport := doger.NewMemoryEventTransport()
+	ledger := NewLedger(orders)
+
+	shop, err := newOrderService(transport)
+	if err != nil {
+		return nil, err
 	}
-	defer shutdown(injector)
+	defer shutdown(shop)
+	for _, instance := range []string{"billing-1", "billing-2"} {
+		billing, err := newBillingInstance(transport, instance, ledger)
+		if err != nil {
+			return nil, err
+		}
+		defer shutdown(billing) // stops its subscription, waiting for handlers in flight
+	}
 
-	app := doger.MustInvoke[*Application](injector)
+	app := doger.MustInvoke[*Application](shop)
+	if err := app.Run(ctx, orders); err != nil {
+		return nil, err
+	}
 
-	return app.Run(ctx, orders)
+	select {
+	case <-ledger.Done():
+	case <-time.After(5 * time.Second):
+		return nil, errors.New("the billing instances did not invoice every order")
+	}
+
+	return ledger.Invoices(), nil
 }
 
 // shutdown shuts injector down, printing its errors.
@@ -39,10 +61,13 @@ func shutdown(injector *doger.RootScope) {
 	}
 }
 
-// newContainer returns the container of the application, with its
-// services and listeners registered.
-func newContainer() *doger.RootScope {
-	injector := doger.New()
+// newOrderService returns the started container of the order service: it
+// listens in-process and sends OrderCreatedEvent through transport.
+func newOrderService(transport doger.EventTransport) (*doger.RootScope, error) {
+	injector := doger.NewWithOpts(&doger.InjectorOpts{EventTransport: transport})
+	if err := registerOrderEvents(injector, true); err != nil {
+		return nil, err
+	}
 	provideServices(injector)
 
 	// Listeners: services that opt in at registration. None is built before
@@ -66,7 +91,25 @@ func newContainer() *doger.RootScope {
 		return nil
 	})
 
-	return injector
+	return injector, start(injector)
+}
+
+// newBillingInstance returns the started container of one billing
+// instance: its Invoicer is a DeliverOnce remote listener of the group
+// "invoice", so the instances share the orders between them.
+func newBillingInstance(transport doger.EventTransport, instance string, ledger *Ledger) (*doger.RootScope, error) {
+	injector := doger.NewWithOpts(&doger.InjectorOpts{EventTransport: transport, InstanceID: instance})
+	if err := registerOrderEvents(injector, false); err != nil {
+		return nil, err
+	}
+	doger.Provide(injector, func(doger.Injector) (*Logger, error) {
+		return &Logger{Level: "INFO"}, nil
+	})
+	doger.Provide(injector, func(i doger.Injector) (*Invoicer, error) {
+		return &Invoicer{Instance: instance, Logger: doger.MustInvoke[*Logger](i), Invoiced: ledger}, nil
+	}, doger.ListenMethod((*Invoicer).OnOrderCreated, doger.ListenerID("invoice"), doger.ListenerDelivery(doger.DeliverOnce)))
+
+	return injector, start(injector) // subscribes the Invoicer
 }
 
 // start starts injector. When Start fails, it shuts injector down, as the

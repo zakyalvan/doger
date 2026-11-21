@@ -113,7 +113,9 @@ ExternalizeOutbox: no tx ? (fallback Immediate ? ExternalizeImmediate : ErrNoTra
 ExternalizeAfterCommit: no tx ? ExternalizeImmediate : Tx.OnCommit(send with Detach(ctx))
 ```
 - The externalization runs after synchronous in-process dispatch, on the publisher's goroutine, so a fail-fast listener error stops it and `EventContinue` joins errors (spec "Externalization follows in-process dispatch outcome"). Running it first was considered; it would publish an event whose local handling the caller is about to see fail.
-- `ExternalizeImmediate` and `ExternalizeOutbox` return errors as `*ExternalizeError{EventType, Destination string; Strategy ExternalizeStrategy; Err error}`; `ExternalizeAfterCommit` sends them to `HookEventError`. Panics in `Send`, `SendTx`, the codec, the ID generator and `Inject` are recovered into the same error.
+- `ExternalizeImmediate` and `ExternalizeOutbox` return errors as `*ExternalizeError{EventType, Destination string; Strategy ExternalizeStrategy; Err error}`; `ExternalizeAfterCommit` sends its send errors to `HookEventError`. The envelope is built during `Publish` for every strategy, so codec, ID generator and `Inject` failures return from `Publish`, after-commit included, and nothing is registered with the transaction. Panics in `Send`, `SendTx`, the codec, the ID generator and `Inject` are recovered into the same error. `Strategy` is the strategy used: `ExternalizeImmediate` when Auto found no outbox, the Outbox fallback applied, or AfterCommit found no transaction.
+- The type's strategy is tracked as set or unset, not by its zero value: `EventExternalize(ExternalizeAuto)` wins over `InjectorOpts.EventExternalize`, and only `EventExternalized()` leaves it unset.
+- An async delivery refused because a shutdown began is a distinct error (still matching `ErrPublishAfterShutdown`): it neither stops a fail-fast dispatch nor the externalization.
 - `ExternalizeAfterCommit` keeps no record, so a crash between commit and send loses the event. It exists for broker-only setups that must not emit events for rolled-back transactions; the godoc says "at most once on crash" and points to `ExternalizeOutbox`.
 - `ErrOutboxNotSupported` is checked at `Start` for global and per-type outbox settings, and per publish for `PublishExternalize(ExternalizeOutbox)`.
 
@@ -134,10 +136,12 @@ runStart:  Starters ok --> validate remote listeners (ErrNoEventTransport, ErrEv
 Shutdown:  stopScheduling --> stop subscriptions (reverse order, shutdown ctx) --> Closing hooks --> services
 ```
 - Stop errors and panics go to `HookEventError`; shutdown continues.
+- `Listen`'s stop for a remote function listener removes its subscription from the root's list and stops it with `context.Background()`, waiting for its handlers; calling it from that listener would wait for itself, which its godoc forbids.
 - Subscriptions are held in a lazily allocated `eventTransportState` on the root, nil for containers without remote listeners.
 
 ### D7. Inbound dispatch
 - Each subscription gets a handler closure bound to one listener binding: decode, `Extract` headers, attach the envelope (`EnvelopeFromContext`), evaluate the filter, resolve the listener (service listeners through the root, so lazy services build once under the existing wrapper mutex), call it with panic recovery.
+- The listener binding is planned at `Start`, but a service listener is re-resolved per delivery by name in its scope: when the scope now holds another registration (`OverrideValue`...), the same binding is called on it.
 - The handler wraps failures in `*ListenerError` with the listener ID and event type, preserving permanent markers so `IsPermanentError` sees through it.
 
 ### D8. Permanent errors
@@ -146,6 +150,7 @@ Shutdown:  stopScheduling --> stop subscriptions (reverse order, shutdown ctx) -
 ### D9. In-memory transport
 - `NewMemoryEventTransport(opts...)` keeps, per destination, a list of groups; each group has members (subscriptions) and a cursor for round robin. `Send` copies the envelope to each existing group's queue (so groups created later never see it: start at latest). Each subscription runs one goroutine draining its queue; `stop` cancels and waits.
 - Redelivery: up to `MemoryMaxAttempts(n)` (default 3) immediate attempts, then drop and log through `MemoryLogger(func(string, ...any))`, defaulting to the standard `log` package.
+- A stop whose context ends while an envelope is handled cancels the handler context; the interrupted envelope is handed back to the group the subscription left (another member, or a durable group's backlog), and is dropped and logged only when the group ended. A silent drop would lose an event a durable group promised to keep.
 - It is externalized because tests of applications, of core, and of adapters (as a reference) need it. It is not `TxEventSender`; core tests wrap it with a fake transaction to exercise the outbox.
 
 ### D10. Conformance suite
@@ -163,6 +168,14 @@ func (p *Publisher) Publish(ctx context.Context, events ...any) error
 - Events are published in order and the first error stops the rest, because the events of one use case usually belong to one transaction that the caller will roll back.
 - The transaction travels in `ctx`: a unit-of-work adapter binds it (for `database/sql`, `sqltx.InTx` from the shared `events/sqltx` module), so `ExternalizeAuto` picks the outbox with no knowledge in the use case. Publishing after the unit of work returns runs outside the transaction; the guide calls this out.
 - *Alternative:* a generic `Publisher[E]`. Rejected: a use case publishes several event types at once.
+
+### D13. Review fixes
+Decisions taken after verification and code review of the implementation:
+- **EventExecutor contract.** Every task `Submit` accepts (returns nil for) must run, even once `Shutdown` began. Root and scope shutdown wait for each accepted delivery bounded only by their context, so an executor that discards an accepted task makes `Shutdown()` (background context) wait forever; `ShutdownWithContext` stays bounded. Documented on `EventExecutor`; no runtime guard, since the container cannot tell a slow task from a discarded one.
+- **Deferred listeners are filtered at publish.** Their `ListenerFilter` runs on the publisher's goroutine, once, as its godoc says; the transaction callback delivers without filtering again. A filter panic is a `Publish` error like any other listener error.
+- **Deferred listeners are registered on every dispatch exit.** A fail-fast stop or a cancelled context no longer drops deferred listeners routed before it.
+- **Scope drains and publishing deliveries.** A drain called from an async delivery skips that delivery and the publishing deliveries still inside the `Submit` that ran it inline (an inline executor); a publishing delivery whose `Submit` returned runs elsewhere and is waited for.
+- **Non-comparable TxSources.** Two values of one non-comparable type cannot be compared, so they do not raise `ErrTxSourceConflict`.
 
 ### D11. Clone
 `CloneWithOpts` copies bindings (with delivery modes) and the registry. A transport set in `InjectorOpts` is shared because the caller owns it; subscription state, the instance ID (unless set) and the resolved service transport are per root.
@@ -184,7 +197,7 @@ Additive only. **No exported API breaks.**
 | `Envelope`, `Subscription`, `EnvelopeHandler` | types | n/a |
 | `EventTransport`, `TxEventSender` | SPI | None; `InjectorOpts.EventTransport` or a `NameOf[EventTransport]()` service |
 | `NewMemoryEventTransport(opts ...MemoryTransportOption) *MemoryEventTransport`, `MemoryMaxAttempts(n)`, `MemoryLogger(fn)` | constructor, options | 3 attempts, standard `log` |
-| `RegisterEventType[E](root, name, opts ...EventTypeOption) error` | func | n/a |
+| `RegisterEventType[E](root, name, opts ...EventTypeOption) error` | func | nil root: `ErrNilInjector` |
 | `EventExternalized()`, `EventExternalize(ExternalizeStrategy)`, `EventVersion(n)`, `EventDestination(d)`, `EventAlias(names...)` | `EventTypeOption` | not externalized, version 1, destination = name, no aliases |
 | `ExternalizeStrategy` (`ExternalizeAuto`, `ExternalizeImmediate`, `ExternalizeAfterCommit`, `ExternalizeOutbox`), `PublishExternalize(s)` | enum, `PublishOption` | `ExternalizeAuto` |
 | `OutboxFallback` (`OutboxFallbackFail`, `OutboxFallbackImmediate`) | enum | Fail |
@@ -192,7 +205,7 @@ Additive only. **No exported API breaks.**
 | `EventCodec`, `EventPropagator` | SPI | JSON; no headers |
 | `EnvelopeFromContext(ctx) (Envelope, bool)` | func | n/a |
 | `PermanentError(err) error`, `IsPermanentError(err) bool` | funcs | n/a |
-| `PublisherFor(i) *Publisher`, `(*Publisher).Publish(ctx, events ...any) error` | func, method | nil injector = `DefaultRootScope` |
+| `PublisherFor(i) *Publisher`, `(*Publisher).Publish(ctx, events ...any) error` | func, method | nil injector: `ErrNilInjector` |
 | `ExternalizeError` | error type | `errors.As`, `Unwrap` |
 | `Tx`, `TxSource`, `TxPhase` (+ constants), `ListenerTxPhase`, `TxFallbackMode` (+ constants), `ListenerTxFallback` | SPI, enums, options | Immediate; Run |
 | `InjectorOpts.EventTransport`, `EventExternalize`, `EventOutboxFallback`, `EventCodec`, `EventIDGenerator`, `EventPropagator`, `EventDestinationMapper`, `EventGroupPrefix`, `InstanceID`, `TxSource` | fields, copied by `copy()` | nil, Auto, Fail, JSON, UUIDv7, nil, identity, "", generated, nil |
@@ -208,7 +221,7 @@ Each scenario maps to one Go test; `Examples` rows run as named subtests. Everyt
 | Scenario | Test | Kind |
 |---|---|---|
 | Registering event types | `event_types_test.go: TestRegisterEventType/<row>` | table-driven |
-| A nil root means DefaultRootScope | `event_types_test.go: TestRegisterEventType_NilRoot` | unit |
+| A nil root is rejected | `event_types_test.go: TestRegisterEventType_NilRoot` | unit |
 | Version, destination and aliases | `event_types_test.go: TestEventTypeOptions/<row>` | table-driven |
 | An alias bound to another type conflicts | `event_types_test.go: TestEventTypeOptions_AliasConflict` | unit |
 | The mapper applies to both sides | `event_types_test.go: TestDestinationMapper/<row>` | table-driven |
@@ -231,6 +244,7 @@ Each scenario maps to one Go test; `Examples` rows run as named subtests. Everyt
 | Which strategy applies | `event_externalize_test.go: TestExternalize_Precedence/<row>` | table-driven, fake `Tx` |
 | Auto resolution | `event_externalize_test.go: TestExternalize_Auto/<row>` | table-driven |
 | Immediate send outcomes | `event_externalize_test.go: TestExternalize_Immediate/<row>` | table-driven |
+| The error names the strategy used | `event_externalize_test.go: TestExternalize_ErrorReportsStrategyUsed/<row>` | table-driven |
 | Send honors the publish context | `event_externalize_test.go: TestExternalize_ImmediateContext` | unit, `testWithTimeout` |
 | After-commit outcomes | `event_externalize_test.go: TestExternalize_AfterCommit/<row>` | table-driven, fake `Tx` |
 | The after-commit send is detached | `event_externalize_test.go: TestExternalize_AfterCommitDetached` | unit |
@@ -239,6 +253,7 @@ Each scenario maps to one Go test; `Examples` rows run as named subtests. Everyt
 | Strict and fallback | `event_externalize_test.go: TestExternalize_OutboxFallback/<row>` | table-driven |
 | Outbox with a plain transport | `event_externalize_test.go: TestExternalize_OutboxNotSupported/<row>` | table-driven |
 | Listener failure and externalize | `event_externalize_test.go: TestExternalize_AfterDispatch/<row>` | table-driven |
+| Async refusals do not stop externalization | `event_externalize_test.go: TestExternalize_AfterAsyncRefusal/<row>` | table-driven |
 | Local publishing and child scopes | `event_externalize_test.go: TestExternalize_Scopes/<row>` | table-driven |
 | Externalization across the lifecycle | `event_externalize_test.go: TestExternalize_Lifecycle/<row>` | table-driven |
 | Concurrent publishers each externalize once | `event_externalize_test.go: TestExternalize_Concurrent` | race |
@@ -261,15 +276,18 @@ Each scenario maps to one Go test; `Examples` rows run as named subtests. Everyt
 | Subscriptions open after Starters | `event_remote_lifecycle_test.go: TestRemote_SubscribeOrder` | unit |
 | A failing Subscribe fails Start | `event_remote_lifecycle_test.go: TestRemote_SubscribeError` | unit |
 | Shutdown stops subscriptions and waits for handlers | `event_remote_lifecycle_test.go: TestRemote_ShutdownWaits` | unit, goleak |
+| Listen's stop closes a remote function listener's subscription | `event_remote_lifecycle_test.go: TestRemote_ListenStopClosesSubscription` | integration, `testWithTimeout` |
 | The shutdown context bounds the wait | `event_remote_lifecycle_test.go: TestRemote_ShutdownDeadline` | unit, `testWithTimeout` |
 | Stop errors are reported | `event_remote_lifecycle_test.go: TestRemote_StopError` | unit |
 | Inbound outcomes | `event_inbound_test.go: TestInbound/<row>` | table-driven, integration |
+| A replaced service listener receives later deliveries | `event_inbound_test.go: TestInbound_ResolvesPerDelivery` | unit |
 | Lazy service listeners are built on first delivery | `event_inbound_test.go: TestInbound_LazyOnce` | unit |
 | Decoding failures are permanent | `event_inbound_test.go: TestInbound_Decode/<row>` | table-driven |
 | Marking and detecting permanent errors | `event_inbound_test.go: TestPermanentError/<row>` | table-driven |
 | Concurrent inbound deliveries | `event_inbound_test.go: TestInbound_Concurrent` | race |
 | Groups in memory | `event_memory_transport_test.go: TestMemoryTransport_Groups` | integration |
 | Redelivery limits in memory | `event_memory_transport_test.go: TestMemoryTransport_Redelivery/<row>` | table-driven |
+| A stop timeout keeps the in-flight envelope | `event_memory_transport_test.go: TestMemoryTransport_StopTimeoutKeepsInFlight` | unit, `testWithTimeout` |
 | A new group starts at the latest event | `event_memory_transport_test.go: TestMemoryTransport_NewGroupAtLatest` | unit |
 | Invalid memory options | `event_memory_transport_test.go: TestMemoryTransport_InvalidOptions` | unit |
 | The in-memory transport passes the suite | `event_memory_transport_test.go: TestMemoryTransport_Conformance` | conformance, race, goleak |
@@ -284,11 +302,13 @@ Each scenario maps to one Go test; `Examples` rows run as named subtests. Everyt
 |---|---|---|
 | Phases with a bound transaction | `event_tx_test.go: TestTxPhase/<row>` | table-driven, fake `Tx` |
 | Deferred listeners keep listener order | `event_tx_test.go: TestTxPhase_Order` | unit |
+| Deferred listeners are filtered at publish | `event_tx_test.go: TestTx_DeferredFilterAtPublish/<row>` | table-driven |
+| Deferred listeners survive a fail-fast stop | `event_tx_test.go: TestTx_DeferredSurviveFailFast/<row>` | table-driven |
 | Context of a deferred listener | `event_tx_test.go: TestTx_DetachedContext` | unit |
 | Deferred failures are reported | `event_tx_test.go: TestTx_DeferredFailures/<row>` | table-driven |
 | No transaction or an ended one | `event_tx_test.go: TestTx_Fallback/<row>` | table-driven |
 | Which TxSource is used | `event_tx_test.go: TestTxSourceResolution/<row>` | table-driven |
-| A conflicting TxSource fails Start | `event_tx_test.go: TestTxSourceResolution_ConflictAtStart` | unit |
+| A conflicting TxSource fails Start | `event_tx_test.go: TestTxSourceResolution_ConflictAtStart/<row>` | table-driven |
 | A TxSource service is built once | `event_tx_test.go: TestTxSourceResolution_Once` | unit |
 | Option validation | `event_tx_test.go: TestTxOptions/<row>` | table-driven |
 | Enum names (transactional-events) | `event_tx_test.go: TestTxEnums_String/<row>` | table-driven |

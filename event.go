@@ -42,6 +42,10 @@ func validateEventOptions(opts *InjectorOpts) {
 	if opts.EventErrorMode != EventFailFast && opts.EventErrorMode != EventContinue {
 		panic(libErrorf("invalid EventErrorMode %d", int(opts.EventErrorMode)))
 	}
+	validateStrategy(opts.EventExternalize)
+	if opts.EventOutboxFallback != OutboxFallbackFail && opts.EventOutboxFallback != OutboxFallbackImmediate {
+		panic(libErrorf("invalid OutboxFallback %d", int(opts.EventOutboxFallback)))
+	}
 }
 
 // PublishOption changes how one Publish call delivers its event.
@@ -50,6 +54,9 @@ type PublishOption func(*publishOptions)
 // publishOptions are the options of one Publish call.
 type publishOptions struct {
 	local bool // PublishLocal: only the publishing scope is reached
+
+	externalize    ExternalizeStrategy // PublishExternalize
+	externalizeSet bool
 }
 
 // buildPublishOptions applies opts. Without opts it allocates nothing:
@@ -86,8 +93,8 @@ func PublishLocal() PublishOption {
 // [*ListenerError] naming the listener and the event type and unwrapping to
 // the cause. A listener panic is recovered into a *ListenerError too. An
 // async delivery refused because a shutdown began does not stop dispatch:
-// the synchronous listeners still run, and Publish returns the refusals,
-// matching
+// the synchronous listeners still run, an externalized event is still
+// handed to the transport, and Publish returns the refusals, matching
 // [ErrPublishAfterShutdown], joined with any other error.
 //
 // Publish returns an error matching [ErrInvalidEvent] for a nil event, or
@@ -112,8 +119,9 @@ func Publish(ctx context.Context, i Injector, event any, opts ...PublishOption) 
 	}
 
 	root := scope.rootScope
+	err = root.dispatch(ctx, scope, event, dispatchConfig{local: options.local, mode: root.opts.EventErrorMode})
 
-	return root.dispatch(ctx, scope, event, dispatchConfig{local: options.local, mode: root.opts.EventErrorMode})
+	return root.externalizeEvent(ctx, event, options, err)
 }
 
 // dispatchConfig is how one dispatch delivers its event.
@@ -146,6 +154,15 @@ func (s *RootScope) dispatch(ctx context.Context, scope *Scope, event any, cfg d
 	shuttingDown := events != nil && events.shuttingDown.Load()
 
 	var errs []error
+	var txOf publishTx
+	var deferred []*plannedListener
+	// Deferred listeners routed before a fail-fast stop or a cancelled
+	// context still run when the transaction ends.
+	defer func() {
+		if len(deferred) > 0 {
+			s.deferListeners(ctx, txOf.source, txOf.tx, deferred, event)
+		}
+	}()
 	for _, listener := range matchListeners(scope, eventType, cfg.local) {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return errors.Join(append(errs, ctxErr)...)
@@ -153,7 +170,17 @@ func (s *RootScope) dispatch(ctx context.Context, scope *Scope, event any, cfg d
 		if cfg.skips(listener, shuttingDown) {
 			continue
 		}
-		err := s.deliverTo(ctx, listener, event, eventType, cfg.async(listener, shuttingDown), shuttingDown)
+		route, err := txOf.routeFor(ctx, s, listener, cfg)
+		switch {
+		case route == routeDefer:
+			if deferred, err = deferAccepted(deferred, listener, event); err == nil {
+				continue
+			}
+		case route == routeSkip:
+			continue
+		case err == nil:
+			err = s.deliverTo(ctx, listener, event, eventType, cfg.async(listener, shuttingDown), shuttingDown)
+		}
 		if err == nil {
 			continue
 		}
@@ -173,6 +200,18 @@ func (s *RootScope) dispatch(ctx context.Context, scope *Scope, event any, cfg d
 	return errors.Join(errs...)
 }
 
+// deferAccepted returns deferred with listener appended when its filter
+// accepts event: a deferred listener is filtered at publish and delivered
+// when the transaction ends. A filter panic is returned as an error.
+func deferAccepted(deferred []*plannedListener, listener *plannedListener, event any) ([]*plannedListener, error) {
+	accepted, err := listener.accepts(event)
+	if accepted {
+		deferred = append(deferred, listener)
+	}
+
+	return deferred, err
+}
+
 // asyncRefusal is the error of an async delivery refused because a
 // shutdown stopped accepting them. It unwraps to an error matching
 // ErrPublishAfterShutdown.
@@ -187,6 +226,34 @@ func (e *asyncRefusal) Unwrap() error { return e.err }
 func isAsyncRefusal(listener *plannedListener, err error) bool {
 	_, refused := err.(*asyncRefusal) //nolint:errorlint // the refusal is returned as is by submitAsync
 	return listener.opts.async && refused
+}
+
+// onlyAsyncRefusals reports whether the error of a dispatch holds nothing
+// but async refusals: they did not stop it.
+func onlyAsyncRefusals(err error) bool {
+	joined, ok := err.(interface{ Unwrap() []error }) // the shape errors.Join returns
+	if !ok {
+		return isRefusalError(err)
+	}
+	for _, e := range joined.Unwrap() {
+		if !isRefusalError(e) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// isRefusalError reports whether err is the *ListenerError of an async
+// refusal.
+func isRefusalError(err error) bool {
+	listenerErr, ok := err.(*ListenerError) //nolint:errorlint // dispatch returns it as is
+	if !ok {
+		return false
+	}
+	_, refused := listenerErr.Err.(*asyncRefusal) //nolint:errorlint // the refusal is returned as is by submitAsync
+
+	return refused
 }
 
 // ErrPublishAfterShutdown is matched by the error of Publish through a
@@ -383,6 +450,21 @@ func (s *RootScope) reportEventError(ctx context.Context, err error) {
 	if recovered, panicked := callHookSafely(func() { hook(ctx, s, err) }); panicked {
 		s.logEventError(libErrorf("HookEventError panicked: %v", recovered).Error())
 	}
+}
+
+// logWarning logs message at Warn level with Logger, or with the standard
+// log package when Logger is unset, as event errors are.
+func (s *RootScope) logWarning(message string) {
+	if s.opts.Logger == discardLogger {
+		// The documented fallback when Logger is unset (setting it replaces
+		// this): message is a fixed library warning, written to the
+		// application's own log output.
+		// bearer:disable go_lang_log_output_neutralization,go_lang_logger_leak
+		log.Print(libPrefix + message)
+		return
+	}
+
+	s.self.log(slog.LevelWarn, message)
 }
 
 // logEventError logs message, about an event failure, with Logger, or with

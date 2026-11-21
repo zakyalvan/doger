@@ -429,8 +429,11 @@ func (s *RootScope) runStartPipeline(startCtx context.Context) error {
 		return err
 	}
 
-	_, err := s.runPipeline(startCtx, []*Scope{s.self})
-	return err
+	if _, err := s.runPipeline(startCtx, []*Scope{s.self}); err != nil {
+		return err
+	}
+
+	return s.validateEventTransport()
 }
 
 // runPipeline builds, handles and starts what is not started or handled yet

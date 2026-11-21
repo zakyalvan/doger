@@ -31,6 +31,9 @@ type listenerOptions struct {
 	filter     func(any) bool // ListenerFilter; nil means none
 	filterType reflect.Type   // the parameter type of filter
 	async      bool           // ListenerAsync
+	txPhase    TxPhase        // ListenerTxPhase
+	txFallback TxFallbackMode // ListenerTxFallback
+	delivery   EventDelivery  // ListenerDelivery
 }
 
 // ListenerID sets the ID of the listener, used in errors and logs. An empty
@@ -57,8 +60,10 @@ func ListenerOrder(n int) ListenerOption {
 // ListenerFilter skips the listener for the events pred returns false for,
 // without building a listener service. A nil pred means no filter, and the
 // last ListenerFilter given wins. pred runs on the publisher's goroutine,
-// during Publish, before an async delivery is submitted. Its panic is
-// recovered into a [*ListenerError].
+// during Publish: before an async delivery is submitted, and before a
+// listener with a deferred [ListenerTxPhase] is deferred to the
+// transaction, so the event is not filtered again when it ends. Its panic
+// is recovered into a [*ListenerError].
 //
 // Registration panics when the listener's event type is not assignable to
 // F ("doger: ListenerFilter for F cannot apply to listener of E").
@@ -83,6 +88,8 @@ func listenerOptionsFor(eventType reflect.Type, opts []ListenerOption) listenerO
 	if options.filterType != nil && !eventType.AssignableTo(options.filterType) {
 		panic(libErrorf("ListenerFilter for %s cannot apply to listener of %s", options.filterType, eventType))
 	}
+	validateTxOptions(&options)
+	validateDelivery(&options)
 
 	return options
 }
@@ -513,7 +520,10 @@ func (s *Scope) eventState() *scopeEvents {
 // Listen registers fn as a listener of the events assignable to E in the
 // scope of i, and returns a function that unregisters it: its first call
 // unregisters the listener and returns true, later calls return false,
-// like the stop function of [context.AfterFunc].
+// like the stop function of [context.AfterFunc]. For a remote listener
+// (see [ListenerDelivery]) subscribed by Start, it also stops the
+// listener's subscription, waiting for its handlers in flight: do not call
+// it from that listener.
 //
 // The listener is reached by events published through that scope or its
 // descendants. Its default ID, used in errors and logs, is
@@ -531,6 +541,9 @@ func Listen[E any](i Injector, fn func(context.Context, E) error, opts ...Listen
 		panic(libErrorf("Listen requires a non-nil function"))
 	}
 	options := listenerOptionsFor(reflect.TypeFor[E](), opts)
+	if options.remote() {
+		validateRemoteListener(scope, options.id, true, &options)
+	}
 	seq := scope.rootScope.eventState().funcSeq.Add(1)
 	listener := &funcListener{
 		regIndex: scope.rootScope.nextRegIndex.Add(1) - 1,
@@ -552,7 +565,13 @@ func Listen[E any](i Injector, fn func(context.Context, E) error, opts ...Listen
 	scope.mu.Unlock()
 
 	return func() bool {
-		return scope.removeFuncListener(listener)
+		if !scope.removeFuncListener(listener) {
+			return false
+		}
+		if options.remote() {
+			scope.rootScope.closeSubscriptionOf(listener)
+		}
+		return true
 	}
 }
 

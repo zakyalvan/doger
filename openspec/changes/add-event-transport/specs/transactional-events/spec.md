@@ -7,7 +7,7 @@ Lets listeners run at a chosen point of the publisher's transaction (immediately
 ## ADDED Requirements
 
 ### Requirement: Listeners run in their transaction phase
-When the resolved `TxSource` finds a transaction in the publish context, a listener SHALL run per its `ListenerTxPhase`: `TxPhaseImmediate` during `Publish`; `TxPhaseAfterCommit` from `OnCommit`; `TxPhaseAfterRollback` from `OnRollback`; `TxPhaseAfterCompletion` from either. Without the option, a listener's phase SHALL be `TxPhaseImmediate`.
+When the resolved `TxSource` finds a transaction in the publish context, a listener SHALL run per its `ListenerTxPhase`: `TxPhaseImmediate` during `Publish`; `TxPhaseAfterCommit` from `OnCommit`; `TxPhaseAfterRollback` from `OnRollback`; `TxPhaseAfterCompletion` from either. Without the option, a listener's phase SHALL be `TxPhaseImmediate`. A deferred listener's `ListenerFilter` SHALL run during `Publish`, once: an event it rejects SHALL NOT be deferred, and its panic SHALL be returned by `Publish` as a `*ListenerError`. Deferred listeners routed before a fail-fast listener error or a cancelled publish context stopped the dispatch SHALL still run when the transaction ends.
 
 #### Scenario: Phases with a bound transaction
 ```gherkin
@@ -36,6 +36,33 @@ Given a root scope with a fake TxSource and function listeners "a" (order 1) and
 And the consumer published OrderPlaced{ID: "1"} with a context marked with "tx1"
 When the fake transaction "tx1" commits
 Then the listeners ran in the order ["b", "a"]
+```
+
+#### Scenario: Deferred listeners are filtered at publish
+```gherkin
+Given a root scope with a fake TxSource and a function listener "l" for OrderPlaced with ListenerTxPhase(TxPhaseAfterCommit) and a ListenerFilter that counts its calls and <filter>
+When the consumer publishes OrderPlaced{ID: "1"} with a context marked with "tx1" and the fake transaction "tx1" commits
+Then the filter ran once, during Publish, Publish returned <result>, and "l" ran <ran> times
+
+Examples:
+  | filter                | result                                          | ran |
+  | returns true          | nil                                             | 1   |
+  | returns false         | nil                                             | 0   |
+  | panics with "bad filter" | a *ListenerError whose message contains "bad filter" | 0 |
+```
+
+#### Scenario: Deferred listeners survive a fail-fast stop
+```gherkin
+Given a root scope with a fake TxSource and, in order, a function listener "c" for OrderPlaced with ListenerTxPhase(<phase>), a function listener "r" for OrderPlaced that <stop>, and a function listener "z" for OrderPlaced
+When the consumer publishes OrderPlaced{ID: "1"} with a context marked with "tx1"
+Then Publish returns <result>
+And when the fake transaction "tx1" rolls back, "c" ran once
+
+Examples:
+  | phase                  | stop                                  | result                                  |
+  | TxPhaseAfterRollback   | returns ErrOutOfStock                 | a *ListenerError matching ErrOutOfStock |
+  | TxPhaseAfterCompletion | returns ErrOutOfStock                 | a *ListenerError matching ErrOutOfStock |
+  | TxPhaseAfterRollback   | cancels the publish context           | an error matching context.Canceled      |
 ```
 
 <!-- cases: N/A 3 zero values: the zero TxPhase is TxPhaseImmediate (first row) -->
@@ -107,7 +134,7 @@ Examples:
 <!-- cases: N/A 10 compatibility: new option -->
 
 ### Requirement: TxSource resolution
-The root SHALL resolve one `TxSource`: `InjectorOpts.TxSource`, else a root service named `NameOf[TxSource]()`, else the resolved transport's `TxSource()` when it implements `TxEventSender`, else none. When the transport is a `TxEventSender` and a different `TxSource` is configured, `Start` and the first transactional externalization SHALL fail with `ErrTxSourceConflict`.
+The root SHALL resolve one `TxSource`: `InjectorOpts.TxSource`, else a root service named `NameOf[TxSource]()`, else the resolved transport's `TxSource()` when it implements `TxEventSender`, else none. When the transport is a `TxEventSender` and a different `TxSource` is configured, `Start` and the first transactional externalization SHALL fail with `ErrTxSourceConflict`. Two values of one non-comparable type cannot be told apart and SHALL NOT conflict.
 
 #### Scenario: Which TxSource is used
 ```gherkin
@@ -130,9 +157,16 @@ Examples:
 
 #### Scenario: A conflicting TxSource fails Start
 ```gherkin
-Given a root scope with InjectorOpts.TxSource srcA and InjectorOpts.EventTransport a TxEventSender whose TxSource is srcS
+Given a root scope with InjectorOpts.TxSource <opts> and InjectorOpts.EventTransport a TxEventSender whose TxSource is <transport>
 When the consumer calls Start
-Then it returns an error matching ErrTxSourceConflict
+Then it returns <result>
+
+Examples:
+  | opts                                   | transport                          | result                                   |
+  | a *fakeTxSource srcA                   | another *fakeTxSource srcS         | an error matching ErrTxSourceConflict    |
+  | pointer p                              | the same pointer p                 | nil                                      |
+  | a struct value holding a map (non-comparable) | the same value              | nil                                      |
+  | a struct value holding a map (non-comparable) | a *fakeTxSource             | an error matching ErrTxSourceConflict    |
 ```
 
 #### Scenario: A TxSource service is built once

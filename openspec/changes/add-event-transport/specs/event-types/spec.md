@@ -7,7 +7,7 @@ Gives event types a stable wire identity (name, version, destination and aliases
 ## ADDED Requirements
 
 ### Requirement: RegisterEventType binds a wire name to a type
-`RegisterEventType[E](root, name, opts...) error` SHALL bind `name` to the concrete type `E` in the root's registry. A nil root SHALL mean `DefaultRootScope`. Registering the same name for the same type again SHALL return nil and apply the newer options.
+`RegisterEventType[E](root, name, opts...) error` SHALL bind `name` to the concrete type `E` in the root's registry. A nil root SHALL return an error matching `ErrNilInjector` and register nothing. Registering the same name for the same type again SHALL return nil and apply the newer options.
 
 #### Scenario: Registering event types
 ```gherkin
@@ -30,12 +30,12 @@ Examples:
 ```
 `DomainEvent` is an interface type: the wire needs a concrete type to decode into.
 
-#### Scenario: A nil root means DefaultRootScope
+#### Scenario: A nil root is rejected
 ```gherkin
-Given DefaultRootScope with no registration for "orders.placed"
+Given no root scope
 When the consumer calls RegisterEventType[OrderPlaced](nil, "orders.placed")
-Then it returns nil
-And the registry of DefaultRootScope resolves "orders.placed" to OrderPlaced
+Then it returns an error matching ErrNilInjector
+And no registry resolves "orders.placed"
 ```
 
 <!-- cases: N/A 4 boundaries: names have no length limit in core; transports validate their own destination syntax -->

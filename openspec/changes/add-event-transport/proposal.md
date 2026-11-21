@@ -71,7 +71,7 @@ This change **supersedes `add-durable-events`**. Its transaction-bound listeners
 |---|---|---|
 | Which events leave the process | None | `RegisterEventType(..., EventExternalized())` per type |
 | Wire name | Required at registration; destination = the name | `EventDestination(d)`, `InjectorOpts.EventDestinationMapper` |
-| Transport | None: externalized events stay in-process, logged once through `Logf` | `InjectorOpts.EventTransport`, a `NameOf[EventTransport]()` service, `NewMemoryEventTransport()` |
+| Transport | None: externalized events stay in-process, logged once at Warn level through `InjectorOpts.Logger` (standard `log` when unset) | `InjectorOpts.EventTransport`, a `NameOf[EventTransport]()` service, `NewMemoryEventTransport()` |
 | Externalization strategy | `ExternalizeAuto` | `PublishExternalize(s)` > `EventExternalize(s)` > `InjectorOpts.EventExternalize` |
 | Outbox without a transaction | `Publish` fails with `ErrNoTransaction` | `InjectorOpts.EventOutboxFallback = OutboxFallbackImmediate` |
 | After-commit send failure | Reported to `HookEventError`, not retried by core | Choose `ExternalizeOutbox` for crash safety |

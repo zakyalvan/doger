@@ -53,10 +53,12 @@ type ContainerClosed struct {
 	Report *ShutdownReport
 }
 
-// noteListeners allocates the event state of the container when opts
-// declare listeners, so that lifecycle events reach service listeners in a
-// container without function listeners.
-func (s *RootScope) noteListeners(opts *serviceOptions) {
+// noteListeners panics for a remote listener of opts that cannot be
+// registered on the service name of scope, and allocates the event state
+// of the container when opts declare listeners, so that lifecycle events
+// reach service listeners in a container without function listeners.
+func (s *RootScope) noteListeners(scope *Scope, name string, opts *serviceOptions) {
+	validateRemoteBindings(scope, name, opts)
 	if opts != nil && len(opts.listeners) > 0 {
 		s.eventState()
 	}
